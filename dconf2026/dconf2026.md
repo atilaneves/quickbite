@@ -137,6 +137,8 @@ AI: insert old executor code here special casing and intercepting cerealed code.
 
 # Conclusion
 
+* Don't bit off more than you can chew.
+* Learn enough to be able to make decisions.
 * Do not trust agents to do the right thing.
 * Write down everything you know about coding.
 * Understand the technical options deeply.

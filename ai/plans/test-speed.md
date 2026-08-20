@@ -128,7 +128,3 @@ Cost classes found, largest first:
    per-test `GC.collect`+unload for converted fixtures; measure what
    growth remains for the string legs and whether periodic process
    recycling is worth building.
-5. **Oracle wording.** Update `single-oracle.md` so the oracle for
-   converted fixtures is the native leg (host-compiled, DMD) and
-   SystemLinker is the bench-time product check. Needs maintainer
-   sign-off on the wording before editing that plan.

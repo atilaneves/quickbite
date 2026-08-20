@@ -14802,11 +14802,9 @@ unsupportedExpression:
         // source's bytes directly into the destination's own storage
         // (the same byte copy `writeValue` already performs for a
         // same-typed static-array source), then run the element postblit on
-        // each copied element -- mirroring `compileArrayConstructor`'s
-        // identical `_d_arrayctor` interception in the bytecode core
-        // compiler. A struct with only a copy constructor or only a
-        // destructor (no postblit) also lowers this way; that shape is left
-        // to the generic call path below, unchanged.
+        // each copied element. A struct with only a copy constructor or
+        // only a destructor (no postblit) also lowers this way; that shape
+        // is left to the generic call path below, unchanged.
         if (auto arrayCtorCall = initializer.isCallExp)
             if (
                 arrayCtorCall.f !is null &&

@@ -372,6 +372,525 @@ unittest {
 }
 
 
+// A top-level dependency-image function with a `ref` struct parameter: `ref`
+// mutates the caller's own storage in place, so the caller must see the
+// callee's write even though the callee's compiled body lives in the
+// separately built `.so`, not in the module under test.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCRefStructParameterWritesBack." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_struct_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStruct(ref Payload value) {
+                value.first = 11;
+                value.second = 22;
+            }
+        }.uniqueDepModule("dep_image_ref_struct_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStruct(ref Payload value);
+        }.uniqueDepModule("dep_image_ref_struct_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_struct_fixture;
+
+                unittest {
+                    Payload value;
+                    value.first = 1;
+                    value.second = 2;
+                    dependencyMutateStruct(value);
+
+                    assert(value.first == 11);
+                    assert(value.second == 22);
+                }
+            }.uniqueDepModule("dep_image_ref_struct_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// The static-array analogue of the `ref` struct fixture above: `ref int[3]`
+// is still a reference to the caller's own storage, not a by-value copy,
+// even though a static array's representation is its raw inline bytes
+// rather than a `{length, ptr}` descriptor.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCRefStaticArrayParameterWritesBack." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_static_array_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_static_array_fixture;
+
+            extern(C) void dependencyMutateStaticArray(ref int[3] values) {
+                values[0] = 10;
+                values[1] = 20;
+                values[2] = 30;
+            }
+        }.uniqueDepModule(
+            "dep_image_ref_static_array_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_static_array_fixture;
+
+            extern(C) void dependencyMutateStaticArray(ref int[3] values);
+        }.uniqueDepModule(
+            "dep_image_ref_static_array_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_static_array_fixture;
+
+                unittest {
+                    int[3] values = [1, 2, 3];
+                    dependencyMutateStaticArray(values);
+
+                    assert(values == [10, 20, 30]);
+                }
+            }.uniqueDepModule(
+                "dep_image_ref_static_array_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// A body-less dependency-image function whose address is taken (`&f`) and
+// called through a function-pointer variable, rather than named directly at
+// the call site: the guest program never resolves the callee statically, so
+// the call goes through the indirect-call path instead of the direct-call
+// argument staging the fixture above exercises. `ref` still names the
+// caller's own storage in that path. `Interpreter` is left out of this one
+// fixture's rows: it declines this call shape outright ("Unsupported
+// interpreter call arguments"), a pre-existing gap in a different backend's
+// own dispatch, not the argument-marshalling behaviour under test here.
+private alias IndirectRefDependencyImageBackends = AliasSeq!(Bytecode, LLVMJit);
+static foreach (backend; IndirectRefDependencyImageBackends) {
+@("dependencyImage.externCRefParameterThroughFunctionPointerWritesBack." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_fnptr_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_fnptr_fixture;
+
+            extern(C) void dependencyMutateInt(ref int value) {
+                value = 42;
+            }
+        }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_fnptr_fixture;
+
+            extern(C) void dependencyMutateInt(ref int value);
+        }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_fnptr_fixture;
+
+                unittest {
+                    auto fn = &dependencyMutateInt;
+
+                    int value = 1;
+                    fn(value);
+
+                    assert(value == 42);
+                }
+            }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// A by-value struct wider than one native-call argument slot, followed by a
+// plain scalar argument: the struct's own bytes must stay intact once the
+// scalar argument that comes after it is staged.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCWideStructByValueArgumentComputesCorrectSum." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_wide_struct_value_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_wide_struct_value_fixture;
+
+            struct Wide {
+                long first;
+                long second;
+                long third;
+            }
+
+            extern(C) long dependencySumWideStructAndExtra(
+                Wide value, long extra,
+            ) {
+                return value.first + value.second + value.third + extra;
+            }
+        }.uniqueDepModule(
+            "dep_image_wide_struct_value_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_wide_struct_value_fixture;
+
+            struct Wide {
+                long first;
+                long second;
+                long third;
+            }
+
+            extern(C) long dependencySumWideStructAndExtra(
+                Wide value, long extra,
+            );
+        }.uniqueDepModule(
+            "dep_image_wide_struct_value_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_wide_struct_value_fixture;
+
+                unittest {
+                    Wide value;
+                    value.first = 1;
+                    value.second = 2;
+                    value.third = 3;
+                    long extra = 100;
+
+                    assert(
+                        dependencySumWideStructAndExtra(value, extra) == 106,
+                    );
+                }
+            }.uniqueDepModule(
+                "dep_image_wide_struct_value_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// The static-array analogue of the wide-struct fixture above, through a `ref`
+// parameter: the callee's own return value shares the native-call argument
+// area's bump-allocated layout with the array's own trailing bytes once the
+// array exceeds one argument slot, so every mutated element must still be
+// visible afterward, not just the ones that fit in the first slot.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCRefWideStaticArrayParameterWritesBackAllElements." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_wide_array_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_wide_array_fixture;
+
+            extern(C) long dependencyMutateWideStaticArrayAndReturn(
+                ref long[3] values,
+            ) {
+                values[0] = 10;
+                values[1] = 20;
+                values[2] = 30;
+                return 999;
+            }
+        }.uniqueDepModule(
+            "dep_image_ref_wide_array_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_wide_array_fixture;
+
+            extern(C) long dependencyMutateWideStaticArrayAndReturn(
+                ref long[3] values,
+            );
+        }.uniqueDepModule(
+            "dep_image_ref_wide_array_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_wide_array_fixture;
+
+                unittest {
+                    long[3] values = [1, 2, 3];
+                    const result =
+                        dependencyMutateWideStaticArrayAndReturn(values);
+
+                    assert(result == 999);
+                    assert(values == [10, 20, 30]);
+                }
+            }.uniqueDepModule(
+                "dep_image_ref_wide_array_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// The function-pointer analogue of `externCRefStructParameterWritesBack`
+// above: a `ref` struct argument passed through an indirect call still names
+// the caller's own storage, whether the callee is resolved statically or
+// reached through a function-pointer value.
+static foreach (backend; IndirectRefDependencyImageBackends) {
+@("dependencyImage.externCRefStructParameterThroughFunctionPointerWritesBack."
+    ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_struct_fnptr_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fnptr_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStructPointer(ref Payload value) {
+                value.first = 11;
+                value.second = 22;
+            }
+        }.uniqueDepModule(
+            "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fnptr_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStructPointer(ref Payload value);
+        }.uniqueDepModule(
+            "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_struct_fnptr_fixture;
+
+                unittest {
+                    auto fn = &dependencyMutateStructPointer;
+
+                    Payload value;
+                    value.first = 1;
+                    value.second = 2;
+                    fn(value);
+
+                    assert(value.first == 11);
+                    assert(value.second == 22);
+                }
+            }.uniqueDepModule(
+                "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
 private struct CtorOrderingFixture {
     string[] imagePaths;
     string[] importPaths;
@@ -5486,7 +6005,7 @@ unittest {
 // values are D's real compiled-code semantics, checked directly in the
 // asserted source rather than diffed against a separately computed oracle
 // result, so `SystemLinker` running the same asserts through the matrix
-// below already serves as the oracle (`ai/plans/single-oracle.md`).
+// below already serves as the oracle (`CONTEXT.md`).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot call a native dependency image"),

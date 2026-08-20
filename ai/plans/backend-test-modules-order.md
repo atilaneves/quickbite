@@ -4,7 +4,7 @@ This order ranks the shared backend behaviour modules by the amount of D
 language surface a new backend must implement before the whole module can pass.
 Use it when choosing which existing tests to promote to a backend.
 `SystemLinker` (compiled D) is the oracle for these modules
-(`ai/plans/single-oracle.md`); `Ctfe` is a fixture source, not an oracle.
+(`AGENTS.md`, Testing); `Ctfe` is a fixture source, not an oracle.
 
 This is the shared ordering companion for backend-specific plans. New backend
 plans should be able to reuse this order without changing this file.

@@ -31,12 +31,13 @@ package(quickbite.backends.bytecode) Compilation compile(
 private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
-        AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
+        CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, appendElementOp, concatArraysOp, dupArrayOp,
+        VirtualFunction,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
+        noNativeCallIndex,
         noReceiverOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
         size, sliceCopyOp, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
@@ -46,7 +47,7 @@ private struct Compiler {
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
         AssignExp, BinAssignExp, BinExp, BlitExp, CallExp, CastExp,
-        CatAssignExp,
+        CatAssignExp, CatDcharAssignExp,
         CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
         DivExp, DotIdExp, DotVarExp, EqualExp, Expression,
@@ -65,6 +66,16 @@ private struct Compiler {
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
     private size_t[Type] _nativeStructTypeInfos;
+    // `TypeInfo_StaticArray`/`TypeInfo_Array`/`TypeInfo_Delegate` instances
+    // this backend emitted for a composite type dmd has no host-linked
+    // symbol for; see `nativeStaticArrayTypeInfo`/`nativeArrayTypeInfo`/
+    // `nativeDelegateTypeInfo`. A single map suffices because a `Type` is
+    // a static array, dynamic array, or delegate exclusively, never more
+    // than one.
+    private size_t[Type] _nativeCompositeTypeInfos;
+    // `_d_arrayappendcd`/`_d_arrayappendwd`, keyed by mangled symbol name;
+    // see `nativeDcharAppendFunction`.
+    private FuncDeclaration[string] _nativeDcharAppendFunctions;
     private Instruction[] _code;
     private uint _frameOffset;
     // The high-water mark of `_frameOffset` across the current function body.
@@ -266,7 +277,6 @@ private struct Compiler {
         uint sliceElementSize;
         bool sliceElementIsArray;
         bool isStaticSlice;
-        DynamicArrayLocal sliceDescriptor;
         Type sliceBaseType;
 
         this(
@@ -490,7 +500,23 @@ private struct Compiler {
         }
     }
 
+    // Registers `function_` in `Program.functions` and returns its index --
+    // the guest function-pointer value for `&function_`, uniform whether
+    // `function_` is VM-compiled or a native leaf. A native leaf (`fbody is
+    // null`; reached this way when its address is taken and later called
+    // indirectly, e.g. `core.internal.dassert`'s `assumeFakeAttributes`
+    // closing over a druntime hook like `GC.inFinalizer`) has no VM bytecode
+    // to lazily compile: its entry's `code` stays empty forever, and
+    // `nativeCallIndex` names a matching `Program.nativeCalls` entry that
+    // `Op.call`/`Op.callIndirect` dispatch through instead. That entry's
+    // `argumentOffsets` are this same call's own `ParameterLayout.offsets`
+    // -- the dense VM typed-frame layout a caller lays its argument bytes
+    // out in, whether or not the callee turns out to be native -- so
+    // `prepareNativeInvocation` reads each argument from where it actually
+    // is instead of assuming the uniform stride a direct native call's own
+    // argument area uses.
     private ushort registerFunction(FuncDeclaration function_) {
+        import quickbite.backends.bytecode.core.program: markScanned;
         import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 
         ensureFunctionBodySemantic(function_);
@@ -505,20 +531,58 @@ private struct Compiler {
             // compilation can append module slots. Reserve every representable
             // byte now so such appends cannot relocate raw module addresses.
             _program.moduleData.reserve(ushort.max);
+            // Module-level variables can hold guest pointer values (slice,
+            // class, or struct addresses); scan this segment like compiled D
+            // scans its own data segment's pointer fields. Marked after
+            // `reserve`, the only operation that can move this block.
+            markScanned(_program.moduleData);
         }
 
         const index = _functions.length;
         _functions ~= function_;
         _functionIndices[function_] = index;
         const layout = parameterLayout(function_);
+        const nativeCallIndex = function_.fbody is null
+            ? registerNativeCallTarget(function_, layout)
+            : noNativeCallIndex;
         _program.functions ~= CompiledFunction(
             null,
             0,
             layout.blockSize,
             functionResultType(function_),
             layout.hasThis,
+            nativeCallIndex,
         );
         return cast(ushort) index;
+    }
+
+    // Registers a native leaf's `Program.nativeCalls` entry for indirect
+    // dispatch: the same table `Op.nativeCall` already keys a direct call's
+    // callee by, so `Op.callIndirect`'s native-target branch reuses
+    // `callNative` verbatim rather than a parallel FFI path.
+    private size_t registerNativeCallTarget(
+        FuncDeclaration function_,
+        in ParameterLayout layout,
+    ) {
+        auto parameters =
+            function_.type.toBasetype.isTypeFunction.parameterList.parameters;
+        auto argumentTypes = new Type[parameters is null ? 0 : parameters.length];
+        if (parameters !is null)
+            foreach (i, parameter; *parameters)
+                argumentTypes[i] = cast(Type) parameter.type;
+
+        const nativeIndex = _program.nativeCalls.length;
+        _program.nativeCalls ~= NativeCall(
+            function_,
+            argumentTypes,
+            noReceiverOffset,
+            null,
+            noReceiverOffset,
+            null,
+            layout.offsets.dup,
+            layout.isReference.dup,
+        );
+        return nativeIndex;
     }
 
     private void compileStatement(Statement statement) {
@@ -1123,7 +1187,28 @@ private struct Compiler {
         ));
     }
 
+    // `if (__ctfe) { ctfeOnlyCode } else { runtimeCode }` (and DMD's
+    // semantic rewrite of `if (!__ctfe) runtimeCode else ctfeOnlyCode` into
+    // that same shape, statementsem.d): DMD's own semantic marks the
+    // `__ctfe` branch's scope `ctfeBlock` and, on that basis, skips setting
+    // lowerings such as `~=`'s `_d_arrayappendcTX` call inside it (`arr ~=
+    // e` inside `std.array.array`'s `if (__ctfe)` branch stays an
+    // unlowered `CatElemAssignExp`) -- DMD assumes a compiled, non-CTFE
+    // backend never executes that branch and so never needs it lowered.
+    // The bytecode core is such a backend: `__ctfe` always compiles to the
+    // constant `false` (the `VarExp` case above), so the `if (__ctfe)`
+    // branch is provably dead at bytecode-VM runtime. Skip compiling it
+    // instead of emitting a runtime branch over it, the same dead-code
+    // elimination every compiled backend applies to this idiom; compiling
+    // it would walk into druntime/Phobos statements DMD deliberately left
+    // unlowered for exactly this reason.
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
+        if (if_.isIfCtfeBlock) {
+            if (if_.elsebody !is null)
+                compileNestedStatement(if_.elsebody);
+            return;
+        }
+
         const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 
@@ -1943,14 +2028,14 @@ private struct Compiler {
     private void compileSwitchStatement(
         imported!"dmd.statement".SwitchStatement switch_,
     ) {
-        // DMD lowers a `string` switch to `object.__switch!(C, caseStrings...)`,
-        // whose call returns the matched case's table index (or -1), and rewrites
-        // its cases to those integer indices. Lower the selector ourselves to a
-        // string-equality chain producing that index, then the integer dispatch
-        // below handles the rest unchanged.
-        const selector = stringSwitchSelector(switch_.condition) !is null
-            ? compileStringSwitchSelector(switch_.condition.isCallExp)
-            : compileExpression(switch_.condition);
+        // DMD lowers a `string` switch to a call of
+        // `object.__switch!(C, caseStrings...)`, whose real D body (binary
+        // search over the case strings) returns the matched case's table
+        // index (or -1), and rewrites its cases to those integer indices.
+        // Compiling that call like any other expression call gives the same
+        // integer result compiled code gets from dmd's glue, so the dispatch
+        // below needs no separate handling for a string condition.
+        const selector = compileExpression(switch_.condition);
 
         // Jump over the body to the dispatch chain at the end.
         const entryJump = emitJump;
@@ -2009,81 +2094,6 @@ private struct Compiler {
             patchJump(index);
         _loopStack.length -= 1;
         _switchStack.length -= 1;
-    }
-
-    // The `object.__switch!(C, caseStrings...)` template instance behind a
-    // lowered string-switch condition, or null if the condition is not one.
-    // Its expression arguments are the case strings, indexed positionally.
-    private imported!"dmd.dtemplate".TemplateInstance stringSwitchSelector(
-        Expression condition,
-    ) {
-        import dmd.id: Id;
-
-        auto call = condition.isCallExp;
-        if (call is null)
-            return null;
-        auto variable = call.e1.isVarExp;
-        if (variable is null)
-            return null;
-        auto function_ = variable.var.isFuncDeclaration;
-        if (function_ is null)
-            return null;
-        auto instance = function_.parent.isTemplateInstance;
-        if (instance is null || instance.name !is Id.__switch)
-            return null;
-        return instance;
-    }
-
-    // Lower `object.__switch!(C, "s0", "s1", ...)(selector)` to a string-equality
-    // chain producing the matched case's table index (or -1) in an `int` slot:
-    // the integer dispatch then matches it against the cases' integer indices.
-    // The case strings are the template instance's expression arguments (the
-    // leading argument is the element type); their position is the index DMD
-    // assigned each rewritten `CaseStatement.exp`, so positional matching is
-    // exact regardless of the table's ordering.
-    private Operand compileStringSwitchSelector(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import dmd.dtemplate: isExpression;
-
-        auto instance = stringSwitchSelector(call);
-        auto selectorExpression = (*call.arguments)[0];
-        const compareWidth = dynamicArrayElementSize(selectorExpression.type);
-
-        const result = allocate(ScalarType.int_);
-        _code ~= Instruction(
-            Op.loadConstant, result, constantIndex(cast(ulong) -1), 4,
-        );
-
-        // The runtime switch value: an ordinary real descriptor, identical to
-        // every other string source, compares against each case string's own
-        // real descriptor via the generic `sliceEqualOp`.
-        const selector = dynamicArrayDescriptor(selectorExpression);
-
-        size_t[] matchedJumps;
-        int index = 0;
-        foreach (argument; *instance.tiargs) {
-            auto caseString =
-                isExpression(argument) is null ? null
-                : isExpression(argument).isStringExp;
-            if (caseString is null) // the leading element-type argument.
-                continue;
-
-            const matches = allocate(ScalarType.bool_);
-            const literalOffset = compileStringLiteralPointer(caseString);
-            emitSliceEqual(matches, selector.offset, literalOffset, compareWidth);
-            const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
-            _code ~= Instruction(
-                Op.loadConstant, result, constantIndex(cast(ulong) index), 4,
-            );
-            matchedJumps ~= emitJump;
-            patchJump(skip);
-            ++index;
-        }
-        foreach (jump; matchedJumps)
-            patchJump(jump);
-
-        return Operand(result, ScalarType.int_);
     }
 
     // A `case value:` label: record its body's instruction index for the
@@ -2754,12 +2764,31 @@ private struct Compiler {
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
         // `concatenateElemAssign`); whole-array `arr ~= other` arrives as the
-        // distinct CatAssignExp (`concatenateAssign`).
-        if (auto append = expression.isCatElemAssignExp)
-            return compileAppendElement(append);
+        // distinct CatAssignExp (`concatenateAssign`). Both carry a frontend
+        // lowering to `_d_arrayappendcTX`/`_d_arrayappendT`; compile that
+        // instead of hand-rolled append machinery. `CatDcharAssignExp`
+        // (`concatenateDcharAssign`) is a distinct EXP tag excluded by these
+        // checks; see `compileDcharAppend` for why it stays un-lowered.
+        if (auto append = expression.isCatElemAssignExp) {
+            if (append.lowering is null)
+                throw new Exception(text(
+                    "Unsupported append in bytecode core: ",
+                    expressionChars(append),
+                ));
+            return compileExpression(append.lowering);
+        }
 
-        if (auto concatenate = expression.isCatAssignExp)
-            return compileConcatenationAssign(concatenate);
+        if (auto concatenate = expression.isCatAssignExp) {
+            if (concatenate.lowering is null)
+                throw new Exception(text(
+                    "Unsupported concatenation assignment in bytecode core: ",
+                    expressionChars(concatenate),
+                ));
+            return compileExpression(concatenate.lowering);
+        }
+
+        if (auto dcharAppend = expression.isCatDcharAssignExp)
+            return compileDcharAppend(dcharAppend);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -2988,36 +3017,73 @@ private struct Compiler {
     }
 
     // `i++` on an integer local, struct field, or dereferenced pointer: copy
-    // the old value to the result slot, then add `e2` (the increment) to the
-    // lvalue's slot. Scoped to integer lvalues, matching compound assignment.
+    // the old value to the result slot, then add `e2` (the increment) and
+    // store it back. Scoped to integer lvalues, matching compound
+    // assignment. A sub-`int`-width lvalue (e.g. `core.internal.string`'s
+    // `TempStringNoAlloc._len++`, a `ubyte` field) is not itself a safe
+    // destination for the `addInt4`/`subInt4` opcodes -- those read and
+    // write a full 4 bytes, which would overrun a 1- or 2-byte frame slot --
+    // so the arithmetic runs on a freshly widened operand (the same
+    // sign-driven `int_`/`uint_` promotion `compileTruthValue` uses) and
+    // `storePlace` narrows the result back on the way in, exactly as
+    // `compileScalarIntegerCompoundAssign` already does for `+=` and its
+    // siblings.
     private Operand compilePostIncrement(PostExp post) {
         import dmd.tokens: EXP;
         import std.conv: text;
 
         auto place = placeOrNull(post.e1);
-        if (place is null || !isIntegerScalar(place.type))
+        if (place is null || !isCompoundIntegerScalar(place.type))
             throw new Exception(text(
                 "Unsupported post-increment in bytecode core: ",
                 expressionChars(post),
             ));
 
-        const lvalue = loadPlace(*place);
+        const original = loadPlace(*place);
         const result = allocate(place.type);
         _code ~= Instruction(
-            Op.copy, result, lvalue.offset, cast(ushort) size(place.type),
+            Op.copy, result, original.offset, cast(ushort) size(place.type),
         );
 
+        const operationType = size(place.type) < int.sizeof
+            ? (isSigned(place.type) ? ScalarType.int_ : ScalarType.uint_)
+            : place.type;
+        const lhs = integerOperationOperand(original, operationType);
+
         // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
-        // `minusMinus`) decides whether we add or subtract it.
+        // `minusMinus`) decides whether we add or subtract it. Unlike `lhs`
+        // above, it is read at its own narrow width rather than widened to
+        // `operationType`: `addInt4`/`subInt4`/`addInt8`/`subInt8` read a
+        // full-width operand, but any bytes above the narrow slot cannot
+        // affect `storePlace`'s truncating write-back below, since
+        // two's-complement add/sub mod 2^(8*width) depends only on the
+        // operands mod 2^(8*width). The pre-increment value this function
+        // returns is `result`, copied from `original` before this
+        // arithmetic runs, so it is unaffected either way.
         const increment = compileExpression(post.e2);
-        const eightByte = isEightByteInteger(place.type);
+        const eightByte = isEightByteInteger(operationType);
         const stepOp = post.op == EXP.minusMinus
             ? (eightByte ? Op.subInt8 : Op.subInt4)
             : (eightByte ? Op.addInt8 : Op.addInt4);
+        const destination = allocate(operationType);
         _code ~= Instruction(
-            stepOp, lvalue.offset, lvalue.offset, increment.offset,
+            stepOp, destination, lhs.offset, increment.offset,
         );
-        storePlace(*place, lvalue);
+        storePlace(*place, Operand(destination, operationType));
+
+        // `p++`/`p--` on a pointer local: DMD's own semantic already scales
+        // `post.e2` by the pointee's byte width (`dcast.d`'s `scaleFactor`,
+        // the same rewrite `AddExp`/`AddAssignExp` use for `p + n`/`p += n`),
+        // so `increment` above is already the right byte delta -- but the
+        // pre-increment VALUE this returns (`arr[i++]`'s old `i`, or here
+        // `_d_arraycatnTX`'s `memcpy(resptr++, ...)`) must keep carrying the
+        // pointer tag and element type a plain integer Operand drops,
+        // matching `compileScalarIntegerCompoundAssign`'s identical pointer
+        // branch for `p += n`.
+        if (place.isPointerValue)
+            return Operand(
+                result, place.type, true, place.pointerElement,
+            );
         return Operand(result, place.type);
     }
 
@@ -3451,15 +3517,12 @@ private struct Compiler {
                 _activeDollarLength = sliceLengthSlot(descriptorMetadata);
                 const indexValue = compileExpression(index.e2);
                 _activeDollarLength = savedDollarLength;
-                if (facts.isAggregate &&
-                    descriptorMetadata.elementIsArray &&
-                    index.type.toBasetype.ty == TY.Tsarray)
-                    return pointerPlace(
-                        innerArrayRowPointer(
-                            descriptorMetadata, indexValue.offset,
-                        ),
-                        index.type,
-                    );
+                // A `Tsarray` element (`int[2][]`'s `int[2]` rows) is the
+                // real D layout: stored inline, `T[N].sizeof`-strided, in
+                // the array's own backing store, so its address is the
+                // same base-plus-scaled-index computation `dynamicIndexPlace`
+                // already gives any other full-width aggregate element (a
+                // struct, say) -- no separate row descriptor to dereference.
                 return dynamicIndexPlace(
                     descriptorMetadata, indexValue.offset, index.type,
                 );
@@ -3480,21 +3543,22 @@ private struct Compiler {
                 return result;
             }
 
+            // The element metadata below is derived from `slice.e1`'s own
+            // TYPE, not from compiling it: `compileSliceInto` below is the
+            // one and only place this Place compiles `slice.e1` (via its
+            // own `dynamicArrayDescriptor` call). A second, separate
+            // `dynamicArrayDescriptor(slice.e1)` call here -- to read the
+            // same type-derived metadata off its returned
+            // `DynamicArrayLocal` -- would compile (and so evaluate)
+            // `slice.e1` a second time, silently double-running any side
+            // effect it carries (e.g. `"...".idup[lo .. hi]`, an
+            // allocating call).
             const pointerSlice = isPointerType(slice.e1.type);
-            auto descriptor = pointerSlice
-                ? DynamicArrayLocal.init
-                : dynamicArrayDescriptor(slice.e1);
             result.sliceElementType = pointerSlice
                 ? dynamicArrayElementType(slice.type)
-                : descriptor.elementType;
-            result.sliceElementIsArray = pointerSlice
-                ? arrayElementIsArray(slice.e1.type)
-                : descriptor.elementIsArray;
-            result.sliceElementSize = dynamicArrayElementSize(
-                slice.e1.type, result.sliceElementIsArray,
-            );
-            if (!pointerSlice)
-                result.sliceDescriptor = descriptor;
+                : dynamicArrayElementType(slice.e1.type);
+            result.sliceElementIsArray = arrayElementIsArray(slice.e1.type);
+            result.sliceElementSize = dynamicArrayElementSize(slice.e1.type);
             result.offset = allocateBytes(
                 sliceDescriptorSize, size_t.sizeof,
             );
@@ -3936,7 +4000,7 @@ private struct Compiler {
                 );
                 compileDynamicArrayInto(
                     result, dynamicArrayElementType(type), rhs,
-                    arrayElementIsArray(type),
+                    arrayElementIsDynamicArray(type),
                 );
                 return result;
             case delegate_:
@@ -3989,23 +4053,66 @@ private struct Compiler {
                 expressionChars(expression),
             ));
 
-        const kind = expression.type.toBasetype.ty;
-        if (kind == TY.Tsarray) {
-            auto place = placeOrNull(expression);
-            if (place is null) {
-                const elementType = dynamicArrayElementType(expression.type);
+        // `cast(T2[])x`: `placeOrNull` unwraps a cast transparently and
+        // resolves the INNER expression's own place (e.g. `x` itself an
+        // lvalue, or a pointer slice like `ptr[0 .. n]`), bypassing the
+        // cast, so an element-size-changing reinterpretation (`void[]` from
+        // `int[]`, the shape `gc_shrinkArrayUsed(ptr[0 .. n], ...)`'s
+        // implicit argument conversion takes) needs its own rescale here --
+        // the same one `compileCastExpression`/`compileDynamicArrayInto`
+        // apply when no place is available. `cast_.e1` a `Tsarray` (`x[]`'s
+        // desugaring, or `object.__equals`'s own `cast(T[])row` when a row
+        // pulled from a mixed static/dynamic array-of-arrays comparison
+        // needs a uniform element type) shares this path too: recursing
+        // into this function's own `Tsarray` case below already builds a
+        // real view over that static array's inline storage -- a `Tsarray`
+        // has no slice descriptor of its own to reconcile.
+        if (auto cast_ = expression.isCastExp)
+            if (isDynamicArrayArgument(cast_.e1) ||
+                isStringType(cast_.e1.type) ||
+                cast_.e1.type.toBasetype.ty == TY.Tsarray) {
+                const inner = dynamicArrayDescriptor(cast_.e1);
                 const elementIsArray = arrayElementIsArray(expression.type);
+                const elementType = dynamicArrayElementType(expression.type);
+                const targetElementSize =
+                    dynamicArrayElementSize(expression.type);
+                const sourceElementSize =
+                    dynamicArrayElementSize(cast_.e1.type);
+                if (targetElementSize == sourceElementSize)
+                    return DynamicArrayLocal(
+                        inner.offset, elementType, elementIsArray,
+                    );
+
                 const offset = allocateBytes(
                     sliceDescriptorSize, size_t.sizeof,
                 );
-                compileDynamicArrayInto(
-                    offset, elementType, expression, elementIsArray,
+                _code ~= Instruction(
+                    Op.copy, offset, inner.offset,
+                    cast(ushort) sliceDescriptorSize,
                 );
-                return DynamicArrayLocal(
-                    offset, elementType, elementIsArray,
+                rescaleReinterpretedSliceLength(
+                    offset, expression.type, cast_.e1.type,
                 );
+                return DynamicArrayLocal(offset, elementType, elementIsArray);
             }
-            const address = addressOfPlace(*place);
+
+        const kind = expression.type.toBasetype.ty;
+        if (kind == TY.Tsarray) {
+            auto place = placeOrNull(expression);
+            // An rvalue with no `Place` (a literal, or any other temporary
+            // with no lvalue location) is materialised through the same
+            // inline layout a variable's own storage has --
+            // `aggregateOperandOffset`, the shared static-array value path
+            // an lvalue's rows already share -- so the view built below
+            // sees identical bytes either way, with no separate per-row
+            // heap descriptors.
+            const address = place is null
+                ? *addressOperand(
+                    Op.frameAddress,
+                    aggregateOperandOffset(expression.type, expression),
+                    ScalarType.void_,
+                )
+                : addressOfPlace(*place);
             const offset = allocateBytes(
                 sliceDescriptorSize, size_t.sizeof,
             );
@@ -4053,7 +4160,8 @@ private struct Compiler {
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileDynamicArrayInto(
-            offset, elementType, expression, elementIsArray,
+            offset, elementType, expression,
+            arrayElementIsDynamicArray(expression.type),
         );
         return DynamicArrayLocal(offset, elementType, elementIsArray);
     }
@@ -4065,31 +4173,6 @@ private struct Compiler {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         emitLoadStringLiteral(offset, string_);
         return offset;
-    }
-
-    // Whether `expression`, after stripping any qualifier casts, is
-    // genuinely `string`-typed — a `string` value, not a mutable array
-    // (e.g. `char[]`) merely viewed through a `const`/`immutable` cast for a
-    // comparison. `wstring`/`dstring` are excluded, matching every other
-    // byte-stride-1 consumer (see `isCharStringType`): the outer (possibly
-    // cast) type alone cannot tell the two apart, since DMD's own
-    // comparison/assert lowering casts a `char[]` operand to `const(char)[]`
-    // just as it would a genuine `string`. Used only to pick a diagnostic's
-    // rendering (quoted text vs `[e0, e1, ...]`), never a representation.
-    private bool isGenuineCharString(Expression expression) {
-        if (auto cast_ = expression.isCastExp)
-            return isGenuineCharString(cast_.e1);
-
-        // A `VarExp` node's own `.type` can be narrowed to a `const` view at
-        // the reference site (DMD's `_d_assert_fail` argument passing does
-        // this for a mutable `char[]`, with no wrapping `CastExp` to unwrap)
-        // without touching the declaration's own type; consult that instead
-        // of the expression's.
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                return isCharStringType(declaration.type);
-
-        return isCharStringType(expression.type);
     }
 
     // Emit a string literal's bytes into a fresh literal block and an
@@ -4292,27 +4375,213 @@ private struct Compiler {
         return Operand(offset, ScalarType.ulong_, true, ScalarType.void_);
     }
 
+    // Any type dmd can produce a TypeInfo for (builtins, and any aggregate
+    // druntime or Phobos already instantiated) has that TypeInfo's real
+    // object linked into the running host process at the same address
+    // compiled D would read through `typeid`; resolve its symbol there
+    // first. A guest-only type's TypeInfo is a backend-emitted artefact
+    // that exists in no loaded image, so its symbol simply fails to
+    // resolve -- that failure is itself the signal to synthesise one.
+    //
+    // `Type.vtinfo` only populates once dmd's own semantic pass processes
+    // an actual source-level `typeid` naming that exact type. A basic
+    // scalar element reached only through a composite's own field --
+    // never itself a direct `typeid` operand -- can reach here with a
+    // null `vtinfo` even though its real host symbol exists (dmd's own
+    // codegen fills this gap in a later backend pass, `glue/todt.d`'s
+    // `TypeInfo_toObjFile`, that this frontend-only project never runs).
+    // Forcing `vtinfo` population by calling dmd's `genTypeInfo` directly
+    // from here corrupts the host process's own GC heap (dmd `Scope`
+    // pooling is not safe to drive mid-compilation this way), so resolve
+    // a basic type's host TypeInfo the same way `hostBasicTypeInfoAddress`
+    // does instead: a real `typeid` expression in this module's own host
+    // D code, which links against the identical druntime the guest
+    // program does, reaching the same singleton without touching dmd's
+    // declaration machinery at all. A composite element (nested array,
+    // struct, delegate) recurses back into this same two-source
+    // resolution through its own dedicated synthesiser below.
     private size_t nativeTypeInfoAddress(Type type) {
-        import dmd.astenums: TY;
+        import quickbite.ffi.ffi: resolveDataSymbol;
 
         if (type is null)
             return 0;
-        if (type.toBasetype.isTypeStruct !is null)
+        if (auto declaration = type.vtinfo)
+            if (auto address = resolveDataSymbol(declaration))
+                return cast(size_t) address;
+        if (auto address = hostBasicTypeInfoAddress(type))
+            return address;
+        auto basetype = type.toBasetype;
+        if (basetype.isTypeStruct !is null)
             return nativeStructTypeInfo(type);
-        if (type.toBasetype.ty == TY.Tint32)
-            return cast(size_t) cast(void*) typeid(int);
+        if (basetype.isTypeSArray !is null)
+            return nativeStaticArrayTypeInfo(type);
+        if (basetype.isTypeDArray !is null)
+            return nativeArrayTypeInfo(type);
+        if (basetype.isTypeDelegate !is null)
+            return nativeDelegateTypeInfo(type);
         return 0;
     }
 
+    // The real host druntime TypeInfo instance for a basic scalar type
+    // (`bool`, the integrals, the character types, the floating-point
+    // types): dmd's own `builtinTypeInfo` (`typinf.d`) recognises these as
+    // needing no per-type codegen for the same reason -- the host
+    // druntime library always carries a real symbol for them, regardless
+    // of whether dmd's frontend ever created a `TypeInfoDeclaration` for
+    // this particular `Type` object. A host-side `typeid` expression on
+    // the matching built-in D type reaches that exact singleton.
+    private size_t hostBasicTypeInfoAddress(Type type) {
+        import dmd.astenums: TY;
+        import object: TypeInfo;
+
+        TypeInfo result;
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool: result = typeid(bool); break;
+            case Tint8: result = typeid(byte); break;
+            case Tuns8: result = typeid(ubyte); break;
+            case Tint16: result = typeid(short); break;
+            case Tuns16: result = typeid(ushort); break;
+            case Tint32: result = typeid(int); break;
+            case Tuns32: result = typeid(uint); break;
+            case Tint64: result = typeid(long); break;
+            case Tuns64: result = typeid(ulong); break;
+            case Tchar: result = typeid(char); break;
+            case Twchar: result = typeid(wchar); break;
+            case Tdchar: result = typeid(dchar); break;
+            case Tfloat32: result = typeid(float); break;
+            case Tfloat64: result = typeid(double); break;
+            case Tfloat80: result = typeid(real); break;
+            default: return 0;
+        }
+        return cast(size_t) cast(void*) result;
+    }
+
+    // The element/return type's own TypeInfo address, resolved through the
+    // same two-source rule (`nativeTypeInfoAddress`) recursively, for a
+    // composite TypeInfo field that must hold one (`TypeInfo_StaticArray`/
+    // `TypeInfo_Array.value`, `TypeInfo_Delegate.next`). Neither the
+    // element type nor the composite one is necessarily the direct operand
+    // of a source-level `typeid`, so the diagnostic is built from the
+    // element type itself rather than from an enclosing `TypeidExp`.
+    private size_t elementTypeInfoAddress(Type elementType) {
+        import std.conv: text;
+
+        const address = nativeTypeInfoAddress(elementType);
+        if (address == 0)
+            throw new Exception(text(
+                "Unsupported typeid in bytecode core: typeid(",
+                typeChars(elementType),
+                ")",
+            ));
+        return address;
+    }
+
+    // Emit a TypeInfo_Array for a `T[]` element type with no host-linked
+    // symbol, the way any D backend's codegen would: `value` is the
+    // element type's own TypeInfo, matching dmd's
+    // glue/todt.d `visit(TypeInfoArrayDeclaration)`.
+    private size_t nativeArrayTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_Array;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        const elementAddress =
+            elementTypeInfoAddress(type.toBasetype.isTypeDArray.next);
+        auto result = new TypeInfo_Array;
+        result.value = cast(TypeInfo) cast(void*) elementAddress;
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
+    }
+
+    // Emit a TypeInfo_StaticArray for a `T[N]` element type with no
+    // host-linked symbol, the way any D backend's codegen would: `value`
+    // is the element type's own TypeInfo and `len` is `N`, matching dmd's
+    // glue/todt.d `visit(TypeInfoStaticArrayDeclaration)`.
+    private size_t nativeStaticArrayTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_StaticArray;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        const elementAddress =
+            elementTypeInfoAddress(type.toBasetype.isTypeSArray.next);
+        auto result = new TypeInfo_StaticArray;
+        result.value = cast(TypeInfo) cast(void*) elementAddress;
+        result.len = staticArrayLength(type);
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
+    }
+
+    // Emit a TypeInfo_Delegate for a delegate type with no host-linked
+    // symbol, the way any D backend's codegen would: `next` is the
+    // delegate's return type TypeInfo and `deco` is the delegate type's
+    // own mangled name, matching dmd's
+    // glue/todt.d `visit(TypeInfoDelegateDeclaration)`.
+    private size_t nativeDelegateTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_Delegate;
+        import std.string: fromStringz;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        auto delegateType = type.toBasetype.isTypeDelegate;
+        const returnAddress =
+            elementTypeInfoAddress(delegateType.next.nextOf);
+        auto result = new TypeInfo_Delegate;
+        result.next = cast(TypeInfo) cast(void*) returnAddress;
+        result.deco = delegateType.deco.fromStringz.idup;
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
+    }
+
+    // Emit a TypeInfo_Struct for a struct with no host-linked symbol, the
+    // way any D backend's codegen would: the struct's real default-value
+    // bytes (via dmd's own `defaultInitLiteral`, the same source
+    // `compileStructDeclaration` uses for a bare `S s;`), its dmd-computed
+    // size and alignment, its mangled type name, and whether the GC needs
+    // to scan it. Method pointers (`xtoHash`, `xopEquals`, `xopCmp`,
+    // `xtoString`, `xdtor`, `xpostblit`) stay null; nothing in the
+    // bytecode core calls them yet.
     private size_t nativeStructTypeInfo(Type type) {
         import object: TypeInfo, TypeInfo_Struct;
+        import dmd.common.outbuffer: OutBuffer;
+        import dmd.mangle: mangleToBuffer;
+        import dmd.typesem: defaultInitLiteral, hasPointers;
 
         if (auto existing = type in _nativeStructTypeInfos)
             return *existing;
 
+        auto structType = type.toBasetype.isTypeStruct;
+
         auto result = new TypeInfo_Struct;
         result.m_init = new ubyte[typeFacts(type).byteWidth];
         result.m_align = typeFacts(type).alignment;
+        // `StructFlags.hasPointers` is the first (and so default-`.init`)
+        // enum member: an unset field would misreport `hasPointers` for
+        // types dmd knows carry no indirections, so both arms must assign.
+        result.m_flags = hasPointers(type.toBasetype)
+            ? TypeInfo_Struct.StructFlags.hasPointers
+            : cast(TypeInfo_Struct.StructFlags) 0;
+
+        OutBuffer nameBuffer;
+        mangleToBuffer(type.toBasetype, nameBuffer);
+        result.mangledName = nameBuffer[].idup;
+
+        auto literal = structType
+            .defaultInitLiteral(structType.sym.loc)
+            .isStructLiteralExp;
+        writeStructLiteralFieldBytes(literal, cast(ubyte[]) result.m_init);
+
         _program.nativeTypeInfos ~= cast(TypeInfo) result;
         const address = cast(size_t) cast(void*) result;
         _nativeStructTypeInfos[type] = address;
@@ -5340,25 +5609,26 @@ private struct Compiler {
             return true;
         }
 
-        // A postblit-bearing static-array copy is represented by DMD as a
-        // call. Intercept it before resolving ordinary aggregate places:
-        // CallExp places denote their result temporary, whereas this helper
-        // must run the element postblits as part of constructing `offset`.
-        if (compileArrayConstructor(offset, type, source))
-            return true;
-
         // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
         // from the source static array's inline slot into the destination's.
-        if (auto sourcePlace = placeOrNull(source)) {
-            const sourceValue = loadPlace(*sourcePlace);
-            _code ~= Instruction(
-                Op.copy,
-                offset,
-                sourceValue.offset,
-                cast(ushort) totalSize,
-            );
-            return true;
-        }
+        // Scoped to a genuinely `Tsarray`-typed source: `resolvePlace`'s own
+        // `CallExp` handling also resolves a Place for a call returning an
+        // aggregate `Tarray` (a 16-byte `{length, ptr}` descriptor, e.g.
+        // `_d_arrayctor`'s return value below) -- reading `totalSize`
+        // (this destination's own, much wider, byte count) from that
+        // 16-byte value would copy past it into whatever memory follows.
+        if (source.type !is null &&
+            source.type.toBasetype.ty == TY.Tsarray)
+            if (auto sourcePlace = placeOrNull(source)) {
+                const sourceValue = loadPlace(*sourcePlace);
+                _code ~= Instruction(
+                    Op.copy,
+                    offset,
+                    sourceValue.offset,
+                    cast(ushort) totalSize,
+                );
+                return true;
+            }
 
         if (auto literal = arrayLiteralOf(source)) {
             compileStaticArrayLiteral(offset, type, literal);
@@ -5373,6 +5643,21 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) totalSize,
             );
+            return true;
+        }
+
+        // A postblit- or copy-constructor-bearing static-array copy (`const
+        // S[2] a = b;`) lowers to a call (`core.internal.array.construction.
+        // _d_arrayctor(a[], b[])`) whose own result type is a plain dynamic
+        // array, not this destination's `Tsarray` type -- the only shape
+        // that reaches this deep with a `CallExp` source. `a[]` is a slice
+        // view over `offset`'s own storage (the same real-address view
+        // `dynamicArrayDescriptor` builds for any static-array lvalue), so
+        // compiling the call for its side effect writes the constructed
+        // elements straight through into `offset`; its returned descriptor
+        // is discarded, matching dmd's own codegen, which never uses it.
+        if (auto call = source.isCallExp) {
+            compileExpression(call);
             return true;
         }
 
@@ -5421,101 +5706,6 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) elementSize,
             );
-    }
-
-    // Intercept DMD's `_d_arrayctor(dest[], src[], null)` lowering of a
-    // static-array copy whose element type has a postblit: block-copy the source
-    // into `destination`, then run the element postblit on each copied element
-    // (`this(this)` increments the test's postblit counter once per element).
-    // False if `source` is not a `_d_arrayctor` call.
-    private bool compileArrayConstructor(
-        in ushort destination,
-        Type arrayType,
-        Expression source,
-    ) {
-        auto call = source.isCallExp;
-        if (call is null)
-            return false;
-        auto function_ = callFunction(call);
-        if (function_ is null || function_.ident is null ||
-            function_.ident.toString != "_d_arrayctor")
-            return false;
-        if (call.arguments is null || call.arguments.length < 2)
-            return false;
-
-        auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = typeFacts(elementType).byteWidth;
-        const count = typeFacts(arrayType).byteWidth / elementSize;
-
-        // The source argument is `cast(T[])sourceArray`; the static-array base
-        // is under the cast.
-        auto sourceArray = (*call.arguments)[1];
-        while (auto cast_ = sourceArray.isCastExp)
-            sourceArray = cast_.e1;
-        auto sourcePlace = placeOrNull(sourceArray);
-        if (sourcePlace is null)
-            return false;
-        const sourceValue = loadPlace(*sourcePlace);
-
-        _code ~= Instruction(
-            Op.copy, destination, sourceValue.offset,
-            cast(ushort) (count * elementSize),
-        );
-
-        auto postblit = structDeclarationOf(elementType).postblit;
-        if (postblit !is null)
-            foreach (i; 0 .. count)
-                runStructMethod(
-                    cast(ushort) (destination + i * elementSize), postblit,
-                );
-        return true;
-    }
-
-    // `__ArrayDtor(arr[lo .. hi])`: run the element destructor on each element
-    // of a static array's inline block (`source` / `copy` going out of scope),
-    // in reverse element order (matching DMD), so each `~this()` runs once.
-    private Operand compileArrayDtor(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length != 1)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto slice = (*call.arguments)[0].isSliceExp;
-        if (slice is null)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto arrayPlace = placeOrNull(slice.e1);
-        if (arrayPlace is null)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-        const arrayAddress = addressOfPlace(*arrayPlace);
-
-        auto arrayType = slice.e1.type;
-        auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = typeFacts(elementType).byteWidth;
-        const count = typeFacts(arrayType).byteWidth / elementSize;
-
-        auto dtor = structDeclarationOf(elementType).dtor;
-        if (dtor !is null)
-            foreach_reverse (i; 0 .. count)
-                runStructMethodAtAddress(
-                    pointerPlaceAddress(
-                        arrayAddress.offset,
-                        compileSizeConstant(i * elementSize),
-                        1,
-                        ScalarType.void_,
-                    ).offset,
-                    dtor,
-                );
-        return Operand.init;
     }
 
     // A struct `S` local occupies `Type.size()` inline frame bytes at its
@@ -5577,9 +5767,7 @@ private struct Compiler {
         // declaration's own storage, immediately followed by running the
         // postblit on it. Block-copy the blit's right-hand side into this
         // declaration's offset (already registered as struct metadata
-        // above), then run the postblit, mirroring
-        // `compileArrayConstructor`'s identical `_d_arrayctor` handling for
-        // a static array of postblit elements.
+        // above), then run the postblit.
         if (auto call = source.isCallExp)
             if (auto dot = call.e1.isDotVarExp) {
                 // The receiver is `__copytmp = t`, which -- since
@@ -5613,6 +5801,23 @@ private struct Compiler {
                             }
                         }
             }
+
+        // `S dest = cond ? a : b`: neither arm need be a Place on its own (a
+        // struct-typed ternary is not itself an lvalue merely because both
+        // arms are), so branch here and block-copy each arm's own value into
+        // the declared slot directly -- the same destination-directed shape
+        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
+        // arrays.
+        if (auto conditional = source.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const falseJump = emitJumpIfFalse(condition);
+            compileStructValueInto(offset, variable.type, conditional.e1);
+            const endJump = emitJump;
+            patchJump(falseJump);
+            compileStructValueInto(offset, variable.type, conditional.e2);
+            patchJump(endJump);
+            return;
+        }
 
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
@@ -5649,6 +5854,55 @@ private struct Compiler {
         throw new Exception(text(
             "Unsupported struct initializer in bytecode core: ",
             declarationChars(variable),
+        ));
+    }
+
+    // One arm of a struct-typed ternary (`compileStructDeclaration`'s CondExp
+    // arm above): block-copy `source`'s value into `offset` directly, rather
+    // than resolving it through Place first, since an arm need not be a Place
+    // on its own (a string-literal arm in the dynamic-array analogue is the
+    // same shape). `structValueOffsetOrNull` already unwraps a CommaExp
+    // source itself, so only the struct-literal and default-init shapes need
+    // their own arm here.
+    private void compileStructValueInto(
+        in ushort offset, Type type, Expression source,
+    ) {
+        import std.conv: text;
+
+        source = initializerExpression(source);
+
+        if (auto literal = source.isStructLiteralExp) {
+            compileStructLiteralInto(offset, literal);
+            return;
+        }
+
+        if (auto sourceOffset = structValueOffsetOrNull(source)) {
+            _code ~= Instruction(
+                Op.copy, offset, *sourceOffset,
+                cast(ushort) typeFacts(type).byteWidth,
+            );
+            return;
+        }
+
+        // `S.init` (DMD's init-symbol VarExp): materialise its real default
+        // bytes, matching compileStructDeclaration's own VarExp fallback.
+        if (source.isVarExp !is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            auto defaultLiteral = type.toBasetype.isTypeStruct
+                .defaultInitLiteral(source.loc).isStructLiteralExp;
+            if (defaultLiteral !is null) {
+                compileStructLiteralInto(offset, defaultLiteral);
+                return;
+            }
+
+            if (compileDefaultStructFields(offset, structDeclarationOf(type)))
+                return;
+        }
+
+        throw new Exception(text(
+            "Unsupported struct ternary arm in bytecode core: ",
+            expressionChars(source),
         ));
     }
 
@@ -5771,7 +6025,7 @@ private struct Compiler {
             if (fieldType.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
-                    arrayElementIsArray(fieldType),
+                    arrayElementIsDynamicArray(fieldType),
                 );
                 continue;
             }
@@ -5999,6 +6253,41 @@ private struct Compiler {
             return compileExpression(expression);
         if (auto address = placeAddressOrNull(expression))
             return *address;
+        // A postblit call whose receiver is itself a first-write
+        // construction (`(this.payload = c).__postblit()`, druntime
+        // `emplaceRef`'s generated `S.this()`) arrives as a
+        // ConstructExp/BlitExp, not a plain lvalue: DMD emits this shape
+        // whenever a struct-typed field or local is initialised and then
+        // immediately postblitted. `placeAddressOrNull` above declines it
+        // (a Construct/BlitExp is not a place), so without this the
+        // fallback below reads only the assigned VALUE (`aggregateValueOffset`
+        // -> `structOperandOffset` -> `initializerExpression` strips the
+        // destination) and hands the caller a disconnected temporary -- a
+        // wrapping postblit call then mutates that temporary instead of the
+        // real field/local. Blit the source into the real destination's
+        // storage and return its address instead, restricted to the lvalue
+        // shapes DMD is known to emit here (matching the identical
+        // whitelist `compileExpression`'s statement-level ConstructExp/
+        // BlitExp dispatch already uses).
+        if (auto construct = expression.isConstructExp)
+            if (construct.e1.isDotVarExp !is null ||
+                construct.e1.isVarExp !is null ||
+                construct.e1.isSliceExp !is null ||
+                construct.e1.isThisExp !is null ||
+                construct.e1.isIndexExp !is null)
+                if (auto destination = placeOrNull(construct.e1)) {
+                    storeExpressionIntoPlace(*destination, construct.e2);
+                    return addressOfPlace(*destination);
+                }
+        if (auto blit = expression.isBlitExp)
+            if (blit.e1.isDotVarExp !is null ||
+                blit.e1.isVarExp !is null ||
+                blit.e1.isSliceExp !is null ||
+                blit.e1.isThisExp !is null)
+                if (auto destination = placeOrNull(blit.e1)) {
+                    storeExpressionIntoPlace(*destination, blit.e2);
+                    return addressOfPlace(*destination);
+                }
         if (expression.type !is null &&
             typeFacts(expression.type).isAggregate) {
             const value = aggregateValueOffset(
@@ -6219,18 +6508,37 @@ private struct Compiler {
     // The frame index (an absolute `stack[]` slot, offset by `capturedOffset`)
     // of a captured variable declared in `owner`'s own frame, read or written
     // from the function currently being compiled.
-    //
-    // A call site always hands a callee its own live frame as that callee's
-    // received context (`compileCall`'s `Op.frameBaseIndex`), matching real D:
-    // a nested function's context is its immediate enclosing function's frame,
-    // never a further ancestor's. So the current function's own received
-    // context (`_nestedContextOffset`) is exactly one hop -- its immediate
-    // enclosing function's frame -- which is `owner` only for a single level
-    // of nesting. When `owner` sits further up, each intermediate ancestor's
-    // own received context is a further hop: it lives at that ancestor's own
-    // `nestedContextOffset` within the frame just reached, and that frame is
-    // still live on the stack as the current call's (transitive) caller.
     private ushort capturedFrameIndex(in FuncDeclaration owner, in ushort capturedOffset) {
+        const contextBase = enclosingFrameBase(owner);
+        const sourceIndex =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const offsetConstant = compileSizeConstant(capturedOffset);
+        _code ~= Instruction(
+            Op.addInt8, sourceIndex, contextBase, offsetConstant,
+        );
+        return sourceIndex;
+    }
+
+    // A slot holding enclosing function `owner`'s live frame base index,
+    // reached from the function currently being compiled.
+    //
+    // A call site hands a callee its LEXICAL parent's live frame as that
+    // callee's received context (`compileCall`'s nested-context hand-off) --
+    // the caller's own frame exactly when the caller is that parent --
+    // matching real D: a nested function's context is its immediate lexically
+    // enclosing function's frame, never its physical caller's. So the current
+    // function's own received context (`_nestedContextOffset`) is exactly one
+    // hop -- its immediate enclosing function's frame -- which is `owner`
+    // only for a single level of nesting. When `owner` sits further up, each
+    // intermediate ancestor's own received context is a further hop: it lives
+    // at that ancestor's own `nestedContextOffset` within the frame just
+    // reached. The hops hold however the callee was physically reached, as
+    // long as every hand-off on the way relayed a lexical-parent frame.
+    // `compileCall`'s direct-call hand-off does; delegate creation
+    // (`delegateContextOffset`) and callers whose own context is
+    // `this`-derived still hand the creator's frame, so a walk relayed
+    // through those can still misresolve.
+    private ushort enclosingFrameBase(in FuncDeclaration owner) {
         import std.conv: text;
 
         ushort contextBase =
@@ -6266,7 +6574,7 @@ private struct Compiler {
                 // cannot forward a further hop; this shape is not modelled.
                 if (!ancestorLayout.hasNestedContext)
                     throw new Exception(text(
-                        "Unsupported multi-level captured-variable access ",
+                        "Unsupported multi-level nested-frame walk ",
                         "in bytecode core: `",
                         ancestor.ident is null ? "" : ancestor.ident.toString,
                         "` has no relayable nested-function context",
@@ -6290,13 +6598,7 @@ private struct Compiler {
                 );
             }
         }
-        const sourceIndex =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const offsetConstant = compileSizeConstant(capturedOffset);
-        _code ~= Instruction(
-            Op.addInt8, sourceIndex, contextBase, offsetConstant,
-        );
-        return sourceIndex;
+        return contextBase;
     }
 
     private void emitNullClassReferenceCheck(
@@ -6558,11 +6860,11 @@ private struct Compiler {
             return existing;
 
         const elementType = dynamicArrayElementType(field.type);
-        const elementIsArray = arrayElementIsArray(field.type);
 
         size_t count;
         auto literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-            normalized, elementType, elementIsArray, field.type, count,
+            normalized, elementType, arrayElementIsDynamicArray(field.type),
+            field.type, count,
         );
         if (literalBytes is null && count == 0)
             return null;
@@ -6621,7 +6923,7 @@ private struct Compiler {
                 destination,
                 dynamicArrayElementType(field.type),
                 valueExpression,
-                arrayElementIsArray(field.type),
+                arrayElementIsDynamicArray(field.type),
             );
             emitPointerStore(
                 destination, fieldPointer, compileSizeConstant(0),
@@ -6661,7 +6963,7 @@ private struct Compiler {
                     fieldOffset,
                     dynamicArrayElementType(field.type),
                     (*arguments)[index],
-                    arrayElementIsArray(field.type),
+                    arrayElementIsDynamicArray(field.type),
                 );
                 continue;
             }
@@ -6751,22 +7053,6 @@ private struct Compiler {
         runConstructor(base, function_, null);
     }
 
-    private void runStructMethodAtAddress(
-        in ushort address,
-        FuncDeclaration function_,
-    ) {
-        const index = registerFunction(function_);
-        const layout = parameterLayout(function_);
-        const argumentArea = allocateBytes(layout.blockSize, 8);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) (argumentArea + layout.thisOffset),
-            address,
-            cast(ushort) size_t.sizeof,
-        );
-        _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
-    }
-
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
     // the literal length to match N, so the copy fills the whole slot.
     private void loadStaticString(
@@ -6803,6 +7089,7 @@ private struct Compiler {
 
         const elementType = dynamicArrayElementType(variable.type);
         const elementIsArray = arrayElementIsArray(variable.type);
+        const elementIsDynamicArray = arrayElementIsDynamicArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         registerFrameDeclaration(variable).dynamicArray =
             DynamicArrayLocal(offset, elementType, elementIsArray);
@@ -6834,9 +7121,17 @@ private struct Compiler {
                     .dynamicArray.staticArrayOffset = address.offset;
             }
         compileDynamicArrayInto(
-            offset, elementType, source, elementIsArray);
+            offset, elementType, source, elementIsDynamicArray);
     }
 
+    // `elementIsArray`: true only when each element of the array being built
+    // is itself a genuine dynamic array (`int[][]`'s `int[]` rows), needing
+    // its own separately heap-allocated 16-byte descriptor
+    // (`arrayElementIsDynamicArray`). A `Tsarray` element (`int[2][]`'s
+    // `int[2]` rows) is the real D layout instead: stored inline,
+    // `T[N].sizeof`-strided, so it takes the same generic full-width-block
+    // path below every other aggregate element (a struct, say) already
+    // takes.
     private void compileDynamicArrayInto(
         in ushort destination,
         in ScalarType elementType,
@@ -6869,7 +7164,7 @@ private struct Compiler {
                     destination, elementType, cast_.e1, elementIsArray,
                 );
                 rescaleReinterpretedSliceLength(
-                    destination, elementType, elementIsArray, cast_.e1.type,
+                    destination, cast_.to, cast_.e1.type,
                 );
                 return;
             }
@@ -6887,19 +7182,20 @@ private struct Compiler {
                 return;
             }
 
-        // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
-        // default-filled block of `length` (a runtime size_t) elements; the
-        // multidimensional form also fills each element with a fresh inner array.
+        // `dest = new T[](length)` / `new T[][](rows, cols)`: DMD lowers this
+        // to a call to `_d_newarrayT!T`/`_d_newarraymTX!(...)` (`.lowering`),
+        // which does the real GC allocation and default-init fill; compile
+        // that call and copy its 16-byte slice-descriptor result in.
         if (auto new_ = source.isNewExp) {
-            compileNewArrayInto(destination, elementType, new_, elementIsArray);
-            return;
-        }
-
-        // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
-        // a fresh heap block, so mutating either side leaves the other intact.
-        if (auto duplicate = tryArrayDuplication(source)) {
-            compileArrayDuplication(
-                destination, elementType, duplicate, elementIsArray,
+            if (new_.lowering is null)
+                throw new Exception(text(
+                    "Unsupported new array in bytecode core: ",
+                    expressionChars(new_),
+                ));
+            const result = compileExpression(new_.lowering);
+            _code ~= Instruction(
+                Op.copy, destination, result.offset,
+                cast(ushort) sliceDescriptorSize,
             );
             return;
         }
@@ -6911,10 +7207,25 @@ private struct Compiler {
             return;
         }
 
-        // `dest = a ~ b` (concatenation): build a fresh heap block holding both
-        // operands' elements, leaving the originals untouched.
+        // `dest = a ~ b` (concatenation): DMD lowers a chain of `~` to one
+        // n-ary `_d_arraycatnTX!(...)` call (`.lowering`), which does the
+        // real GC allocation and element copy; compile that call and copy
+        // its 16-byte slice-descriptor result in. A fully-literal
+        // concatenation (e.g. two string literals) is constant-folded by
+        // DMD's own `Expression.optimize` before this point, replacing the
+        // `CatExp` node itself with a plain literal, so `.lowering` is
+        // always populated on any `CatExp` actually reaching here.
         if (auto cat = source.isCatExp) {
-            compileCatInto(destination, elementType, cat);
+            if (cat.lowering is null)
+                throw new Exception(text(
+                    "Unsupported concatenation in bytecode core: ",
+                    expressionChars(cat),
+                ));
+            const result = compileExpression(cat.lowering);
+            _code ~= Instruction(
+                Op.copy, destination, result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
             return;
         }
 
@@ -6989,8 +7300,7 @@ private struct Compiler {
             source.type.toBasetype.ty == TY.Tsarray)
             if (auto place = placeOrNull(source)) {
                 const dim = staticArrayLength(source.type);
-                const elementSize =
-                    dynamicArrayElementSize(source.type, elementIsArray);
+                const elementSize = dynamicArrayElementSize(source.type);
                 _code ~= Instruction(
                     Op.allocArray,
                     destination,
@@ -7053,24 +7363,74 @@ private struct Compiler {
 
         const count = literal.elements is null ? 0 : literal.elements.length;
 
-        // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
-        // each element is itself an array, stored as a 16-byte descriptor.
-        // Build each inner array into a fresh descriptor slot and store it
-        // into the outer block. A row is itself an array-of-arrays (depth 3
-        // and beyond, e.g. `int[][][]`'s `int[][]` rows) when *its own*
-        // element is an array too -- checked fresh per recursive call
-        // rather than reusing the caller's `elementIsArray`, since that
-        // flag describes this level's rows, not the row's own elements.
-        if (elementIsArray) {
+        // An empty literal (`T[] a = [];`) allocates nothing: DMD's own
+        // GC-usage pass (`nogc.d`'s `NOGCVisitor.visit(ArrayLiteralExp)`)
+        // never calls into `lowerArrayLiteral` for `dim == 0`, leaving
+        // `.lowering` null, so a bare null descriptor is both the only
+        // available value and the correct one.
+        if (count == 0) {
+            _code ~= Instruction(Op.nullSlice, destination);
+            return;
+        }
+
+        const width = elementIsArray
+            ? sliceDescriptorSize : dynamicArrayElementSize(source.type);
+
+        // `.lowering` carries the `_d_arrayliteralTX!T(dim)` allocation
+        // call: the real `GC.malloc` (needing T's TypeInfo), matching every
+        // other allocating array operation this core compiles from its
+        // frontend lowering. It only allocates the backing block -- element
+        // values are stored below, mirroring dmd's own codegen split
+        // (`glue/e2ir.d`'s `visitArrayLiteral`, which fills the elements
+        // itself after calling the same hook). DMD's own GC-usage pass
+        // (`nogc.d`) leaves it null in two known cases, mirrored by falling
+        // back to the same heap-backed block this core already builds for
+        // other inline array shapes with no druntime hook of their own
+        // (e.g. boxing a `Tsarray` row): an `onstack` literal, one its
+        // escape analysis proved never outlives this expression (e.g. used
+        // only as a transient comparison operand), whose own codegen
+        // materialises the elements directly with no GC call either
+        // (`glue/e2ir.d`'s `ExpressionsToStaticArray` branch); and a struct
+        // field's default-value literal (`Inner[] values = [Inner(f())];`),
+        // semantically analysed once at the field declaration itself,
+        // outside any function scope -- `nogc.d`'s `checkGC` bails out
+        // early whenever `sc.func is null`, so this literal never runs
+        // through the pass that would populate `.lowering`, regardless of
+        // which function later constructs a value from it.
+        if (literal.lowering !is null) {
+            const allocation = compileExpression(literal.lowering);
             _code ~= Instruction(
-                Op.allocArray,
-                destination,
-                cast(ushort) sliceDescriptorSize,
+                Op.copy, cast(ushort) sliceDescriptorPtrOffset(destination),
+                allocation.offset, cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.loadConstant,
+                cast(ushort) sliceDescriptorLengthOffset(destination),
+                constantIndex(count),
+                cast(ushort) size_t.sizeof,
+            );
+        } else {
+            _code ~= Instruction(
+                Op.allocArray, destination, cast(ushort) width,
                 cast(ushort) count,
             );
+        }
 
-            const rowElementIsArray =
-                arrayElementIsArray(source.type.toBasetype.nextOf);
+        // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
+        // each element is itself a genuine dynamic array, stored as a
+        // 16-byte descriptor. Build each inner array into a fresh
+        // descriptor slot and store it into the outer block. A row is
+        // itself an array-of-arrays (depth 3 and beyond, e.g. `int[][][]`'s
+        // `int[][]` rows) when *its own* element is a dynamic array too --
+        // checked fresh per recursive call rather than reusing the caller's
+        // `elementIsArray`, since that flag describes this level's rows,
+        // not the row's own elements. A `Tsarray` row (`int[2][]`) is not
+        // this shape -- it falls to the generic full-width-block path
+        // below, laid out inline like any other aggregate element.
+        if (elementIsArray) {
+            const rowElementIsArray = arrayElementIsDynamicArray(
+                source.type.toBasetype.nextOf,
+            );
             foreach (elementIndex; 0 .. count) {
                 const inner =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -7084,22 +7444,13 @@ private struct Compiler {
             return;
         }
 
-        const elementSize =
-            dynamicArrayElementSize(source.type, elementIsArray);
-        _code ~= Instruction(
-            Op.allocArray,
-            destination,
-            cast(ushort) elementSize,
-            cast(ushort) count,
-        );
-
         foreach (elementIndex; 0 .. count) {
             auto element = (*literal.elements)[elementIndex];
             const value = element.type.toBasetype.ty == TY.Tstruct
                 ? Operand(structOperandOffset(element), ScalarType.void_)
                 : compileExpression(element);
             const index = compileSizeConstant(elementIndex);
-            emitIndexStore(value.offset, destination, index, elementSize);
+            emitIndexStore(value.offset, destination, index, width);
         }
     }
 
@@ -7107,31 +7458,20 @@ private struct Compiler {
     // element-size-changing cast rescales the copied descriptor's element
     // count by the byte-size ratio (`newLength = oldLength * oldElementSize /
     // newElementSize`); the pointer word is untouched. A same-size cast (the
-    // common qualifier-only case, e.g. `const(int)[]` to `int[]`) is a no-op
-    // here. `void` is a real one-byte D array element
-    // (`void.sizeof == 1`), not the bytecode core's "no value" scalar tag, so
-    // it is special-cased rather than routed through `size(ScalarType.void_)`.
-    // Scoped to a plain scalar-element destination; an array-of-arrays or
-    // struct-blob destination (`elementIsArray`, or `elementType == void_`
-    // marking a struct/static-array element) keeps the existing pass-through,
-    // unaffected by this rescale.
+    // common qualifier-only case, e.g. `const(int)[]` to `int[]`) is a no-op.
+    // Both sides go through `dynamicArrayElementSize`, the same helper
+    // `compileCastExpression`'s own element-size comparison uses: it already
+    // gives real `void[]` its one-byte stride and an array-of-arrays element
+    // its whole-descriptor stride, so this does not need to re-derive width
+    // from the `ScalarType` tag, which marks a genuine `void` element and a
+    // struct/static-array element the same way.
     private void rescaleReinterpretedSliceLength(
         in ushort destination,
-        in ScalarType destinationElementType,
-        in bool destinationElementIsArray,
+        Type destinationType,
         Type sourceType,
     ) {
-        import dmd.astenums: TY;
-
-        if (destinationElementIsArray ||
-            destinationElementType == ScalarType.void_)
-            return;
-
-        auto sourceElement = sourceType.toBasetype.nextOf.toBasetype;
-        const sourceElementSize = sourceElement.ty == TY.Tvoid
-            ? 1
-            : dynamicArrayElementSize(sourceType);
-        const destinationElementSize = size(destinationElementType);
+        const destinationElementSize = dynamicArrayElementSize(destinationType);
+        const sourceElementSize = dynamicArrayElementSize(sourceType);
         if (sourceElementSize == destinationElementSize)
             return;
 
@@ -7183,12 +7523,16 @@ private struct Compiler {
         const count = literal.elements is null ? 0 : literal.elements.length;
 
         // A nested array-of-arrays literal (`[[1, 2], [3, 4]]`): each element
-        // is itself an array, stored as a 16-byte descriptor, mirroring
-        // `compileDynamicArrayInto`'s own array-of-arrays literal handling.
-        // `variable.type` (the hoisted stack temp's own declared type) names
-        // the literal's true shape; `elementType`'s deepest-leaf-scalar
-        // convention can't distinguish this from the flat case on its own.
-        if (arrayElementIsArray(variable.type)) {
+        // is itself a genuine dynamic array, stored as a 16-byte descriptor,
+        // mirroring `compileDynamicArrayInto`'s own array-of-arrays literal
+        // handling. `variable.type` (the hoisted stack temp's own declared
+        // type) names the literal's true shape; `elementType`'s
+        // deepest-leaf-scalar convention can't distinguish this from a
+        // scalar or inline-`Tsarray` element on its own. A `Tsarray`
+        // element (`int[2][]`) is not this shape -- it falls to the
+        // generic full-width-block path below, same as any other
+        // aggregate element.
+        if (arrayElementIsDynamicArray(variable.type)) {
             _code ~= Instruction(
                 Op.allocArray,
                 destination,
@@ -7232,61 +7576,6 @@ private struct Compiler {
             );
         }
         return true;
-    }
-
-    private void compileStaticArrayAsDynamicInto(
-        in ushort destination,
-        in ScalarType elementType,
-        Expression source,
-    ) {
-        import std.conv: text;
-
-        auto sourcePlace = placeOrNull(source);
-        if (sourcePlace is null)
-            throw new Exception(text(
-                "Unsupported dynamic array initializer in bytecode core: ",
-                expressionChars(source),
-            ));
-        const sourceAddress = addressOfPlace(*sourcePlace);
-
-        auto sourceElementType = source.type.toBasetype.nextOf;
-        const sourceElementSize = typeFacts(sourceElementType).byteWidth;
-        // A dynamic-array element (`int[][2]`'s `int[]` elements) is a
-        // 16-byte slice descriptor; `elementType` names its innermost scalar
-        // for indexing further in, not its own native width, so its byte
-        // stride must come from DMD's size of the element type, the same as
-        // the struct/static-array blob case, never from `size(elementType)`.
-        const elementSize = elementType == ScalarType.void_ ||
-                arrayElementIsArray(source.type)
-            ? sourceElementSize
-            : cast(uint) size(elementType);
-        if (sourceElementSize < elementSize)
-            throw new Exception(text(
-                "Unsupported dynamic array initializer in bytecode core: ",
-                expressionChars(source),
-            ));
-
-        const count = typeFacts(source.type).byteWidth / sourceElementSize;
-        _code ~= Instruction(
-            Op.allocArray,
-            destination,
-            cast(ushort) elementSize,
-            cast(ushort) count,
-        );
-
-        foreach (elementIndex; 0 .. count) {
-            const loaded = allocateBytes(elementSize, elementSize);
-            emitPointerLoad(
-                loaded,
-                sourceAddress.offset,
-                compileSizeConstant(elementIndex),
-                elementSize,
-            );
-            const index = compileSizeConstant(elementIndex);
-            emitIndexStore(
-                loaded, destination, index, elementSize,
-            );
-        }
     }
 
     private VarDeclaration staticArrayVariableOf(Expression expression) {
@@ -7365,138 +7654,6 @@ private struct Compiler {
         }
     }
 
-    // `dest = new T[](length)`: evaluate the runtime length into a size_t slot
-    // and allocate a default-filled heap block of that many elements, writing
-    // the descriptor to `destination`. The length is `new_.arguments[0]`.
-    private void compileNewArrayInto(
-        in ushort destination,
-        in ScalarType elementType,
-        NewExp new_,
-        in bool elementIsArray = false,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`; build
-        // an outer array of `rows` inner arrays, each of `cols` elements.
-        // `new T[N][](rows)`: only `rows` is a runtime argument -- the inner
-        // length `N` is a compile-time static-array bound baked into the
-        // element's own type (`new_.type`'s `Tsarray` element), not a second
-        // `NewExp` argument, so it is loaded as a constant instead of compiled
-        // from a second argument expression that does not exist.
-        if (elementIsArray) {
-            auto innerElement = new_.type.toBasetype.nextOf;
-            const innerIsStatic =
-                innerElement.toBasetype.ty == TY.Tsarray;
-
-            if (innerIsStatic && new_.arguments !is null &&
-                new_.arguments.length == 1) {
-                const dimensions =
-                    allocateBytes(2 * size_t.sizeof, size_t.sizeof);
-                const rows = compileExpression((*new_.arguments)[0]);
-                _code ~= Instruction(
-                    Op.copy,
-                    dimensions,
-                    rows.offset,
-                    cast(ushort) size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.loadConstant,
-                    cast(ushort) (dimensions + size_t.sizeof),
-                    constantIndex(staticArrayLength(innerElement)),
-                    cast(ushort) size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.allocArray2D,
-                    destination,
-                    packedFill(elementType),
-                    dimensions,
-                );
-                return;
-            }
-
-            // `new T[][](rows)`: the inner element is itself a dynamic array
-            // (not a `Tsarray` row), so there is no compile-time row width to
-            // bake in and no second runtime argument either -- each of the
-            // `rows` outer slots simply default-inits to its own null slice,
-            // the same zero-filled 16-byte descriptor a bare `T[]` local
-            // starts with. Fill with `0x00` unconditionally rather than
-            // `packedFill(elementType)`: that call's char/wchar special case
-            // targets a scalar *data* fill, not this level's slice
-            // descriptors.
-            if (!innerIsStatic && new_.arguments !is null &&
-                new_.arguments.length == 1) {
-                const length = compileExpression((*new_.arguments)[0]);
-                _code ~= Instruction(
-                    Op.allocArrayDynamic,
-                    destination,
-                    cast(ushort) sliceDescriptorSize,
-                    length.offset,
-                );
-                return;
-            }
-
-            if (new_.arguments is null || new_.arguments.length != 2)
-                throw new Exception(text(
-                    "Unsupported new array in bytecode core: ",
-                    expressionChars(new_),
-                ));
-
-            // Materialise rows and cols into an adjacent size_t pair the opcode
-            // reads from a single offset.
-            const dimensions = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
-            const rows = compileExpression((*new_.arguments)[0]);
-            _code ~= Instruction(
-                Op.copy, dimensions, rows.offset, cast(ushort) size_t.sizeof,
-            );
-            const cols = compileExpression((*new_.arguments)[1]);
-            _code ~= Instruction(
-                Op.copy,
-                cast(ushort) (dimensions + size_t.sizeof),
-                cols.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            _code ~= Instruction(
-                Op.allocArray2D,
-                destination,
-                packedFill(elementType),
-                dimensions,
-            );
-            return;
-        }
-
-        if (new_.arguments is null || new_.arguments.length != 1)
-            throw new Exception(text(
-                "Unsupported new array in bytecode core: ",
-                expressionChars(new_),
-            ));
-
-        const length = compileExpression((*new_.arguments)[0]);
-        _code ~= Instruction(
-            Op.allocArrayDynamic,
-            destination,
-            packedFill(
-                elementType,
-                dynamicArrayElementSize(new_.type, elementIsArray),
-            ),
-            length.offset,
-        );
-    }
-
-    // Pack the element type's default-init fill byte (high 8 bits) and element
-    // size (low 8 bits) for `allocArrayDynamic`. `char.init` and `wchar.init`
-    // are all-one bytes; every other element type the core lowers
-    // default-inits to all-zero bytes.
-    private ushort packedFill(
-        in ScalarType elementType,
-        in uint elementSize = 0,
-    ) @safe pure {
-        const fill = elementType == ScalarType.char_ ||
-            elementType == ScalarType.wchar_ ? 0xff : 0x00;
-        return cast(ushort) ((fill << 8) |
-            (elementSize == 0 ? size(elementType) : elementSize));
-    }
-
     // Emit a sub-slice descriptor into frame offset `destination` from a
     // `SliceExp` over a dynamic-array operand. Lower and upper bounds (default
     // `0` and `source.length` for the whole-slice form `arr[]`) are compiled
@@ -7543,10 +7700,7 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        const elementSize = dynamicArrayElementSize(
-            slice.e1.type,
-            descriptor.elementIsArray,
-        );
+        const elementSize = dynamicArrayElementSize(slice.e1.type);
         emitSubSlice(destination, descriptor.offset, bounds, elementSize);
     }
 
@@ -7574,105 +7728,6 @@ private struct Compiler {
 
         const byteStride = pointerElementMetadata(slice.e1.type).byteWidth;
         emitPointerSlice(destination, pointer.offset, bounds, byteStride);
-    }
-
-    // `dest = a ~ b` (concatenation): materialise each operand into a slice
-    // descriptor sharing existing backing memory, then emit a concat that
-    // allocates a fresh block holding both in order. An operand of element type
-    // (`x ~ arr` / `arr ~ x`) is wrapped into a one-element descriptor first.
-    private void compileCatInto(
-        in ushort destination,
-        in ScalarType elementType,
-        CatExp cat,
-    ) {
-        const elementIsArray = arrayElementIsArray(cat.type);
-        const elementSize = dynamicArrayElementSize(cat.type, elementIsArray);
-        const left = catOperandDescriptor(
-            elementType, elementSize, elementIsArray, cat.e1,
-        );
-        const right = catOperandDescriptor(
-            elementType, elementSize, elementIsArray, cat.e2,
-        );
-        emitConcatArrays(destination, left, right, elementSize);
-    }
-
-    // A 16-byte slice descriptor for one side of a concatenation: an array
-    // operand uses its existing descriptor (materialised if needed); an element
-    // operand (`x ~ arr`) is stored into a fresh one-element heap block.
-    // `elementSize` is the concatenation's own array element width (from
-    // `dynamicArrayElementSize`, not a bare `size(elementType)`, since
-    // `elementType` is only `void_` for a struct/static-array element).
-    private ushort catOperandDescriptor(
-        in ScalarType elementType,
-        in uint elementSize,
-        in bool elementIsArray,
-        Expression operand,
-    ) {
-        import dmd.astenums: TY;
-
-        if (operand.type !is null &&
-            operand.type.toBasetype.ty == TY.Tarray)
-            return dynamicArrayDescriptor(operand).offset;
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.allocArray, offset, cast(ushort) elementSize, 1,
-        );
-        const value = compileExpression(operand);
-        const index = compileSizeConstant(0);
-        emitIndexStore(value.offset, offset, index, elementSize);
-        return offset;
-    }
-
-    // The array operand of an `arr.dup` / `arr.idup` call, or null if `source`
-    // is not such a call. Both resolve to an `object.dup`/`object.idup`
-    // template CallExp whose callee identifier is `dup`/`idup` and whose single
-    // argument is the (cast-wrapped) source array; the AA `.dup` is a distinct
-    // `object.dup!(...)` instantiation and is not matched here.
-    private Expression tryArrayDuplication(Expression source) {
-        auto call = source.isCallExp;
-        if (call is null ||
-            call.arguments is null ||
-            call.arguments.length != 1)
-            return null;
-
-        auto function_ = callFunction(call);
-        if (function_ is null || function_.ident is null)
-            return null;
-
-        const name = function_.ident.toString;
-        if (name != "dup" && name != "idup")
-            return null;
-
-        auto argument = (*call.arguments)[0];
-        if (!isDynamicArrayArgument(argument))
-            return null;
-
-        return argument;
-    }
-
-    // `dest = arr.dup` / `dest = arr.idup`: materialise the source array's
-    // descriptor and emit an opcode that allocates a fresh heap block, copies
-    // every element into it, and writes the new descriptor to `destination`.
-    private void compileArrayDuplication(
-        in ushort destination,
-        in ScalarType elementType,
-        Expression source,
-        in bool elementIsArray = false,
-    ) {
-        // The dup argument is the source array wrapped in an
-        // implicit-const cast; unwrap it so a known dynamic-array local reuses
-        // its descriptor in place rather than failing the cast.
-        auto array = source;
-        while (auto cast_ = array.isCastExp)
-            array = cast_.e1;
-
-        const sourceDescriptor = dynamicArrayDescriptor(array).offset;
-        const elementSize = dynamicArrayElementSize(
-            array.type,
-            elementIsArray,
-        );
-        emitDupArray(destination, sourceDescriptor, elementSize);
     }
 
     // Read the length word of a dynamic-array descriptor into a fresh size_t
@@ -7741,17 +7796,9 @@ private struct Compiler {
                     expressionChars(cast_),
                 ));
 
-            const elementIsArray = arrayElementIsArray(cast_.to);
             const elementType = dynamicArrayElementType(cast_.to);
-            const targetElementSize = dynamicArrayElementSize(
-                cast_.to,
-                elementIsArray,
-            );
-            const sourceElementIsArray = arrayElementIsArray(cast_.e1.type);
-            const sourceElementSize = dynamicArrayElementSize(
-                cast_.e1.type,
-                sourceElementIsArray,
-            );
+            const targetElementSize = dynamicArrayElementSize(cast_.to);
+            const sourceElementSize = dynamicArrayElementSize(cast_.e1.type);
             if (targetElementSize == sourceElementSize)
                 return source;
 
@@ -7759,9 +7806,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.copy, offset, source.offset, cast(ushort) sliceDescriptorSize,
             );
-            rescaleReinterpretedSliceLength(
-                offset, elementType, elementIsArray, cast_.e1.type,
-            );
+            rescaleReinterpretedSliceLength(offset, cast_.to, cast_.e1.type);
             return Operand(offset, ScalarType.void_, false, elementType);
         }
 
@@ -7908,35 +7953,11 @@ private struct Compiler {
     // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
     private Operand compileArrayPointer(CastExp cast_) {
         const descriptor = dynamicArrayDescriptor(cast_.e1);
-        const elementByteWidth = dynamicArrayElementSize(
-            cast_.e1.type,
-            descriptor.elementIsArray,
-        );
+        const elementByteWidth = dynamicArrayElementSize(cast_.e1.type);
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
             elementByteWidth,
         );
-    }
-
-    // The runtime address of `outer[i]`'s separately heap-allocated inner row:
-    // read the row's
-    // own 16-byte slice descriptor out of `outer`'s backing store and take its
-    // `.ptr` field. Shared with row assignment so writing a whole new row's
-    // worth of values lands in the same heap block a pointer taken earlier
-    // still addresses, instead of a fresh, differently addressed block.
-    private ushort innerArrayRowPointer(
-        in DynamicArrayLocal descriptor,
-        in ushort indexSlot,
-    ) {
-        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(inner, descriptor.offset, indexSlot, sliceDescriptorSize);
-        const pointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, pointer, cast(ushort) sliceDescriptorPtrOffset(inner),
-            cast(ushort) size_t.sizeof,
-        );
-        return pointer;
     }
 
     private Operand staticArrayElementPointer(
@@ -8114,6 +8135,10 @@ private struct Compiler {
     // reachable for lazy compilation on the indirect call. The operand is a
     // pointer so a `int function()` local's `compilePointerDeclaration` accepts
     // it; `pointerElement` is irrelevant (the value is never dereferenced).
+    // `&f`: the guest function-pointer value is `f`'s plain index into
+    // `Program.functions`, uniform whether `f` is VM-compiled or a native
+    // leaf (`registerFunction` records which, and `Op.call`/`Op.callIndirect`
+    // dispatch on that, not on the value itself).
     private Operand functionPointer(FuncDeclaration function_) {
         const index = registerFunction(function_);
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -8372,15 +8397,20 @@ private struct Compiler {
         );
     }
 
-    // Integer multiplication. Pointer arithmetic scales its integer operand
-    // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
-    // one that matters here; the 4-byte form operates on raw bits like
-    // `addInt4`, so signed and unsigned operands share it.
+    // Integer multiplication (float/double below). Pointer arithmetic scales
+    // its integer operand through an 8-byte `cast(long)n * elementSize`, so
+    // the 8-byte form is the one that matters here; the 4-byte form operates
+    // on raw bits like `addInt4`, so signed and unsigned operands share it.
     private Operand compileMultiplyExpression(MulExp multiply) {
         import std.conv: text;
 
         const lhs = compileExpression(multiply.e1);
         const rhs = compileExpression(multiply.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.mulFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.mulDouble, lhs, rhs, ScalarType.double_);
+
         if (isEightByteInteger(lhs.type) &&
             isEightByteInteger(rhs.type))
             return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
@@ -9118,9 +9148,17 @@ private struct Compiler {
 
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
-        // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
-        if (auto length = assign.e1.isArrayLengthExp)
-            return compileArrayLengthAssign(length, assign.e2);
+        // lvalue (DMD wraps this in a LoweredAssignExp carrying the
+        // `_d_arraysetlengthT` call in `.lowering`), not a druntime name.
+        if (assign.e1.isArrayLengthExp !is null) {
+            auto lowered = assign.isLoweredAssignExp;
+            if (lowered is null || lowered.lowering is null)
+                throw new Exception(text(
+                    "Unsupported array-length assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+            return compileExpression(lowered.lowering);
+        }
 
         auto place = placeOrNull(assign.e1);
         if (place is null)
@@ -9333,7 +9371,8 @@ private struct Compiler {
         ubyte[] literalBytes;
         if (!hasDefaultInitializer) {
             literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-                initializerExpr, elementType, elementIsArray,
+                initializerExpr, elementType,
+                arrayElementIsDynamicArray(declaration.type),
                 declaration.type, literalCount,
             );
             if (literalBytes is null && literalCount == 0)
@@ -9439,6 +9478,48 @@ private struct Compiler {
             return null;
         }
 
+        // A `Tsarray` row (`int[3][]`'s `int[3]` elements): the real D
+        // layout stores each row inline, `T[N].sizeof`-strided, not behind
+        // its own heap-allocated descriptor -- fold each row's own literal
+        // bytes (`moduleStaticArrayLiteralInitializerBytes`, the same
+        // constant-folder a plain module-level `int[3] x = [1, 2, 3];`
+        // already uses) directly into this level's `bytes` at
+        // `elementIndex * rowByteSize`, no `literalBlocks` entry or
+        // descriptor involved.
+        if (!elementIsArray && arrayType !is null) {
+            auto rowType = arrayType.toBasetype.nextOf;
+            if (rowType !is null && rowType.toBasetype.ty == TY.Tsarray) {
+                auto outer = initializerExpr.isArrayLiteralExp;
+                if (outer is null || outer.elements is null ||
+                    outer.elements.length == 0)
+                {
+                    return null;
+                }
+
+                const rowByteSize = typeFacts(rowType).byteWidth;
+                auto rowScalarType = rowType.toBasetype.nextOf;
+                count = outer.elements.length;
+                ubyte[] bytes;
+                bytes.length = count * rowByteSize;
+                foreach (elementIndex; 0 .. count) {
+                    auto element = (*outer.elements)[elementIndex];
+                    auto rowLiteral =
+                        element is null ? null : element.isArrayLiteralExp;
+                    auto rowBytes = moduleStaticArrayLiteralInitializerBytes(
+                        rowLiteral, rowScalarType, cast(ushort) rowByteSize,
+                    );
+                    if (rowBytes is null) {
+                        count = 0;
+                        return null;
+                    }
+
+                    const rowOffset = elementIndex * rowByteSize;
+                    bytes[rowOffset .. rowOffset + rowByteSize] = rowBytes[];
+                }
+                return bytes;
+            }
+        }
+
         if (elementIsArray) {
             auto outer = initializerExpr.isArrayLiteralExp;
             if (outer is null || outer.elements is null ||
@@ -9454,14 +9535,16 @@ private struct Compiler {
                 auto element = (*outer.elements)[elementIndex];
                 // Re-derive from the row's own type, rather than always
                 // recursing with `false`, so a row that is itself another
-                // `elementIsArray` shape (e.g. `int[][][]`'s middle-level
-                // row, itself an `int[][]` whose own elements are `int[]`)
-                // keeps recursing through the array branch instead of
-                // stopping after exactly one level -- this is what
-                // generalises this function from one fixed level of nesting
-                // to arbitrary depth.
+                // genuine-dynamic-array shape (e.g. `int[][][]`'s
+                // middle-level row, itself an `int[][]` whose own elements
+                // are `int[]`) keeps recursing through the array branch
+                // instead of stopping after exactly one level -- this is
+                // what generalises this function from one fixed level of
+                // nesting to arbitrary depth. A `Tsarray` row falls through
+                // to the branch below instead, stored inline.
                 const rowElementIsArray = element !is null &&
-                    element.type !is null && arrayElementIsArray(element.type);
+                    element.type !is null &&
+                    arrayElementIsDynamicArray(element.type);
                 size_t rowCount;
                 auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
                     element, elementType, rowElementIsArray,
@@ -10093,134 +10176,6 @@ private struct Compiler {
         return cast(ushort) offset;
     }
 
-    private Operand compileArrayLengthAssign(
-        ArrayLengthExp length,
-        Expression newLength,
-    ) {
-        import dmd.astenums: TY;
-        import dmd.typesem: defaultInitLiteral;
-
-        auto destination = dynamicArrayMutationPlace(length.e1);
-        const lengthValue = compileExpression(newLength);
-        const descriptor = loadDynamicArrayPlace(*destination, length.e1.type);
-        const lengthSlot = allocate(ScalarType.ulong_);
-        _code ~= Instruction(
-            Op.copy,
-            lengthSlot,
-            lengthValue.offset,
-            cast(ushort) size(lengthValue.type),
-        );
-        auto element = length.e1.type.toBasetype.nextOf;
-        if (element.toBasetype.ty == TY.Tstruct) {
-            const elementSize = typeFacts(element).byteWidth;
-            const initBlock = allocateBytes(
-                elementSize, typeFacts(element).alignment,
-            );
-            zeroFrameBlock(initBlock, elementSize);
-            auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
-                length.loc,
-            ).isStructLiteralExp;
-            if (literal is null)
-                throw new Exception("Unsupported struct array default initializer in bytecode core.");
-            compileStructLiteralInto(initBlock, literal);
-            _code ~= Instruction(
-                Op.setArrayLengthFromTemplate,
-                descriptor.offset,
-                initBlock,
-                lengthSlot,
-                cast(ushort) elementSize,
-            );
-            storeDynamicArrayPlace(*destination, descriptor);
-            return Operand(lengthSlot, ScalarType.ulong_);
-        }
-
-        _code ~= Instruction(
-            Op.setArrayLength,
-            descriptor.offset,
-            packedFill(
-                descriptor.elementType,
-                dynamicArrayElementSize(length.e1.type),
-            ),
-            lengthSlot,
-        );
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(lengthSlot, ScalarType.ulong_);
-    }
-
-    private Operand compileAppendElement(CatElemAssignExp append) {
-        auto destination = dynamicArrayMutationPlace(append.e1);
-
-        // `outer ~= row` where `outer`'s element is itself an array
-        // (`int[][]`/`int[N][]`): the appended row needs its own heap-backed
-        // sub-array and 16-byte descriptor, the same shape an array-of-arrays
-        // literal builds for each of its elements (`compileDynamicArrayInto`'s
-        // `elementIsArray` branch), not the flat scalar/struct byte layout --
-        // `outer[i]` always reads a stored element as a descriptor to
-        // dereference.
-        if (arrayElementIsArray(append.e1.type)) {
-            const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const elementType = dynamicArrayElementType(append.e1.type);
-            compileDynamicArrayInto(inner, elementType, append.e2);
-            const descriptor = loadDynamicArrayPlace(
-                *destination, append.e1.type,
-            );
-            emitAppendElement(descriptor.offset, inner, sliceDescriptorSize);
-            storeDynamicArrayPlace(*destination, descriptor);
-            return Operand(descriptor.offset, descriptor.elementType);
-        }
-
-        const value = compileExpression(append.e2);
-        const descriptor = loadDynamicArrayPlace(*destination, append.e1.type);
-        const elementSize = dynamicArrayElementSize(append.e1.type);
-        emitAppendElement(descriptor.offset, value.offset, elementSize);
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(descriptor.offset, descriptor.elementType);
-    }
-
-    // `arr ~= other`: concatenate both array descriptors into fresh backing
-    // memory, then overwrite the resolved destination's descriptor.
-    private Operand compileConcatenationAssign(CatAssignExp concatenate) {
-        auto destination = dynamicArrayMutationPlace(concatenate.e1);
-        const elementType = dynamicArrayElementType(concatenate.e1.type);
-        const elementIsArray = arrayElementIsArray(concatenate.e1.type);
-        const right = dynamicArrayDescriptor(concatenate.e2).offset;
-        const descriptor = loadDynamicArrayPlace(
-            *destination, concatenate.e1.type,
-        );
-        const elementSize = dynamicArrayElementSize(
-            concatenate.e1.type, elementIsArray,
-        );
-        emitConcatArrays(
-            descriptor.offset, descriptor.offset, right, elementSize,
-        );
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(descriptor.offset, descriptor.elementType);
-    }
-
-    private Place* dynamicArrayMutationPlace(Expression expression) {
-        import std.conv: text;
-
-        auto place = placeOrNull(expression);
-        if (place is null)
-            throw new Exception(text(
-                "Unsupported dynamic array mutation in bytecode core: ",
-                expressionChars(expression),
-            ));
-        return place;
-    }
-
-    private DynamicArrayLocal loadDynamicArrayPlace(
-        Place place,
-        Type type,
-    ) {
-        const descriptor = loadPlace(place);
-        return DynamicArrayLocal(
-            descriptor.offset,
-            dynamicArrayElementType(type),
-            arrayElementIsArray(type),
-        );
-    }
-
     private void storeDynamicArrayPlace(
         Place place,
         in DynamicArrayLocal descriptor,
@@ -10398,97 +10353,39 @@ private struct Compiler {
         Place place,
         Expression rhs,
     ) {
-        auto descriptor = &place.sliceDescriptor;
         const elementType = place.sliceElementType;
+        // True only for a genuine `Tarray` row (`int[][]`'s `int[]`
+        // elements, `arrayElementIsDynamicArray`): each such row is its own
+        // separately heap-allocated 16-byte `{length, ptr}` descriptor, a
+        // reference-semantics value. A `Tsarray` row (`int[2][]`'s `int[2]`
+        // elements) is NOT this shape -- its real D layout stores rows
+        // inline, `T[N].sizeof`-strided, in the array's own backing store,
+        // so it takes the same broadcast-fill/range-copy path below every
+        // scalar or struct element already takes.
         const elementIsArray = place.sliceElementIsArray;
         const destination = place.offset;
         const elementSize = place.sliceElementSize;
 
-        // `elementIsArray` means each destination element is its own
-        // separately heap-allocated row descriptor (the `T[N][]`
-        // representation), not `elementSize` (=`sliceDescriptorSize`) raw
-        // bytes shared by every row. A `T[N]` row's already-allocated block
-        // (from the array's construction) is written through its own
-        // pointer, one row at a time (`emitRowBroadcastFill`), the same
-        // addressing the single-index aggregate place's
-        // `innerArrayRowPointer` writeback uses -- only when the rhs is
-        // itself shaped like one row (`sameType` against the row's own
-        // `Type`, not the whole sliced range).
-        //
-        // `descriptor.isStaticArrayView` (a genuine multidimensional static
-        // array, e.g. `int[3][3]`, viewed through a throwaway heap copy)
-        // shares `elementIsArray` with the true `T[N][]` shape but its rows
-        // are contiguous inline bytes, not separate heap blocks -- excluded
-        // here, or `emitRowBroadcastFill` would dereference row bytes as if
-        // they were a row pointer.
-        import dmd.astenums: TY;
+        // `T[][]` (`Tarray`-row): a `T[]` row is itself just a 16-byte
+        // `{length, ptr}` descriptor, the same reference-semantics value
+        // every other broadcast-fill element is. There is no separately
+        // heap-allocated row block to write through -- broadcasting the
+        // rhs row means writing its own descriptor bytes into every
+        // destination slot, aliasing every destination row to the rhs
+        // row's backing storage, matching `SystemLinker`. `emitSliceFill`
+        // (the same helper the non-array-element branch below uses) does
+        // exactly that; a row-range rhs (another `T[][]` sub-slice) is not
+        // handled here and falls through to `sliceCopy16` below, which
+        // already copies each element's 16-byte descriptor by value --
+        // correct for reference-typed rows.
+        if (elementIsArray && rhs.type !is null &&
+            sameType(rhs.type, place.sliceBaseType.toBasetype.nextOf)) {
+            const value = compileExpression(rhs);
+            emitSliceFill(destination, value.offset, elementSize);
 
-        if (elementIsArray && descriptor !is null &&
-            !descriptor.isStaticArrayView) {
-            auto rowType = place.sliceBaseType.toBasetype.nextOf;
-            if (rowType.toBasetype.ty == TY.Tsarray) {
-                const rowByteSize = typeFacts(rowType).byteWidth;
-
-                if (rhs.type !is null && sameType(rhs.type, rowType)) {
-                    const value = compileExpression(rhs);
-                    emitRowBroadcastFill(
-                        destination, value.offset, rowByteSize,
-                    );
-
-                    return Operand.init;
-                }
-
-                // A rhs shaped like a matching range of rows (a sub-slice,
-                // another `T[N][]`), not a single broadcast row: write
-                // through each destination row's own block instead of
-                // `sliceCopy16`'s flat by-value descriptor copy below,
-                // which would alias every destination row to the source's
-                // block (see `Op.rowRangeCopy`'s doc comment).
-                //
-                // A rhs range sourced from a static-array view (`s[0 .. 2]`
-                // where `s` is itself a multidimensional static array, e.g.
-                // `int[3][3]`) is contiguous inline row bytes rather than row
-                // descriptors. Lower it to the typed row-copy loop below.
-                if (auto rhsSlice = rhs.isSliceExp)
-                    if (rhsSlice.e1.type.toBasetype.ty == TY.Tsarray) {
-                            const rangeSource = compileSourceSlice(
-                                elementType, rhs,
-                            );
-                            emitInlineRowRangeCopy(
-                                destination, rangeSource, rowByteSize,
-                            );
-
-                            return Operand.init;
-                    }
-
-                const rangeSource = compileSourceSlice(elementType, rhs);
-                emitRowRangeCopy(destination, rangeSource, rowByteSize);
-
-                return Operand.init;
-            }
-
-            // `T[][]` (`Tarray`-row): unlike a `T[N]` row, a `T[]` row is
-            // itself just a 16-byte `{length, ptr}` descriptor, the same
-            // reference-semantics value every other broadcast-fill element
-            // is. There is no separately heap-allocated row block to write
-            // through -- broadcasting the rhs row means writing its own
-            // descriptor bytes into every destination slot, aliasing every
-            // destination row to the rhs row's backing storage, matching
-            // `SystemLinker`. `emitSliceFill` (the same helper the
-            // non-array-element branch below uses) does exactly that; a
-            // row-range rhs (another `T[][]` sub-slice) is not handled here
-            // and falls through to the flat `sliceCopy16` below, which
-            // already copies each element's 16-byte descriptor by value --
-            // correct for reference-typed rows, unlike the `T[N][]` case
-            // above.
-            if (rowType.toBasetype.ty == TY.Tarray &&
-                rhs.type !is null && sameType(rhs.type, rowType)) {
-                const value = compileExpression(rhs);
-                emitSliceFill(destination, value.offset, elementSize);
-
-                return Operand.init;
-            }
-        } else if (!elementIsArray && isBroadcastFillSource(rhs)) {
+            return Operand.init;
+        }
+        if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
             emitSliceFill(destination, value.offset, elementSize);
 
@@ -10604,22 +10501,34 @@ private struct Compiler {
 
         // A string element (`string[2]`) is checked before the general
         // Tarray case below, whose element basetype a string also matches:
-        // each element must be a literal (`stringLiteralOf` throws
-        // otherwise), expanded directly into the native {length, ptr}
-        // descriptor its 16-byte slot holds, the same width every other
-        // dynamic-array element uses.
+        // a literal element (the common case) expands directly into the
+        // native {length, ptr} descriptor its 16-byte slot holds, without
+        // paying for a full expression compile; a non-literal string
+        // element (e.g. `[miniFormatFakeAttributes(a), "true"]`, a call
+        // result alongside a literal, in `core.internal.dassert`'s unary
+        // `_d_assert_fail`) falls through to the same compile-and-copy the
+        // general Tarray case below uses.
         if (isStringType(elementType)) {
             const elementSize = typeFacts(elementType).byteWidth;
             foreach (elementIndex; 0 .. literal.elements.length) {
-                auto string_ = stringLiteralOf((*literal.elements)[elementIndex]);
-                if (string_ is null)
-                    throw new Exception(text(
-                        "Unsupported static array literal element in bytecode core: ",
-                        expressionChars(literal),
-                    ));
+                auto element = (*literal.elements)[elementIndex];
+                auto string_ = stringLiteralOf(element);
+                if (string_ !is null) {
+                    emitLoadStringLiteral(
+                        cast(ushort) (offset + elementIndex * elementSize),
+                        string_,
+                    );
+                    continue;
+                }
 
-                emitLoadStringLiteral(
-                    cast(ushort) (offset + elementIndex * elementSize), string_,
+                const value = compileExpression(
+                    element is null ? literal.basis : element,
+                );
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (offset + elementIndex * elementSize),
+                    value.offset,
+                    cast(ushort) elementSize,
                 );
             }
             return;
@@ -10749,34 +10658,88 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
+        // The non-nested static-array case (`equal.e1`/`equal.e2` both
+        // `Tsarray`, no `Tarray` row involved): unlike the nested case
+        // above, DMD leaves `equal.lowering` null here -- a static array of
+        // byte-comparable elements is compared directly by bytes -- so this
+        // is never shadowed by it the way the nested case would be.
+        // `arrayNestingDepth`/`innermostArrayElementSize` both stop at zero
+        // depth for a `Tsarray` outer type (its rows have no `Tarray`
+        // descriptor to unwrap), so `emitNestedArrayEqual` reduces to the
+        // same length-then-bytes compare `emitSliceEqual` did here, except
+        // at any row width -- `int[3][2]`'s 12-byte rows included, which
+        // `emitSliceEqual`'s fixed 1/2/4/8-byte family rejects.
+        if (equal.e1.type.toBasetype.ty == TY.Tsarray &&
+            equal.e2.type.toBasetype.ty == TY.Tsarray)
+        {
+            const left = dynamicArrayDescriptor(equal.e1).offset;
+            const right = dynamicArrayDescriptor(equal.e2).offset;
+            const offset = emitNestedArrayEqual(left, right, equal.e1.type);
+            if (equal.op == EXP.notEqual)
+                _code ~= Instruction(Op.notBool, offset, offset);
+            return Operand(offset, ScalarType.bool_);
+        }
+
         const bothDynamicArrays = equal.e1.type.toBasetype.ty == TY.Tarray &&
             equal.e2.type.toBasetype.ty == TY.Tarray &&
             dynamicArrayElementType(equal.e1.type) ==
                 dynamicArrayElementType(equal.e2.type);
         if (bothDynamicArrays) {
-            const elementType = dynamicArrayElementType(equal.e1.type);
-            // `int[][] == int[][]` (any nesting depth, `int[][][]` and
-            // deeper included): each element is itself a heap-allocated
-            // row descriptor, so a flat `sliceEqualOp` below would compare
-            // the rows' `.ptr` values instead of their content -- two
-            // separately-constructed but content-equal rows would compare
-            // unequal. Structural comparison needs the dedicated nested
-            // opcode instead.
-            const nested = arrayElementIsArray(equal.e1.type) &&
-                arrayElementIsArray(equal.e2.type);
+            // A null `lowering` here means DMD decided the element is
+            // byte-comparable (an integral scalar, or any depth of static
+            // array bottoming out in one) and left the comparison to be
+            // codegen'd directly rather than routed through
+            // `object.__equals`: compare lengths, then, when they match, the
+            // full byte range. A genuine array-of-arrays element (each row
+            // its own separately heap-allocated descriptor) is never
+            // byte-comparable this way, so DMD always gives it a real
+            // `__equals` lowering instead -- the case reaching here always
+            // has its elements stored inline, with no per-row descriptor,
+            // which is exactly what a zero-depth structural compare
+            // reduces to.
             const left = dynamicArrayDescriptor(equal.e1).offset;
             const right = dynamicArrayDescriptor(equal.e2).offset;
-            const offset = nested
-                ? emitNestedArrayEqual(left, right, equal.e1.type)
-                : allocate(ScalarType.bool_);
-            if (!nested)
-                emitSliceEqual(
-                    offset, left, right,
-                    dynamicArrayElementSize(equal.e1.type),
-                );
+            const offset = emitNestedArrayEqual(left, right, equal.e1.type);
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
+        }
+
+        // `int[] == uint[]` and similar: two dynamic arrays whose element
+        // types differ but are both integral/character scalars compare
+        // element-wise at each side's own width and signedness, the same
+        // "common type" promotion an element-by-element `==` would apply.
+        // Neither operand is byte-comparable against the other's raw
+        // storage (they may differ in element width), so this cannot share
+        // `emitNestedArrayEqual`'s byte-range compare above; a mixed
+        // aggregate element (a struct/array pair with no common scalar
+        // type) has no such promotion and stays unsupported.
+        const mixedWidthDynamicArrays =
+            equal.e1.type.toBasetype.ty == TY.Tarray &&
+            equal.e2.type.toBasetype.ty == TY.Tarray;
+        if (mixedWidthDynamicArrays) {
+            const lhsElementType = dynamicArrayElementType(equal.e1.type);
+            const rhsElementType = dynamicArrayElementType(equal.e2.type);
+            const lhsIsNumeric = isCompoundIntegerScalar(lhsElementType) ||
+                isCharacterScalar(lhsElementType);
+            const rhsIsNumeric = isCompoundIntegerScalar(rhsElementType) ||
+                isCharacterScalar(rhsElementType);
+            if (lhsIsNumeric && rhsIsNumeric) {
+                const left = dynamicArrayDescriptor(equal.e1);
+                const right = dynamicArrayDescriptor(equal.e2);
+                const offset = allocateBytes(1, 1);
+                _code ~= Instruction(
+                    Op.sliceEqualNumeric,
+                    offset,
+                    left.offset,
+                    right.offset,
+                    cast(ushort) left.elementType,
+                    cast(ushort) right.elementType,
+                );
+                if (equal.op == EXP.notEqual)
+                    _code ~= Instruction(Op.notBool, offset, offset);
+                return Operand(offset, ScalarType.bool_);
+            }
         }
 
         auto lhs = compileExpression(equal.e1);
@@ -11054,42 +11017,6 @@ private struct Compiler {
                 return compileStringForeachApply(call, applyMode);
         }
 
-        // `__ArrayDtor(arr[lo .. hi])` runs the element destructor on each
-        // element of a static array going out of scope; intercept and emit the
-        // per-element `~this()` calls.
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "__ArrayDtor")
-            return compileArrayDtor(call);
-
-        // `dest[] = a[] + b[]` lowers to a druntime arrayOp template call;
-        // intercept it at the call site and emit element-wise semantics rather
-        // than compiling the druntime body.
-        if (function_ !is null && isArrayOpAddAssign(function_))
-            return compileArrayOpAddAssign(call);
-
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplace")
-            if (auto emplaced = compileEmplace(call))
-                return *emplaced;
-
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplaceRef")
-            if (auto emplaced = compileEmplaceRef(call))
-                return *emplaced;
-
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplaceInitializer")
-            return Operand.init;
-
-        // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
-        // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
-        // means the key was absent, so raise the plain "Range violation".
-        if (function_ !is null && isArrayBoundsCall(function_))
-            return compileRangeViolation;
-
-        if (function_ !is null && isNewArrayRuntimeCall(function_))
-            return compileNewArrayRuntimeCall(call);
-
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
@@ -11243,9 +11170,24 @@ private struct Compiler {
         if (layout.hasNestedContext) {
             const context = cast(ushort)
                 (argumentArea + layout.nestedContextOffset);
-            _code ~= Instruction(Op.frameBaseIndex, context);
             const one = compileSizeConstant(1);
-            _code ~= Instruction(Op.addInt8, context, context, one);
+            // A nested callee's context is its lexically enclosing function's
+            // frame -- the caller's own frame only when the caller IS that
+            // function. A callee declared in an enclosing function (a
+            // template-alias lambda invoked from a sibling nested function,
+            // say) instead receives that ancestor's frame, found by the same
+            // received-context walk captured-variable access uses; handing it
+            // the caller's own frame would make it resolve captured-variable
+            // offsets against the wrong frame.
+            auto parent = enclosingMethodOf(function_);
+            if (parent is null || parent is _currentFunction ||
+                _nestedContextOffset == ushort.max) {
+                _code ~= Instruction(Op.frameBaseIndex, context);
+                _code ~= Instruction(Op.addInt8, context, context, one);
+            } else
+                _code ~= Instruction(
+                    Op.addInt8, context, enclosingFrameBase(parent), one,
+                );
         }
 
         size_t nextArgumentIndex;
@@ -11323,6 +11265,20 @@ private struct Compiler {
         );
     }
 
+    // A native callee's `ref`/`out` parameter writes through the address the
+    // FFI bridge passes it, which is the native-call argument area's own
+    // staging slot (`native_call.d`'s header comment), not the caller's real
+    // storage: `emitCallArgument` only ever copies the argument's current
+    // VALUE into that slot. Recording the slot alongside the argument's own
+    // `Place` here lets `tryCompileNativeCall` copy the slot's post-call
+    // bytes back into that place once the call returns, the compile-time
+    // equivalent of a VM-compiled `ref` parameter's implicit write-back.
+    private struct NativeRefArgumentWriteback {
+        Place place;
+        ushort slot;
+        Type type;
+    }
+
     // A null return always falls through to the call site's unconditional
     // no-available-source throw, never a different path, so it is safe to
     // emit earlier arguments before a later one turns out unsupported.
@@ -11333,7 +11289,7 @@ private struct Compiler {
         in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
-        import dmd.astenums: TY;
+        import dmd.astenums: STC, TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if (returnTy != TY.Tbool &&
@@ -11341,29 +11297,66 @@ private struct Compiler {
             returnTy != TY.Tuns64 &&
             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
-            returnTy != TY.Tstruct)
+            returnTy != TY.Tstruct && returnTy != TY.Tnoreturn)
             return null;
+
+        auto parameterList =
+            function_.type.toBasetype.isTypeFunction.parameterList;
 
         // `call.arguments` is null, not merely empty, for a no-argument call.
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-        const argumentArea = allocateNativeArgumentArea(argumentCount);
+        auto callArgumentTypes = new Type[argumentCount];
+        foreach (index; 0 .. argumentCount)
+            callArgumentTypes[index] = (*call.arguments)[index].type.toBasetype;
+        uint argumentAreaSize;
+        // `auto`, not `const`: `emitNativeCall` stores this array into
+        // `NativeCall.argumentOffsets`, a mutable field.
+        auto argumentSlotOffsets =
+            nativeArgumentOffsets(callArgumentTypes, argumentAreaSize);
+        const argumentArea =
+            allocateBytes(argumentAreaSize, nativeArgumentSlotSize);
         auto argumentTypes = new Type[argumentCount];
+        NativeRefArgumentWriteback[] writebacks;
         // The return-type list above is the only compile-time gate on the
         // call as a whole. Individual arguments are not similarly gated: a
         // scalar, a string-literal `const(char)*`, a `&local` out parameter,
-        // and a pointer local passed by value each get their own emission
-        // below, but any other shape (a `double`, a `float`, a small int, a
-        // by-value slice or struct, a delegate, a `ref`/`out` parameter, ...)
-        // falls through to the plain `emitCallArgument` call at the bottom of
-        // the loop rather than bailing here. `quickbite.ffi.ffi` validation
-        // at the actual native-call boundary is the real gate for those
-        // shapes; a shape it rejects surfaces as the no-available-source
-        // diagnostic at run time, not a compile-time decline.
+        // a pointer local passed by value, and a fixed `ref`/`out` scalar,
+        // dynamic-array, struct, or static-array parameter each get their
+        // own emission below, but any other shape (a `double`, a `float`, a
+        // small int, a by-value struct, a delegate, ...) falls through to
+        // the plain `emitCallArgument` call at the bottom of the loop rather
+        // than bailing here. `quickbite.ffi.ffi` validation at the actual
+        // native-call boundary is the real gate for those shapes; a shape it
+        // rejects surfaces as the no-available-source diagnostic at run
+        // time, not a compile-time decline.
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
-                (argumentArea + index * nativeArgumentSlotSize);
+                (argumentArea + argumentSlotOffsets[index]);
             argumentTypes[index] = argument.type.toBasetype;
+
+            if (index < parameterList.length) {
+                auto parameter = parameterList[index];
+                if (parameter !is null &&
+                    (parameter.storageClass & (STC.ref_ | STC.out_)) !=
+                        STC.none) {
+                    const representation =
+                        typeFacts(argument.type).representation;
+                    if (representation == DeclarationRepresentation.scalar ||
+                        representation ==
+                            DeclarationRepresentation.dynamicArray ||
+                        representation == DeclarationRepresentation.struct_ ||
+                        representation ==
+                            DeclarationRepresentation.staticArray)
+                        if (auto place = placeOrNull(argument)) {
+                            emitCallArgument(slot, false, argument);
+                            writebacks ~= NativeRefArgumentWriteback(
+                                *place, slot, argument.type,
+                            );
+                            continue;
+                        }
+                }
+            }
 
             const argumentTy = argument.type.toBasetype.ty;
             if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
@@ -11404,8 +11397,6 @@ private struct Compiler {
             // too); take the pointer type from the callee's own parameter
             // instead, and emit a zero pointer value into its slot.
             if (argument.isNullExp !is null) {
-                auto parameterList =
-                    function_.type.toBasetype.isTypeFunction.parameterList;
                 auto parameter = parameterList[index];
                 // A defaulted `const TypeInfo ti = null` parameter (the
                 // common shape of every `core.memory.GC.*` leaf) has a class
@@ -11429,11 +11420,41 @@ private struct Compiler {
             emitCallArgument(slot, false, argument);
         }
 
-        return emitNativeCall(
-            function_, argumentTypes, argumentArea,
+        auto result = emitNativeCall(
+            function_, argumentTypes, argumentArea, argumentSlotOffsets,
             noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
+        foreach (writeback; writebacks) {
+            const representation = typeFacts(writeback.type).representation;
+            if (representation == DeclarationRepresentation.dynamicArray)
+                storeDynamicArrayPlace(
+                    writeback.place,
+                    DynamicArrayLocal(
+                        writeback.slot,
+                        dynamicArrayElementType(writeback.type),
+                        arrayElementIsArray(writeback.type),
+                    ),
+                );
+            else if (representation == DeclarationRepresentation.struct_ ||
+                    representation == DeclarationRepresentation.staticArray)
+                // Same aggregate `Op.copy` path `storeExpressionIntoPlace`
+                // uses for any other struct/static-array write: the width
+                // comes from `writeback.place.valueType`, not from `value`,
+                // so a plain `ScalarType.void_` operand is enough.
+                storePlace(
+                    writeback.place, Operand(writeback.slot, ScalarType.void_),
+                );
+            else
+                storePlace(
+                    writeback.place,
+                    Operand(
+                        writeback.slot,
+                        scalarType(writeback.type.toBasetype),
+                    ),
+                );
+        }
+        return result;
     }
 
     // A VM class object is not an ABI class object, so ordinary VM method calls
@@ -11460,7 +11481,6 @@ private struct Compiler {
         // receiver expression with side effects.
         const receiver = compileTypeidExpression(dot.e1.isTypeidExp);
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-        const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
@@ -11473,17 +11493,27 @@ private struct Compiler {
                 return null;
 
             argumentTypes[index] = argument.type.toBasetype;
-            emitCallArgument(
-                cast(ushort) (argumentArea + index * nativeArgumentSlotSize),
-                false,
-                argument,
-            );
         }
+
+        uint argumentAreaSize;
+        // `auto`, not `const`: `emitNativeCall` stores this array into
+        // `NativeCall.argumentOffsets`, a mutable field.
+        auto argumentSlotOffsets =
+            nativeArgumentOffsets(argumentTypes, argumentAreaSize);
+        const argumentArea =
+            allocateBytes(argumentAreaSize, nativeArgumentSlotSize);
+        foreach (index; 0 .. argumentCount)
+            emitCallArgument(
+                cast(ushort) (argumentArea + argumentSlotOffsets[index]),
+                false,
+                (*call.arguments)[index],
+            );
 
         return emitNativeCall(
             function_,
             argumentTypes,
             argumentArea,
+            argumentSlotOffsets,
             receiver.offset,
             receiverType,
         );
@@ -11516,25 +11546,46 @@ private struct Compiler {
         _code ~= Instruction(Op.loadDataPointer, slot, cast(ushort) blockIndex);
     }
 
-    // A native call's argument area is N contiguous fixed-stride slots (see
-    // `nativeArgumentSlotSize` in program.d), one per argument, regardless of
-    // each argument's own width: argument `index` always lives at
-    // `argumentArea + index * nativeArgumentSlotSize`.
-    private ushort allocateNativeArgumentArea(in size_t argumentCount)
-        @safe pure
-    {
-        return allocateBytes(
-            cast(uint) (argumentCount * nativeArgumentSlotSize),
-            nativeArgumentSlotSize,
-        );
+    // A direct native call's own per-argument layout: argument `index`'s
+    // byte offset relative to the call's argument area, packed back to back
+    // in argument order. Each argument gets at least `nativeArgumentSlotSize`
+    // bytes, and its own `typeFacts` byte width when that is wider (a struct
+    // or static array), so a wide aggregate cannot spill into the next
+    // argument's own slot the way a fixed `nativeArgumentSlotSize` stride
+    // would. `argumentAreaSize` receives the total byte count to reserve for
+    // the whole area. `tryCompileNativeCall` and `tryCompileNativeTypeInfoCall`
+    // are this function's only two callers, so it is the one place a direct
+    // call's argument layout is computed; both `emitCallArgument`'s slot
+    // addressing and `NativeCall.argumentOffsets` (read by
+    // `native_call.d`'s `prepareNativeInvocation`) use its result rather
+    // than re-deriving offsets of their own.
+    private ushort[] nativeArgumentOffsets(
+        Type[] argumentTypes,
+        out uint argumentAreaSize,
+    ) {
+        import std.algorithm.comparison: max;
+
+        auto offsets = new ushort[argumentTypes.length];
+        uint offset = 0;
+        foreach (index, type; argumentTypes) {
+            const facts = typeFacts(type);
+            const alignment = facts.alignment == 0 ? 1 : facts.alignment;
+            offset = (offset + alignment - 1) & ~(alignment - 1);
+            offsets[index] = cast(ushort) offset;
+            offset += max(nativeArgumentSlotSize, facts.byteWidth);
+        }
+        argumentAreaSize = offset;
+        return offsets;
     }
 
     // Emit the native-call table entry and instruction shared by every native
-    // libc call shape: the argument bytes already live at `argumentArea`.
+    // libc call shape: the argument bytes already live at `argumentArea`, at
+    // the offsets `argumentOffsets` records.
     private Operand* emitNativeCall(
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
+        ushort[] argumentOffsets,
         in ushort nativeClassReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
         in ushort nativeStructReceiverOffset = noReceiverOffset,
@@ -11557,14 +11608,22 @@ private struct Compiler {
         const returnScalar = isArrayReturn || isStructReturn
             ? ScalarType.void_
             : scalarType(returnType.toBasetype);
-        const destination = isStructReturn
-            ? allocateBytes(
-                returnFacts.byteWidth,
-                returnFacts.alignment,
-            )
-            : isArrayReturn
-                ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
-                : allocate(returnScalar);
+        // A `ref`-returning native function (e.g. `core.stdc.errno.errno`'s
+        // libc-mangled accessor) yields the callee's own storage address, not
+        // a value; the destination slot is a raw pointer, matching a
+        // VM-compiled `ref`-returning call's own result slot.
+        auto functionType = function_.type.toBasetype.isTypeFunction;
+        const returnsRef = functionType !is null && functionType.isRef;
+        const destination = returnsRef
+            ? allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof)
+            : isStructReturn
+                ? allocateBytes(
+                    returnFacts.byteWidth,
+                    returnFacts.alignment,
+                )
+                : isArrayReturn
+                    ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
+                    : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
             NativeCall(
@@ -11574,6 +11633,7 @@ private struct Compiler {
                 nativeClassReceiverType,
                 nativeStructReceiverOffset,
                 nativeStructReceiverType,
+                argumentOffsets,
             );
         _code ~= Instruction(
             Op.nativeCall,
@@ -11581,6 +11641,14 @@ private struct Compiler {
             argumentArea,
             destination,
         );
+        // A `ref` return's address dereferences through `compileExpression`'s
+        // `CallExp` handling (rvalue read) or wraps directly via
+        // `resolvePlace`'s `pointerPlace` (lvalue use), exactly like a
+        // VM-compiled `ref`-returning call's result.
+        if (returnsRef)
+            return new Operand(
+                destination, ScalarType.ulong_, true, returnScalar,
+            );
         // A native-memory pointer return (e.g. `malloc`'s `void*`): mark the
         // operand as a pointer holding a raw host address, matching every
         // other pointer-valued operand's shape, so callers such as
@@ -11592,6 +11660,92 @@ private struct Compiler {
             );
         return new Operand(destination, returnScalar);
     }
+
+    // `s ~= someDchar` (`CatDcharAssignExp`): dmd leaves `.lowering` null
+    // here, because its hooks (`_d_arrayappendcd`/`_d_arrayappendwd`,
+    // druntime's non-importable rt/lifetime.d) have no D declaration
+    // anywhere semantic analysis can see -- this is the one construction
+    // site where the backend, not dmd, names the callee. Declaring the two
+    // hooks as ordinary `extern(C)` D source and parsing it through the
+    // same frontend pipeline every other module goes through
+    // (`quickbite.frontend.compiler.parseSnippet`) yields real,
+    // semantically-resolved `FuncDeclaration`s; compiling a `CallExp`
+    // against one of those (`append.e1`/`append.e2` unchanged -- no
+    // representation conversion, matching the destination's own {length,
+    // ptr} descriptor bit for bit) then runs entirely through the ordinary
+    // body-less-function call path (`compileCall` -> `tryCompileNativeCall`
+    // -> `resolveCallable`/`dlsym`), including that path's `ref`-parameter
+    // write-back.
+    private Operand compileDcharAppend(CatDcharAssignExp append) {
+        import dmd.astenums: TY;
+        import dmd.expression: VarExp;
+
+        const elementTy = append.e1.type.toBasetype.nextOf.toBasetype.ty;
+        auto function_ = nativeDcharAppendFunction(
+            elementTy == TY.Twchar ? "_d_arrayappendwd" : "_d_arrayappendcd",
+        );
+
+        auto arguments = new Expressions();
+        arguments.push(append.e1);
+        arguments.push(append.e2);
+        auto call = new CallExp(
+            append.loc, new VarExp(append.loc, function_, false), arguments,
+        );
+        call.f = function_;
+        call.type = function_.type.toBasetype.nextOf;
+
+        return compileCall(call);
+    }
+
+    // `_d_arrayappendcd`/`_d_arrayappendwd`'s `FuncDeclaration`s, keyed by
+    // mangled symbol name and resolved once by parsing a fixed `extern(C)`
+    // prototype source string through the frontend's normal snippet
+    // pipeline (which already runs full semantic analysis, giving usable,
+    // callable declarations -- `quickbite.frontend.compiler.parseSnippet`
+    // caches by source content, so this is cheap on repeated calls too).
+    private FuncDeclaration nativeDcharAppendFunction(in string symbol) {
+        import quickbite.frontend.compiler: parseSnippet;
+        import std.conv: text;
+
+        if (auto existing = symbol in _nativeDcharAppendFunctions)
+            return *existing;
+
+        auto module_ = parseSnippet(dcharAppendPrototypeSource).module_;
+        collectFunctionDeclarations(module_.members);
+
+        if (auto result = symbol in _nativeDcharAppendFunctions)
+            return *result;
+        throw new Exception(text(
+            "Missing druntime dchar-append hook in bytecode core: ", symbol,
+        ));
+    }
+
+    // `extern(C)` groups sibling declarations under one `LinkDeclaration`
+    // (an `AttribDeclaration`), so the module's own top-level `members`
+    // holds that wrapper, not each `FuncDeclaration` directly; unwrap any
+    // attribute nesting to reach them.
+    private void collectFunctionDeclarations(
+        imported!"dmd.arraytypes".Dsymbols* members,
+    ) {
+        if (members is null)
+            return;
+        foreach (member; *members) {
+            if (auto function_ = member.isFuncDeclaration) {
+                if (function_.ident !is null)
+                    _nativeDcharAppendFunctions[
+                        function_.ident.toString.idup
+                    ] = function_;
+                continue;
+            }
+            if (auto attribute = member.isAttribDeclaration)
+                collectFunctionDeclarations(attribute.decl);
+        }
+    }
+
+    private enum dcharAppendPrototypeSource = `
+        extern(C) void[] _d_arrayappendcd(ref byte[] x, dchar c);
+        extern(C) void[] _d_arrayappendwd(ref byte[] x, dchar c);
+    `;
 
     // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh
     // dchar/char element array, then loop over it, running the inlined body
@@ -12176,180 +12330,6 @@ private struct Compiler {
         return allocateBytes(size(returnType), 8);
     }
 
-    private Operand* compileEmplace(CallExp call) {
-        if (call.arguments is null || call.arguments.length < 2)
-            return null;
-
-        const destination = compileExpression((*call.arguments)[0]);
-        if (!destination.isPointer)
-            return null;
-
-        const value = compileExpression((*call.arguments)[1]);
-        // `destination.pointerElement` is `void_` for a struct/static-array
-        // pointee (no opcode scalar type at all, matching `storeThroughPointer`
-        // above); its width then comes from the emplaced value's own DMD
-        // type size, never a bare `size(ScalarType.void_)`, which is 0.
-        const elementSize = destination.pointerElement == ScalarType.void_
-            ? typeFacts((*call.arguments)[1].type).byteWidth
-            : size(destination.pointerElement);
-        emitPointerStore(
-            value.offset, destination.offset, compileSizeConstant(0),
-            elementSize,
-        );
-
-        auto result = new Operand;
-        *result = destination;
-        return result;
-    }
-
-    private Operand* compileEmplaceRef(CallExp call) {
-        import dmd.astenums: TY;
-
-        if (call.arguments is null || call.arguments.length == 0)
-            return null;
-
-        auto index = (*call.arguments)[0].isIndexExp;
-        if (index is null || index.e1.type is null ||
-            index.e1.type.toBasetype.ty != TY.Tarray)
-            return null;
-
-        if (call.arguments.length == 1) {
-            const descriptor = dynamicArrayDescriptor(index.e1);
-            if (descriptor.elementType == ScalarType.void_)
-                return null;
-
-            const elementSize = dynamicArrayElementSize(index.e1.type);
-            if (elementSize > ulong.sizeof)
-                return null;
-
-            const value = allocateBytes(elementSize, elementSize);
-            _code ~= Instruction(
-                Op.loadConstant,
-                value,
-                constantIndex(
-                    descriptor.elementType == ScalarType.char_
-                        ? char.init
-                        : descriptor.elementType == ScalarType.wchar_
-                            ? wchar.init
-                            : 0,
-                ),
-                cast(ushort) elementSize,
-            );
-            const indexSlot = compileExpression(index.e2);
-            emitIndexStore(
-                value, descriptor.offset, indexSlot.offset, elementSize,
-            );
-
-            auto result = new Operand;
-            *result = Operand(value, descriptor.elementType);
-            return result;
-        }
-
-        if (index.type !is null &&
-            index.type.toBasetype.isTypeStruct !is null)
-        {
-            const descriptor = dynamicArrayDescriptor(index.e1);
-
-            const elementSize = dynamicArrayElementSize(index.e1.type);
-            if (elementSize > ulong.sizeof)
-                return null;
-
-            if (call.arguments.length == 2) {
-                auto source = structValueOffsetOrNull(
-                    (*call.arguments)[1],
-                );
-                if (source is null)
-                    return null;
-
-                const value = allocateStructBlock(index.type);
-                _code ~= Instruction(
-                    Op.copy,
-                    value,
-                    *source,
-                    cast(ushort) elementSize,
-                );
-                if (auto postblit = structDeclarationOf(index.type).postblit)
-                    runStructMethod(value, postblit);
-
-                const indexSlot = compileExpression(index.e2);
-                emitIndexStore(
-                    value, descriptor.offset, indexSlot.offset, elementSize,
-                );
-
-                auto result = new Operand;
-                *result = Operand(value, ScalarType.void_);
-                return result;
-            }
-
-            auto constructor = structDeclarationOf(index.type).ctor
-                .isFuncDeclaration;
-            if (constructor is null)
-                return null;
-
-            const value = allocateStructBlock(index.type);
-            zeroFrameBlock(value, elementSize);
-            auto arguments = new Expressions(call.arguments.length - 1);
-            foreach (argumentIndex; 0 .. arguments.length)
-                (*arguments)[argumentIndex] =
-                    (*call.arguments)[argumentIndex + 1];
-            runConstructor(
-                value,
-                constructor,
-                arguments,
-            );
-
-            const indexSlot = compileExpression(index.e2);
-            emitIndexStore(
-                value, descriptor.offset, indexSlot.offset, elementSize,
-            );
-
-            auto result = new Operand;
-            *result = Operand(value, ScalarType.void_);
-            return result;
-        }
-
-        // The struct-typed `index.type` shapes are all handled above and
-        // return; whatever reaches here is a scalar (or pointer/classPointer)
-        // element, so `storeExpressionIntoPlace`'s aggregate dispatcher is
-        // the wrong tool -- its `aggregateValueOffset` throws "Unsupported
-        // aggregate assignment" for exactly those representations. A bare
-        // compile-and-store is both correct and sufficient here.
-        if (auto place = placeOrNull(index)) {
-            const value = compileExpression((*call.arguments)[1]);
-            storePlace(*place, value);
-            auto result = new Operand;
-            *result = loadPlace(*place);
-            return result;
-        }
-
-        return null;
-    }
-
-    private Operand compileNewArrayRuntimeCall(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length == 0 ||
-            (!isDynamicArrayArgument(call) && !isStringType(call.type)))
-            throw new Exception(text(
-                "Unsupported new array runtime call in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        const length = compileExpression((*call.arguments)[0]);
-        const elementType = dynamicArrayElementType(call.type);
-        const elementSize = dynamicArrayElementSize(
-            call.type, arrayElementIsArray(call.type),
-        );
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.allocArrayDynamic,
-            offset,
-            packedFill(elementType, elementSize),
-            length.offset,
-        );
-        return Operand(offset, ScalarType.void_);
-    }
-
     private Expression immediateLambdaReturn(CallExp call) {
         auto literal = call.e1 is null ? null : call.e1.isFuncExp;
         if (literal is null ||
@@ -12541,68 +12521,6 @@ private struct Compiler {
         _code ~= Instruction(
             Op.copy, slot, address.offset, cast(ushort) size_t.sizeof,
         );
-    }
-
-    private Operand compileRangeViolation() {
-        const message = compileStringLiteralBytes("Range violation");
-        _code ~= Instruction(
-            Op.throwString, message, noExceptionClass, noCatchObjectField,
-        );
-        const offset =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        return Operand(
-            offset, ScalarType.ulong_, true, ScalarType.int_,
-        );
-    }
-
-    // `dest[] = a[] + b[]`: materialise the three source descriptors and
-    // write the element-wise sum into the destination descriptor.
-    private Operand compileArrayOpAddAssign(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length != 3)
-            throw new Exception(text(
-                "Unsupported array operation in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto destination = (*call.arguments)[0].isSliceExp;
-        if (destination is null)
-            throw new Exception(text(
-                "Unsupported array operation in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        const elementType =
-            dynamicArrayDescriptor(destination.e1).elementType;
-        const destinationSlice = arrayOpSlice(elementType, (*call.arguments)[0]);
-        const leftSlice = arrayOpSlice(elementType, (*call.arguments)[1]);
-        const rightSlice = arrayOpSlice(elementType, (*call.arguments)[2]);
-        _code ~= Instruction(
-            Op.arrayAddAssign4, destinationSlice, leftSlice, rightSlice,
-        );
-        return Operand.init;
-    }
-
-    // Materialise one operand of an element-wise array operation into a slice
-    // descriptor sharing its source's backing memory. Only the slice form is
-    // needed (the lowering wraps each operand in a `[]`).
-    private ushort arrayOpSlice(
-        in ScalarType elementType,
-        Expression operand,
-    ) {
-        import std.conv: text;
-
-        auto slice = operand.isSliceExp;
-        if (slice is null)
-            throw new Exception(text(
-                "Unsupported array operation operand in bytecode core: ",
-                expressionChars(operand),
-            ));
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileSliceInto(offset, elementType, slice);
-        return offset;
     }
 
     private Operand* compileBuiltinCall(
@@ -12847,13 +12765,7 @@ private struct Compiler {
         if (compilePlainAssert(assert_))
             return;
 
-        if (compileLoweredComparisonAssert(assert_))
-            return;
-
-        if (compileVerbatimStringAssert(assert_))
-            return;
-
-        if (compileExplicitMessageAssert(assert_))
+        if (compileMessageAssert(assert_))
             return;
 
         throw new Exception(text(
@@ -12889,12 +12801,10 @@ private struct Compiler {
         return true;
     }
 
-    // A plain `assert(cond)` with no message left over after the literal and
-    // `checkaction=context` branches above: `compileLoweredComparisonAssert`
-    // and `compileVerbatimStringAssert` only fire for the specific comparison,
-    // negation, and logical shapes that DMD's context lowering rewrites into a
-    // message; every other runtime condition (or a `checkaction=context`-less
-    // parse) keeps `assert_.msg is null`. Compiled code aborts on failure with
+    // A plain `assert(cond)` with no message left over after the literal
+    // branches above: any runtime condition under a `checkaction=context`-less
+    // parse keeps `assert_.msg is null`; `compileMessageAssert` handles every
+    // shape that has a message. Compiled code aborts on failure with
     // the same plain `_d_assert` "Assertion failure" message as `assert(0)`
     // and no contextual operands, so the VM only needs the condition's truth
     // value: evaluate it through the same normalisation `&&`/`||`/`?:` use
@@ -12912,78 +12822,26 @@ private struct Compiler {
         return true;
     }
 
-    // `assert(cond)` on a non-comparison runtime condition (a `&&`/`||` chain)
-    // lowers to an AssertExp whose message is the verbatim DMD string
-    // "`assert(<source>)` failed". Compile the condition to a bool and, on
-    // failure, throw that exact string rather than synthesising one.
-    private bool compileVerbatimStringAssert(AssertExp assert_) {
-        import quickbite.frontend.dmd.string_literals: stringChars;
-
+    // `assert(cond, message)` with a message: compile `cond` (the same
+    // is-null-normalised way `compilePlainAssert` does) and, only on the
+    // failing path, compile `message` -- an ordinary expression, whatever
+    // shape it is -- and throw its result. This covers every shape DMD gives
+    // `.msg` alike: a plain user string, DMD's own verbatim text for a
+    // `&&`/`||`/`!` condition, and, under `-checkaction=context`, a call to
+    // `core.internal.dassert`'s `_d_assert_fail!(...)` template. The last
+    // case needs no recognition here -- it is just a call expression whose
+    // real druntime body formats the operands, so compiling it like any
+    // other call reproduces compiled code's message exactly. A
+    // compile-time-false condition (`assert(false, msg)`) needs no separate
+    // case either: its compiled condition operand is a constant `false`, so
+    // the jump below is never taken and the throw always runs.
+    private bool compileMessageAssert(AssertExp assert_) {
         if (assert_.msg is null)
             return false;
 
-        auto message = assert_.msg.isStringExp;
-        if (message is null)
-            return false;
-
-        if (assert_.e1.isLogicalExp is null && assert_.e1.isNotExp is null)
-            return false;
-
-        const condition = compileExpression(assert_.e1);
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            stringChars(message).idup,
-            condition.offset,
-            condition.offset,
-            condition.type,
-        );
-        _code ~= Instruction(
-            Op.assertTrueVerbatim,
-            condition.offset,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    // `assert(cond, message)` with an explicit string message that is neither
-    // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
-    // the message string itself on failure, its native {length, ptr}
-    // descriptor materialised the same way any other string source is — a
-    // `StringExp` literal (`assert(1 == 2, "oops")`, folded to
-    // `assert(false, "oops")`), a struct field, or a `string` local. A
-    // compile-time-false condition (`assert(false, msg)`) throws
-    // unconditionally; otherwise the condition is compiled and the throw is
-    // skipped when it holds.
-    private bool compileExplicitMessageAssert(AssertExp assert_) {
-        if (assert_.msg is null)
-            return false;
-
-        // `_d_assert_fail` calls and the verbatim-logical string belong to the
-        // earlier branches; an explicit message is anything else.
-        if (isAssertFailCall(assert_.msg))
-            return false;
-
-        auto integer = assert_.e1.isIntegerExp;
-        if (integer !is null && integer.toInteger == 0) {
-            if (!isStringType(assert_.msg.type))
-                return false;
-            const messageOffset =
-                dynamicArrayDescriptor(assert_.msg).offset;
-            _code ~= Instruction(
-                Op.throwString,
-                messageOffset,
-                noExceptionClass,
-                noCatchObjectField,
-            );
-            return true;
-        }
-
-        if (!isStringType(assert_.msg.type))
-            return false;
-        const messageOffset = dynamicArrayDescriptor(assert_.msg).offset;
-
-        const condition = compileExpression(assert_.e1);
+        const condition = compileBoolCondition(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
+        const messageOffset = compileExpression(assert_.msg).offset;
         _code ~= Instruction(
             Op.throwString,
             messageOffset,
@@ -12991,168 +12849,6 @@ private struct Compiler {
             noCatchObjectField,
         );
         patchJump(skipJump);
-        return true;
-    }
-
-    // DMD with -checkaction=context rewrites `assert(a == b)` into an
-    // AssertExp whose message is a `_d_assert_fail` call carrying the
-    // operator string and both operands; compile the operands once and
-    // assert on their comparison.
-    private bool compileLoweredComparisonAssert(AssertExp assert_) {
-        if (assert_.msg is null)
-            return false;
-
-        auto call = assert_.msg.isCallExp;
-        if (call is null || call.arguments is null)
-            return false;
-
-        // A `_d_assert_fail` call carries at least the operator-string
-        // argument. A bare `message()` call (e.g. `assert(true, message)`)
-        // has no arguments and is not this shape, so indexing `[0]` would
-        // crash; bail out before touching the empty argument list.
-        if (call.arguments.length == 0)
-            return false;
-
-        auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null)
-            return false;
-
-        // `assert(intExpr)` lowers to `_d_assert_fail("", intExpr)`: a single
-        // operand asserted non-zero, rendered "<value> != true" on failure.
-        if (call.arguments.length == 2 && operatorText(operator) == "")
-            return compileNonzeroAssert((*call.arguments)[1]);
-
-        // `assert(!boolExpr)` lowers to `_d_assert_fail("!", boolExpr)`: the
-        // condition holds when `boolExpr` is false, and the failure renders
-        // "<value> == true" (the un-negated operand against the `true` it was
-        // implicitly compared to).
-        if (call.arguments.length == 2 && operatorText(operator) == "!")
-            return compileNotAssert((*call.arguments)[1]);
-
-        // The 3-argument form carries a relational operator and both operands;
-        // `==`, `!=`, `<`, `<=`, `>`, `>=` are asserted on their comparison and
-        // render the inverted relation on failure.
-        if (call.arguments.length != 3)
-            return false;
-
-        const op = operatorText(operator);
-
-        // AA and struct comparisons (`==`, `!=`, `<`, ...): DMD has already
-        // lowered the condition `assert_.e1` to the authoritative bool. Compile
-        // that condition directly and assert it; the rendered operands are dead
-        // code on a passing assert.
-        import dmd.astenums: TY;
-        if ((*call.arguments)[1].type.toBasetype.isTypeAArray !is null ||
-            (*call.arguments)[2].type.toBasetype.isTypeAArray !is null ||
-            (*call.arguments)[1].type.toBasetype.ty == TY.Tstruct ||
-            (*call.arguments)[2].type.toBasetype.ty == TY.Tstruct)
-            return compileBoolConditionAssert(assert_.e1, op);
-
-        // A delegate comparison (`==`, `!=`, `is`, `!is`; a delegate has no
-        // relational operators): a delegate has no `opEquals` either, so
-        // `assert_.e1` is already the authoritative `EqualExp`/`IdentityExp`
-        // `compileBoolValue` (via `compileEqualExpression`/
-        // `compileIdentityExpression`) now handles directly. Compile that
-        // condition and assert it the same fixed-message way the struct case
-        // above does, instead of destructuring the rendered
-        // `_d_assert_fail` operands.
-        if ((*call.arguments)[1].type.toBasetype.ty == TY.Tdelegate ||
-            (*call.arguments)[2].type.toBasetype.ty == TY.Tdelegate)
-            return compileBoolConditionAssert(assert_.e1, op);
-
-        // `is`/`!is` over dynamic arrays: identity is the whole two-word slice
-        // descriptor, which `assert_.e1` already expresses. Compile that
-        // condition the same way the struct and delegate cases above do; the
-        // rendered-operand route below reads a single word and would answer
-        // with the length alone.
-        if (op == "is" || op == "!is")
-            if (auto identity = assert_.e1.isIdentityExp)
-                if (isDynamicArrayIdentity(identity))
-                    return compileBoolConditionAssert(assert_.e1, op);
-
-        // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
-        // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
-        if (isPointerType((*call.arguments)[1].type) ||
-            isPointerType((*call.arguments)[2].type))
-            return compilePointerComparisonAssert(
-                op, (*call.arguments)[1], (*call.arguments)[2],
-            );
-
-        if (op == "is" || op == "!is")
-            return compileScalarIdentityAssert(
-                op, (*call.arguments)[1], (*call.arguments)[2],
-            );
-
-        switch (op) {
-            case "==", "!=", "<", "<=", ">", ">=":
-                break;
-            default:
-                return false;
-        }
-
-        // `assert(a[] == b[])` over dynamic-array operands compares the slices
-        // element-wise and renders each operand as `[e0, e1, ...]` on failure.
-        if (op == "==" || op == "!=")
-            if (tryArrayComparisonAssert(
-                    op, (*call.arguments)[1], (*call.arguments)[2]))
-                return true;
-
-        if (op == "==" || op == "!=")
-            if (tryStaticArrayComparisonAssert(
-                    op, (*call.arguments)[1], (*call.arguments)[2]))
-                return true;
-
-        if (op == "==" || op == "!=")
-            if (tryNestedArrayComparisonAssert(
-                    op, (*call.arguments)[1], (*call.arguments)[2]))
-                return true;
-
-        if (op == "==" || op == "!=")
-            if (tryStringComparisonAssert(
-                    op, (*call.arguments)[1], (*call.arguments)[2]))
-                return true;
-
-        auto lhs = compileExpression((*call.arguments)[1]);
-        auto rhs = compileExpression((*call.arguments)[2]);
-        if ((op == "==" || op == "!=") &&
-            isCharacterScalar(lhs.type) &&
-            isCharacterScalar(rhs.type))
-        {
-            const condition = emitCharacterEquality(op, lhs, rhs);
-            const diagnostic = _program.assertDiagnostics.length;
-            _program.assertDiagnostics ~=
-                AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
-            _code ~= Instruction(
-                Op.assertTrue,
-                condition,
-                cast(ushort) diagnostic,
-            );
-            return true;
-        }
-
-        const operandType = normaliseNumericOperands(
-            lhs,
-            rhs,
-            call,
-            "Unsupported comparison assert in bytecode core: ",
-        );
-
-        const condition = allocateBytes(1, 1);
-        _code ~= Instruction(
-            comparisonAssertOp(op, operandType),
-            condition,
-            lhs.offset,
-            rhs.offset,
-        );
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic(op, lhs.offset, rhs.offset, operandType);
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
         return true;
     }
 
@@ -13205,111 +12901,12 @@ private struct Compiler {
         return notEqual;
     }
 
-    private bool tryStringComparisonAssert(
-        in string op,
-        Expression lhsExpression,
-        Expression rhsExpression,
-    ) {
-        if (!isStringOperand(lhsExpression) || !isStringOperand(rhsExpression))
-            return false;
-
-        // A genuine string comparison renders quoted (unlike the generic
-        // `tryArrayComparisonAssert`'s `[e0, e1, ...]`), but otherwise shares
-        // the same real-descriptor `sliceEqualOp` mechanism. `isStringOperand`
-        // only accepts `isGenuineCharString` operands, so `sliceEqualOp(1)` is
-        // exact here; `wstring`/`dstring` never reach this function — they
-        // fail `isGenuineCharString` and are caught earlier by the generic
-        // `tryArrayComparisonAssert`, which sizes the comparison itself.
-        const lhs = dynamicArrayDescriptor(lhsExpression).offset;
-        const rhs = dynamicArrayDescriptor(rhsExpression).offset;
-        const condition = allocate(ScalarType.bool_);
-        emitSliceEqual(condition, lhs, rhs, 1);
-        if (op == "!=")
-            _code ~= Instruction(Op.notBool, condition, condition);
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            op, lhs, rhs, ScalarType.void_, false, true,
-        );
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    private bool isStringOperand(Expression expression) {
-        if (isGenuineCharString(expression))
-            return true;
-
-        if (auto dot = expression.isDotVarExp)
-            return tryExceptionStringField(dot) !is null;
-
-        return false;
-    }
-
-    // Assert the already-lowered boolean condition `condition` is true, throwing
-    // a verbatim message naming the relation on failure. Used for struct
-    // comparisons whose condition DMD has lowered to a bitwise `is`, an
-    // `opEquals` call, or an `opCmp` relation; the condition is the authoritative
-    // bool, so re-deriving it from the rendered operands is unnecessary.
-    private bool compileBoolConditionAssert(
-        Expression condition,
-        in string op,
-    ) {
-        import std.conv: text;
-
-        const operand = compileBoolValue(condition);
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            text("Assertion failure (", op, ")"),
-            operand.offset,
-            operand.offset,
-            operand.type,
-        );
-        _code ~= Instruction(
-            Op.assertTrueVerbatim, operand.offset, cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    // Compile an expression to a one-byte boolean. A struct identity `a is b`
-    // (DMD's lowering of a POD struct `==`) compares the two inline blocks
-    // byte-wise; a delegate identity (`dg1 is dg2`, no such lowering since a
-    // delegate has no `opEquals`) and a dynamic-array identity both compare a
-    // two-word value, which `compileIdentityExpression` already knows how to
-    // do; everything else is an ordinary boolean expression (an `opEquals`
-    // call, an `opCmp` relation, a `&&` chain).
-    private Operand compileBoolValue(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto identity = expression.isIdentityExp) {
-            if (identity.e1.type.toBasetype.ty == TY.Tdelegate ||
-                isDynamicArrayIdentity(identity))
-                return compileIdentityExpression(identity);
-            return compileStructIdentity(identity);
-        }
-        return compileExpression(expression);
-    }
-
-    // `a is b` / `a !is b` over struct values (DMD's lowering of a POD struct
-    // `==`/`!=`): compare the two inline blocks field by field and combine the
-    // per-field results with `&&`, yielding a bool. Field-wise comparison sizes
-    // each compare by the field's scalar type, ignoring inter-field padding.
-    private Operand compileStructIdentity(
-        imported!"dmd.expression".IdentityExp identity,
-    ) {
-        import dmd.tokens: EXP;
-
-        return compileStructIdentity(
-            identity.e1.type,
-            structOperandOffset(identity.e1),
-            structOperandOffset(identity.e2),
-            identity.op == EXP.notIdentity,
-        );
-    }
-
+    // `a == b` / `a != b` over struct values with no `opEquals` (DMD lowers
+    // this to a bitwise `is`/`!is`, dispatched here from
+    // `compileEqualExpression`): compare the two inline blocks field by field
+    // and combine the per-field results with `&&`, yielding a bool.
+    // Field-wise comparison sizes each compare by the field's scalar type,
+    // ignoring inter-field padding.
     private Operand compileStructIdentity(
         Type structType,
         in ushort left,
@@ -13359,403 +12956,6 @@ private struct Compiler {
         if (invert)
             _code ~= Instruction(Op.notBool, result, result);
         return Operand(result, ScalarType.bool_);
-    }
-
-    // `assert(p == q)`, `assert(p is q)`, `assert(p < q)`, ... over pointer
-    // operands: compile both raw `size_t` pointer values and assert their
-    // comparison. `is`/`!is` (identity) compare the same raw addresses as
-    // `==`/`!=`; relations compare unsigned, as compiled pointer code does.
-    private bool compilePointerComparisonAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        import std.conv: text;
-
-        const lhsPointer = compileExpression(lhs);
-        const rhsPointer = compileExpression(rhs);
-        const condition = allocateBytes(1, 1);
-        _code ~= Instruction(
-            pointerComparisonOp(op),
-            condition,
-            lhsPointer.offset,
-            rhsPointer.offset,
-        );
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            op,
-            lhsPointer.offset,
-            rhsPointer.offset,
-            ScalarType.ulong_,
-            false,
-            false,
-            isNullPointerAssertOperand(lhs),
-            isNullPointerAssertOperand(rhs),
-        );
-        _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
-        return true;
-    }
-
-    private bool compileScalarIdentityAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        const lhsOperand = compileExpression(lhs);
-        const rhsOperand = compileExpression(rhs);
-        const condition = allocateBytes(1, 1);
-        _code ~= Instruction(
-            pointerComparisonOp(op),
-            condition,
-            lhsOperand.offset,
-            rhsOperand.offset,
-        );
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            op,
-            lhsOperand.offset,
-            rhsOperand.offset,
-            ScalarType.ulong_,
-        );
-        _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
-        return true;
-    }
-
-    private bool isNullPointerAssertOperand(Expression expression) {
-        if (expression.isNullExp !is null)
-            return true;
-        if (auto integer = expression.isIntegerExp)
-            return integer.toInteger == 0;
-        return false;
-    }
-
-    // `assert(a == b)` / `assert(a[] != b[])` over dynamic-array operands,
-    // and a mixed dynamic/static-array comparison (`staticArray == [a, b]`;
-    // DMD hoists the array-literal side into a stack temp and casts it to a
-    // slice, `dynamicArrayDescriptor` builds a slice view over the static
-    // side): build a slice descriptor for each operand, compare them
-    // element-wise, and assert the result; on failure each operand renders
-    // as `[e0, e1, ...]`. Null if either operand is not an array value, or
-    // both are static arrays (`tryStaticArrayComparisonAssert`'s direct
-    // block compare handles that case without a heap copy).
-    private bool tryArrayComparisonAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        import dmd.astenums: TY;
-
-        const lhsTy = lhs.type.toBasetype.ty;
-        const rhsTy = rhs.type.toBasetype.ty;
-        if (lhsTy != TY.Tarray && lhsTy != TY.Tsarray)
-            return false;
-        if (rhsTy != TY.Tarray && rhsTy != TY.Tsarray)
-            return false;
-        if (lhsTy == TY.Tsarray && rhsTy == TY.Tsarray)
-            return false;
-
-        // A mixed Tsarray/Tarray pair where the static side's own elements
-        // are themselves arrays (`int[2][2]`): `compileStaticArrayAsDynamicInto`
-        // when materialised dynamically stores each row as a raw byte block,
-        // not a 16-byte slice descriptor, while the other, dynamic-array side
-        // builds proper nested descriptors -- comparing the two would compare
-        // unrelated byte shapes. Decline so the caller falls through to
-        // `tryNestedArrayComparisonAssert`'s row-by-row comparison instead of
-        // a silent wrong result.
-        if (lhsTy == TY.Tsarray && arrayElementIsArray(lhs.type))
-            return false;
-        if (rhsTy == TY.Tsarray && arrayElementIsArray(rhs.type))
-            return false;
-
-        // A genuine `string` comparison renders as a quoted string
-        // (`tryStringComparisonAssert`), not `[e0, e1, ...]`; a mutable
-        // `char[]` merely cast to a `const`/`immutable` view for the
-        // comparison (`isGenuineCharString` sees through the cast) stays on
-        // this generic path, and so does `wstring`/`dstring`.
-        if (isGenuineCharString(lhs) && isGenuineCharString(rhs))
-            return false;
-
-        const elementType = dynamicArrayElementType(lhs.type);
-        // `int[][] == int[][]` (any nesting depth): both operands are
-        // genuine dynamic arrays whose own element is itself an array (the
-        // mixed Tsarray/Tarray nested case above already declined; a
-        // Tsarray on both sides never reaches this function at all). Each
-        // row is a separately heap-allocated slice descriptor, so the flat
-        // `sliceEqualOp` byte compare below would compare row `.ptr` values
-        // instead of content -- structural comparison needs the dedicated
-        // nested opcode instead.
-        const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
-            arrayElementIsArray(lhs.type) &&
-            arrayElementIsArray(rhs.type);
-        const lhsElementType = dynamicArrayElementType(lhs.type);
-        const rhsElementType = dynamicArrayElementType(rhs.type);
-        if (lhsElementType != rhsElementType &&
-            ((!isCompoundIntegerScalar(lhsElementType) &&
-                    !isCharacterScalar(lhsElementType)) ||
-                (!isCompoundIntegerScalar(rhsElementType) &&
-                    !isCharacterScalar(rhsElementType))))
-            return false;
-        const lhsDescriptor = dynamicArrayDescriptor(lhs);
-        const rhsDescriptor = dynamicArrayDescriptor(rhs);
-        const lhsOffset = lhsDescriptor.offset;
-        const rhsOffset = rhsDescriptor.offset;
-
-        const equal = nested
-            ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
-            : allocateBytes(1, 1);
-        if (!nested) {
-            if (lhsDescriptor.elementType == rhsDescriptor.elementType)
-                emitSliceEqual(
-                    equal, lhsOffset, rhsOffset,
-                    dynamicArrayElementSize(lhs.type),
-                );
-            else {
-                _code ~= Instruction(
-                    Op.sliceEqualNumeric,
-                    equal,
-                    lhsOffset,
-                    rhsOffset,
-                    cast(ushort) lhsDescriptor.elementType,
-                    cast(ushort) rhsDescriptor.elementType,
-                );
-            }
-        }
-
-        // `==` holds when the slices are equal; `!=` holds when negated.
-        ushort condition = equal;
-        if (op == "!=") {
-            condition = allocateBytes(1, 1);
-            _code ~= Instruction(Op.notBool, condition, equal);
-        }
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic(
-                op, lhsOffset, rhsOffset, elementType, true,
-                elementNestingDepth: nested ? arrayNestingDepth(lhs.type) - 1 : 0,
-                rhsOperandType: rhsElementType,
-                hasDistinctOperandTypes: lhsElementType != rhsElementType,
-            );
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    private bool tryStaticArrayComparisonAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        import dmd.astenums: TY;
-
-        if (lhs.type.toBasetype.ty != TY.Tsarray ||
-            rhs.type.toBasetype.ty != TY.Tsarray)
-            return false;
-
-        auto elementType = lhs.type.toBasetype.nextOf;
-        const elementScalar = scalarType(elementType);
-        const lhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileStaticArrayAsDynamicInto(lhsOffset, elementScalar, lhs);
-        const rhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileStaticArrayAsDynamicInto(rhsOffset, elementScalar, rhs);
-
-        const equal = allocateBytes(1, 1);
-        emitSliceEqual(
-            equal, lhsOffset, rhsOffset,
-            typeFacts(elementType).byteWidth,
-        );
-
-        ushort condition = equal;
-        if (op == "!=") {
-            condition = allocateBytes(1, 1);
-            _code ~= Instruction(Op.notBool, condition, equal);
-        }
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic(op, lhsOffset, rhsOffset, elementScalar, true);
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    // `assert(a == b)` where one side is a static array whose own element is
-    // itself an array (`int[2][2]`) and the other is a genuine array of
-    // arrays -- either a real `T[][]` local or DMD's hoisted stack temp for a
-    // nested array literal, which types each row as its own independently
-    // heap-allocated dynamic array rather than a flat static block
-    // (`tryStackArrayLiteralSliceInto` builds exactly that shape). The two
-    // sides' rows are not the same byte shape (a contiguous inline block on
-    // the static side, an independent heap slice on the other), so neither
-    // `tryStaticArrayComparisonAssert`'s single memcmp nor
-    // `tryArrayComparisonAssert`'s flat slice compare applies; compare row by
-    // row instead, mirroring DMD's own recursive `__equals` lowering: the
-    // outer lengths must match, then every row compares content-equal, with
-    // the static side's row read as a view sharing its own storage (no copy)
-    // and the other side's row fetched from its own descriptor.
-    private bool tryNestedArrayComparisonAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        import dmd.astenums: TY;
-
-        auto nestedStatic = lhs;
-        auto other = rhs;
-        const lhsIsNested = lhs.type.toBasetype.ty == TY.Tsarray &&
-            arrayElementIsArray(lhs.type);
-        if (!lhsIsNested) {
-            const rhsIsNested = rhs.type.toBasetype.ty == TY.Tsarray &&
-                arrayElementIsArray(rhs.type);
-            if (!rhsIsNested)
-                return false;
-            nestedStatic = rhs;
-            other = lhs;
-        }
-
-        auto rowType = nestedStatic.type.toBasetype.nextOf;
-        if (rowType.toBasetype.ty != TY.Tsarray)
-            return false;
-
-        auto nestedPlace = placeOrNull(nestedStatic);
-        if (nestedPlace is null)
-            return false;
-        const nestedAddress = addressOfPlace(*nestedPlace);
-        const nestedValue = loadPlace(*nestedPlace);
-
-        auto rowElementType = rowType.toBasetype.nextOf;
-        const rowElementScalar = scalarType(rowElementType);
-        const rowByteSize = typeFacts(rowType).byteWidth;
-        const rowLength = cast(uint) (rowByteSize / size(rowElementScalar));
-        const rowCount =
-            typeFacts(nestedStatic.type).byteWidth / rowByteSize;
-
-        const otherDescriptor = dynamicArrayDescriptor(other).offset;
-        const otherLength = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, otherLength, otherDescriptor);
-
-        const lengthsEqual = allocateBytes(1, 1);
-        _code ~= Instruction(
-            comparisonEqualOp(ScalarType.ulong_),
-            lengthsEqual,
-            compileSizeConstant(rowCount),
-            otherLength,
-        );
-
-        size_t[] toFalse =
-            [emitJumpIfFalse(Operand(lengthsEqual, ScalarType.bool_))];
-
-        foreach (rowIndex; 0 .. rowCount) {
-            const view = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const rowAddress = pointerPlaceAddress(
-                nestedAddress.offset,
-                compileSizeConstant(rowIndex * rowByteSize),
-                1,
-                ScalarType.void_,
-            );
-            _code ~= Instruction(
-                Op.copy, cast(ushort) sliceDescriptorPtrOffset(view),
-                rowAddress.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            _code ~= Instruction(
-                Op.loadConstant,
-                cast(ushort) sliceDescriptorLengthOffset(view),
-                constantIndex(rowLength),
-                cast(ushort) size_t.sizeof,
-            );
-
-            const indexSlot = compileSizeConstant(rowIndex);
-            const otherRow = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            emitIndexLoad(otherRow, otherDescriptor, indexSlot, sliceDescriptorSize);
-
-            const rowEqual = allocateBytes(1, 1);
-            emitSliceEqual(rowEqual, view, otherRow, size(rowElementScalar));
-            toFalse ~= emitJumpIfFalse(Operand(rowEqual, ScalarType.bool_));
-        }
-
-        const result = allocateBytes(1, 1);
-        _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
-        const doneJump = emitJump;
-        foreach (patch; toFalse)
-            patchJump(patch);
-        _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
-        patchJump(doneJump);
-
-        ushort condition = result;
-        if (op == "!=") {
-            condition = allocateBytes(1, 1);
-            _code ~= Instruction(Op.notBool, condition, result);
-        }
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~= AssertDiagnostic(
-            op, nestedValue.offset, otherDescriptor, ScalarType.void_,
-        );
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    private bool compileNonzeroAssert(Expression expression) {
-        import std.conv: text;
-
-        const operand = compileExpression(expression);
-        if (operand.type != ScalarType.int_ &&
-            operand.type != ScalarType.bool_ &&
-            !isEightByteInteger(operand.type))
-            throw new Exception(text(
-                "Unsupported truth assert in bytecode core: ",
-                expressionChars(expression),
-            ));
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic("", operand.offset, operand.offset, operand.type);
-        _code ~= Instruction(
-            Op.assertNonzeroInt4,
-            operand.offset,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    // `assert(!boolExpr)`: compile the operand, assert its negation is true
-    // (i.e. the operand is false). The diagnostic carries the un-negated
-    // operand and renders "<value> == true" via the "!" inverted operator.
-    private bool compileNotAssert(Expression expression) {
-        import std.conv: text;
-
-        const operand = compileExpression(expression);
-        if (operand.type != ScalarType.bool_)
-            throw new Exception(text(
-                "Unsupported logical-not assert in bytecode core: ",
-                expressionChars(expression),
-            ));
-
-        const condition = allocateBytes(1, 1);
-        _code ~= Instruction(Op.notBool, condition, operand.offset);
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic("!", operand.offset, operand.offset, operand.type);
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
     }
 
     private ushort allocate(in ScalarType type) @safe pure {
@@ -13861,43 +13061,8 @@ private struct Compiler {
         );
     }
 
-    // The `appendElement*` family's emit helper, the same required-`width`
-    // treatment as `emitSubSlice` above: one opcode per width, and `width`
-    // cannot be omitted or silently defaulted to zero.
-    private void emitAppendElement(
-        in ushort array, in ushort element, in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            appendElementOp(width), array, element, cast(ushort) width,
-        );
-    }
-
-    // The `dupArray*` family's emit helper, the same required-`width`
-    // treatment as `emitAppendElement` above: one opcode per width, and
-    // `width` cannot be omitted or silently defaulted to zero.
-    private void emitDupArray(
-        in ushort destination, in ushort source, in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            dupArrayOp(width), destination, source, cast(ushort) width,
-        );
-    }
-
-    // The `concatArrays*` family's emit helper, the same required-`width`
-    // treatment as `emitDupArray` above: one opcode per width, and `width`
-    // cannot be omitted or silently defaulted to zero.
-    private void emitConcatArrays(
-        in ushort destination, in ushort left, in ushort right,
-        in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            concatArraysOp(width), destination, left, right,
-            cast(ushort) width,
-        );
-    }
-
     // The `sliceCopy*` family's emit helper, the same required-`width`
-    // treatment as `emitConcatArrays` above: one opcode per width (1/2/4/8/16,
+    // treatment as `emitSubSlice` above: one opcode per width (1/2/4/8/16,
     // plus the `N` fallback), and `width` cannot be omitted or silently
     // defaulted to zero.
     private void emitSliceCopy(
@@ -13918,142 +13083,6 @@ private struct Compiler {
         _code ~= Instruction(
             sliceFillOp(width), destination, value, cast(ushort) width,
         );
-    }
-
-    // Broadcast one already-compiled row value (`value`, `rowByteSize`
-    // bytes) into every element of a `[lo .. hi)` range of a `T[N][]`
-    // destination (`destination`, a slice descriptor over that range). Each
-    // destination slot is its own 16-byte `{length, ptr}` row descriptor
-    // pointing at a separately heap-allocated block (`Op.allocArray2D`), so
-    // this writes through each row's existing `.ptr` in a runtime loop --
-    // `emitSliceFill`'s flat byte-fill would instead overwrite the row
-    // descriptors themselves, aliasing every destination row to whatever
-    // bytes `value` happens to hold rather than writing into each row's own
-    // storage.
-    private void emitRowBroadcastFill(
-        in ushort destination,
-        in ushort value,
-        in uint rowByteSize,
-    ) {
-        const index = compileSizeConstant(0);
-        const length = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, length, destination);
-
-        const conditionIndex = _code.length;
-        const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.lessThanUnsigned8, condition, index, length);
-        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
-
-        const rowDescriptor =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(rowDescriptor, destination, index, sliceDescriptorSize);
-        const rowPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, rowPointer,
-            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
-            cast(ushort) size_t.sizeof,
-        );
-        emitPointerStore(value, rowPointer, compileSizeConstant(0), rowByteSize);
-
-        const one = compileSizeConstant(1);
-        _code ~= Instruction(Op.addInt8, index, index, one);
-        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
-
-        patchJump(exitJump);
-    }
-
-    // Copy a range of rows (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
-    // destination, where `source` is itself a matching range of rows (not a
-    // single broadcast row -- see `emitRowBroadcastFill`). `Op.rowRangeCopy`
-    // writes each source row's content into the matching destination row's
-    // own existing heap-allocated block instead of `sliceCopy16`'s flat
-    // by-value descriptor copy, which would alias every destination row to
-    // the source's block (see `Op.rowRangeCopy`'s doc comment).
-    private void emitRowRangeCopy(
-        in ushort destination,
-        in ushort source,
-        in uint rowByteSize,
-    ) @safe pure {
-        _code ~= Instruction(
-            Op.rowRangeCopy, destination, source, cast(ushort) rowByteSize,
-        );
-    }
-
-    // Copy contiguous inline source rows into each separately allocated
-    // `T[N][]` destination row. The mismatch path delegates to `sliceCopy1`
-    // solely for its standard length diagnostic; it throws before reading the
-    // synthetic descriptors' null pointers.
-    private void emitInlineRowRangeCopy(
-        in ushort destination,
-        in ushort source,
-        in uint rowByteSize,
-    ) {
-        const destinationLength = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, destinationLength, destination);
-        const sourceLength = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, sourceLength, source);
-        const lengthsMatch = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.equal8, lengthsMatch, destinationLength, sourceLength,
-        );
-        const lengthsMatchJump = emitJumpIfTrue(
-            Operand(lengthsMatch, ScalarType.bool_),
-        );
-
-        const mismatchDestination =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) sliceDescriptorLengthOffset(mismatchDestination),
-            destinationLength,
-            cast(ushort) size_t.sizeof,
-        );
-        const mismatchSource =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) sliceDescriptorLengthOffset(mismatchSource),
-            sourceLength,
-            cast(ushort) size_t.sizeof,
-        );
-        emitSliceCopy(mismatchDestination, mismatchSource, 1);
-        patchJump(lengthsMatchJump);
-
-        const sourcePointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, sourcePointer,
-            cast(ushort) sliceDescriptorPtrOffset(source),
-            cast(ushort) size_t.sizeof,
-        );
-        const index = compileSizeConstant(0);
-        const conditionIndex = _code.length;
-        const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.lessThanUnsigned8, condition, index, destinationLength,
-        );
-        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
-
-        const rowDescriptor =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(rowDescriptor, destination, index, sliceDescriptorSize);
-        const destinationPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            destinationPointer,
-            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
-            cast(ushort) size_t.sizeof,
-        );
-        const sourceRow = allocateBytes(rowByteSize, 1);
-        emitPointerLoad(sourceRow, sourcePointer, index, rowByteSize);
-        emitPointerStore(sourceRow, destinationPointer, compileSizeConstant(0), rowByteSize);
-
-        const one = compileSizeConstant(1);
-        _code ~= Instruction(Op.addInt8, index, index, one);
-        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
-        patchJump(exitJump);
     }
 
     // The `sliceEqual*` family's emit helper. Unlike every other
@@ -14123,6 +13152,30 @@ private struct Compiler {
         in bool isReference,
     ) {
         import std.conv: text;
+
+        // `RT function(Parameters!T) ...`-style function-pointer
+        // reconstruction (e.g. `core.internal.dassert`'s
+        // `assumeFakeAttributes`, reached indirectly from every
+        // `_d_assert_fail` call via `inFinalizer`) splices a template alias
+        // sequence into a parameter list. DMD keeps that splice as a single
+        // `Ttuple`-typed parameter here rather than flattening it away,
+        // including the empty sequence a zero-parameter callee (like
+        // `GC.inFinalizer`) produces. Recurse over the tuple's own elements
+        // -- each with its own storage class -- instead of treating the
+        // tuple itself as an opaque, unsupported parameter type.
+        if (auto tuple = type.toBasetype.isTypeTuple) {
+            import dmd.astenums: STC;
+
+            if (tuple.arguments !is null)
+                foreach (element; *tuple.arguments) {
+                    const elementIsReference = (element.storageClass &
+                        (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
+                    appendParameterLayoutEntry(
+                        layout, element.type, elementIsReference,
+                    );
+                }
+            return;
+        }
 
         if (isReference) {
             enum pointerAlign = cast(uint) size_t.sizeof;
@@ -14539,24 +13592,22 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(array.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileDynamicArrayInto(
-            offset, elementType, array, arrayElementIsArray(array.type),
+            offset, elementType, array,
+            arrayElementIsDynamicArray(array.type),
         );
         return Operand(offset, ScalarType.void_, false, elementType);
     }
 
-    // The aggregate-vs-scalar classification is `typeFacts`': a
-    // struct, static array, or delegate element is a full-width byte blob
-    // (`byteWidth`), everything else is a plain scalar. `Tvoid` stays a
-    // hand-checked special case: D defines `void[]` with a one-byte element
-    // stride even though `void` is not a loadable scalar value.
-    private uint dynamicArrayElementSize(
-        Type type,
-        in bool elementIsArray = false,
-    ) {
+    // The aggregate-vs-scalar classification is `typeFacts`': a struct,
+    // static array, or delegate element is a full-width byte blob
+    // (`byteWidth`), everything else is a plain scalar. A `Tarray` element
+    // (`int[][]`'s rows) is itself sized this same way: its `byteWidth` is
+    // the 16-byte `{length, ptr}` slice descriptor, the real layout every
+    // row of a genuine dynamic array of dynamic arrays holds. `Tvoid` stays
+    // a hand-checked special case: D defines `void[]` with a one-byte
+    // element stride even though `void` is not a loadable scalar value.
+    private uint dynamicArrayElementSize(Type type) {
         import dmd.astenums: TY;
-
-        if (elementIsArray)
-            return sliceDescriptorSize;
 
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tvoid)
@@ -14565,7 +13616,10 @@ private struct Compiler {
     }
 
     // True when an array's element is itself an array (`int[][]` or
-    // `string[2]`): each element is a slice descriptor rather than a scalar.
+    // `string[2]`): the row is compound rather than a plain scalar. Used
+    // where the two compound shapes (a genuine `Tarray` row and a `Tsarray`
+    // row) still need the same treatment, e.g. structural equality, which
+    // must recurse into either shape instead of comparing raw bytes.
     private bool arrayElementIsArray(Type type) {
         import dmd.astenums: TY;
 
@@ -14573,73 +13627,88 @@ private struct Compiler {
         return element.ty == TY.Tarray || element.ty == TY.Tsarray;
     }
 
+    // True only when an array's element is itself a genuine dynamic array
+    // (`int[][]`'s `int[]` rows): each row is a separately heap-allocated
+    // 16-byte `{length, ptr}` slice descriptor. A `Tsarray` element
+    // (`int[2][]`'s `int[2]` rows) is NOT this shape -- `T[N][]`'s real D
+    // layout stores its rows inline, `T[N].sizeof`-strided, with no
+    // descriptor of their own, so it needs the same construction and
+    // addressing a struct-element array already gets, not a slice
+    // descriptor of its own.
+    private bool arrayElementIsDynamicArray(Type type) {
+        import dmd.astenums: TY;
+
+        auto element = type.toBasetype.nextOf.toBasetype;
+        return element.ty == TY.Tarray;
+    }
+
     private bool arrayElementIsString(Type type) {
         return isStringType(type.toBasetype.nextOf);
     }
 
-    // The nesting depth of an array-of-arrays type gated by
-    // `arrayElementIsArray` (`T[]` whose element is itself an array): 2 for
-    // `int[][]` (one row level below the outer array), 3 for `int[][][]`,
-    // and so on. Walks the chain of `Tarray` elements one level at a time,
-    // the same way `arrayElementIsArray` and `innermostArrayElementSize`
-    // do, stopping as soon as a level's element is not itself a `Tarray` --
-    // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
-    // level (matching this function's own one-level gate for that case) but
-    // does not extend the walk further: `compileAppendElement` heap-boxes a
-    // `Tsarray` row behind its own 16-byte slice descriptor just like a
-    // `Tarray` row (this VM's rows are never a raw inline block), so
-    // `Op.sliceEqualNested`'s row-descriptor recursion can unwrap that one
-    // boxed level, but not recurse further into the static array's own
-    // fixed-size interior (see the Tsarray/Tarray decline block in
-    // `tryArrayComparisonAssert`).
+    // The number of nested `Tarray`-row descriptor unwrap steps
+    // `Op.sliceEqualNested` needs below its own outer descriptor, for an
+    // array-of-arrays type gated by `arrayElementIsArray` (`T[]` whose
+    // element is itself compound): 1 for `int[][]` (one further `Tarray`
+    // row level, each its own separately heap-allocated 16-byte
+    // descriptor), 2 for `int[][][]`, and so on. Walks the chain of
+    // `Tarray` elements one level at a time, the same way
+    // `arrayElementIsArray` and `innermostArrayElementSize` do, stopping as
+    // soon as a level's element is not itself a `Tarray`. A `Tsarray`
+    // element (e.g. `int[2][]`) contributes NO further step: unlike a
+    // `Tarray` row, `T[N][]`'s real D layout stores its rows inline,
+    // `T[N].sizeof`-strided, with no descriptor of its own, so once the
+    // outer descriptor is unwrapped the rows are already element bytes,
+    // ready for the base-case compare.
     private uint arrayNestingDepth(Type type) {
         import dmd.astenums: TY;
 
-        uint depth = 1;
+        uint steps;
         auto current = type.toBasetype;
         while (arrayElementIsArray(current)) {
-            ++depth;
             auto nextBase = current.nextOf.toBasetype;
             if (nextBase.ty != TY.Tarray)
                 break;
+            ++steps;
             current = nextBase;
         }
-        return depth;
+        return steps;
     }
 
-    // The byte width of the innermost (leaf) row's own elements for an
-    // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
-    // `int[][]`'s and `int[][][]`'s `int` leaves, and also 4 for `int[2][]`'s
-    // `int` leaves (a `Tsarray` row is heap-boxed behind its own 16-byte
-    // slice descriptor just like a `Tarray` row -- see `arrayNestingDepth`
-    // -- so once that one boxed level is unwrapped, its own elements, not
-    // the row's full byte size, are what a flat byte-compare needs). Walks
-    // the same `Tarray` chain
-    // as `arrayNestingDepth`, always advancing `current` to the row it just
-    // looked at (even the terminating one, whether that row is another
-    // `Tarray` level or the leaf `Tsarray`), then reuses
-    // `dynamicArrayElementSize`'s existing scalar/struct/static-array sizing
-    // for that row's own elements.
+    // The byte width of the innermost row's own elements for an
+    // array-of-arrays type gated by `arrayElementIsArray`: 4 for both
+    // `int[][]`'s and `int[][][]`'s `int` leaves (a `Tarray` row's own
+    // elements, once every descriptor level `arrayNestingDepth` counts is
+    // unwrapped). A chain terminating in a `Tsarray` row (`int[2][]`) has no
+    // such unwrapped leaf level to size -- the row itself, inline and
+    // `T[N].sizeof`-wide, is what the base-case byte compare needs, so this
+    // returns the row's own full width (8 for `int[2]`) instead of
+    // recursing into its element. Walks the same `Tarray` chain as
+    // `arrayNestingDepth`.
     private uint innermostArrayElementSize(Type type) {
         import dmd.astenums: TY;
 
         auto current = type.toBasetype;
         while (arrayElementIsArray(current)) {
             auto nextBase = current.nextOf.toBasetype;
-            current = nextBase;
             if (nextBase.ty != TY.Tarray)
-                break;
+                return typeFacts(nextBase).byteWidth;
+            current = nextBase;
         }
         return dynamicArrayElementSize(current);
     }
 
-    // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
-    // structurally rather than as raw descriptor bytes: DMD's real
-    // `__equals` lowering recurses into each element, so two separately
-    // heap-allocated but content-equal rows must compare equal, unlike a
-    // byte compare of the outer descriptor (which would compare the rows'
-    // `.ptr` values). Handles any nesting depth (`int[][]`, `int[][][]`,
-    // ...); caller gates this with `arrayElementIsArray`.
+    // Emit `Op.sliceEqualNested`, comparing two dynamic-array descriptors by
+    // structural content rather than as raw descriptor bytes: for an
+    // array-of-arrays element (`int[][]`, any depth), DMD's real `__equals`
+    // lowering recurses into each row, so two separately heap-allocated but
+    // content-equal rows must compare equal, unlike a byte compare of the
+    // outer descriptor (which would compare the rows' `.ptr` values). At
+    // zero nesting depth (a plain scalar element, or any depth of static
+    // array bottoming out in one) this reduces to a length check plus a
+    // single byte comparison of the whole element range, at any element
+    // width -- unlike the fixed-width `sliceEqual*` family, there is no
+    // width this rejects.
     private ushort emitNestedArrayEqual(
         in ushort left,
         in ushort right,
@@ -14712,6 +13781,14 @@ private struct Compiler {
             case Tfloat80:
                 return ScalarType.real_;
             case Tpointer:
+                return ScalarType.ulong_;
+            // `typeof(null)`: the VM's own `null` slices/pointers/references
+            // are already zeroed 8-byte values (`Op.nullSlice` and friends),
+            // so a `typeof(null)`-typed value (a bare `null` literal passed
+            // where its context has not yet cast it to a concrete type, e.g.
+            // an operand `core.internal.dassert`'s `_d_assert_fail!(...)`
+            // formats) is the same all-zero 8-byte representation.
+            case Tnull:
                 return ScalarType.ulong_;
             case Tclass:
                 return ScalarType.ulong_;
@@ -15749,48 +14826,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op
     }
 }
 
-private imported!"quickbite.backends.bytecode.core.program".Op
-    floatingAssertOp(
-    in string operator,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
-) @safe @nogc nothrow pure {
-    switch (operator) {
-        case "==": return floatingEqualOp(type);
-        case "!=": return floatingNotEqualOp(type);
-        case "<": return floatingLessThanOp(type);
-        case "<=": return floatingLessOrEqualOp(type);
-        case ">": return floatingGreaterThanOp(type);
-        case ">=": return floatingGreaterOrEqualOp(type);
-        default: assert(0, "Unsupported floating assert operator.");
-    }
-}
-
-// The comparison opcode for a relational `_d_assert_fail` operator. Floating
-// operands use numeric comparison opcodes, including `real`; integer `==`
-// reuses the width-tagged equality opcodes, and integer `>=` selects the
-// unsigned form for unsigned operands.
-private imported!"quickbite.backends.bytecode.core.program".Op
-    comparisonAssertOp(
-    in string operator,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType
-        operandType,
-) @safe pure {
-    import dmd.tokens: EXP;
-
-    if (isFloating(operandType))
-        return floatingAssertOp(operator, operandType);
-
-    switch (operator) {
-        case "==": return comparisonEqualOp(operandType);
-        case "!=": return comparisonNotEqualOp(operandType);
-        case "<": return integerComparisonOp(EXP.lessThan, operandType);
-        case "<=": return integerComparisonOp(EXP.lessOrEqual, operandType);
-        case ">": return integerComparisonOp(EXP.greaterThan, operandType);
-        case ">=": return integerComparisonOp(EXP.greaterOrEqual, operandType);
-        default: assert(0, "Unsupported comparison-assert operator.");
-    }
-}
-
 // The 8-byte unsigned relational opcode for a `size_t`/`ulong` comparison
 // (e.g. a `foreach` index against `.length`).
 private imported!"quickbite.backends.bytecode.core.program".Op
@@ -15826,92 +14861,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op
     }
 }
 
-// The relational operator a pointer comparison renders in a failure message:
-// identity `is`/`!is` render as `==`/`!=`, which `invertedOperator` understands.
-private string normalisedPointerOperator(in string operator)
-    @safe @nogc nothrow pure {
-    switch (operator) {
-        case "is": return "==";
-        case "!is": return "!=";
-        default: return operator;
-    }
-}
-
-// The druntime `_d_arraybounds*` bounds-failure helper, the false branch of
-// DMD's `m[k]` lowering. Matched by name; reaching it means a missing key.
-private bool isArrayBoundsCall(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.algorithm: startsWith;
-
-    return function_.ident !is null &&
-        function_.ident.toString.startsWith("_d_arraybounds");
-}
-
-// `_d_newarrayUPureNothrow` is `core.internal.array.construction`'s
-// attribute-stripping wrapper: its body calls `_d_newarrayU` indirectly
-// through a `cast(PureType)&_d_newarrayU!T` function pointer, which
-// `_dup`'s POD path (`core.internal.array.duplication._dup`, the shared
-// implementation behind `.dup`/`.idup`) calls directly. Matching it here
-// alongside `_d_newarrayU` lets the ordinary dynamic-array allocation path
-// recognise the wrapper as an allocation without compiling its body.
-private bool isNewArrayRuntimeCall(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    return function_.ident !is null &&
-        (function_.ident.toString == "_d_newarrayU" ||
-            function_.ident.toString == "_d_newarrayUPureNothrow" ||
-            function_.ident.toString == "arrayAllocImpl" ||
-            function_.ident.toString == "uninitializedArray");
-}
-
-// True for the druntime `core.internal.array.operations.arrayOp` template
-// instantiated with `["+", "="]`, the lowering of `dest[] = a[] + b[]`. Matched
-// by pretty name prefix and the template value arguments, like the interpreter.
-private bool isArrayOpAddAssign(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import dmd.dtemplate: isExpression;
-    import std.algorithm: startsWith;
-    import std.conv: text;
-
-    auto instance = function_.parent is null
-        ? null
-        : function_.parent.isTemplateInstance;
-    if (instance is null || instance.tiargs is null)
-        return false;
-
-    if (!text(function_.toPrettyChars)
-            .startsWith("core.internal.array.operations.arrayOp!("))
-        return false;
-
-    string[] operators;
-    foreach (argument; *instance.tiargs) {
-        auto expression = isExpression(argument);
-        if (expression is null)
-            continue;
-
-        auto literal = expression.isStringExp;
-        if (literal is null)
-            return false;
-
-        operators ~= operatorText(literal);
-    }
-
-    return operators == ["+", "="];
-}
-
-// A `_d_assert_fail` lowering: a `CallExp` carrying a leading operator
-// `StringExp` and the asserted operands. The explicit-message branch defers
-// these to compileLoweredComparisonAssert.
-private bool isAssertFailCall(imported!"dmd.expression".Expression expression) {
-    auto call = expression.isCallExp;
-    if (call is null || call.arguments is null || call.arguments.length == 0)
-        return false;
-
-    return (*call.arguments)[0].isStringExp !is null;
-}
-
 // A `string`/`wstring`/`dstring` (immutable char-element array): the only
 // non-scalar result the core lowers today.
 private bool isStringType(imported!"dmd.mtype".Type type) {
@@ -15938,21 +14887,6 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
         default:
             return false;
     }
-}
-
-// A `string` specifically (immutable `char`-element array), excluding
-// `wstring`/`dstring`. Used only to distinguish a genuine string's quoted
-// diagnostic rendering (`tryStringComparisonAssert`) from the generic
-// `[e0, e1, ...]` array rendering — every representation-level operation
-// (indexing, slicing, `.ptr`, `==`) already treats a `string` as an ordinary
-// `T[]` regardless of element width.
-private bool isCharStringType(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    if (!isStringType(type))
-        return false;
-
-    return type.toBasetype.nextOf.toBasetype.ty == TY.Tchar;
 }
 
 // A non-string dynamic-array `T[]` call argument, passed by value as a 16-byte
@@ -16256,13 +15190,6 @@ private imported!"dmd.mtype".Type returnType(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     return function_.type.nextOf;
-}
-
-private string operatorText(imported!"dmd.expression".StringExp operator) {
-    string result;
-    foreach (index; 0 .. operator.numberOfCodeUnits)
-        result ~= cast(char) operator.getIndex(index);
-    return result;
 }
 
 private string expressionChars(

@@ -25,7 +25,7 @@ This design has genuine strengths that this plan must preserve:
   (Cling's equivalent — Transactions + DeclUnloader — is its most fragile
   subsystem.)
 - **Backend-agnostic frontend**: one session drives all backends, enabling
-  the single-oracle testing strategy (`ai/plans/single-oracle.md`).
+  the single-oracle testing strategy (`AGENTS.md`, Testing).
 - **Coherent whole-program semantics** for pure code.
 
 And structural faults, established finding by finding (June 2026 review,
@@ -125,7 +125,7 @@ add display rendering to `backends/bytecode/**`.
   re-validate at implementation time. Its REPL slices are superseded by
   this plan.
 - **`SystemLinker` (compiled D) is the single oracle**
-  (`ai/plans/single-oracle.md`). Replay is *correct* for pure backends and
+  (`AGENTS.md`, Testing). Replay is *correct* for pure backends and
   stays as their session implementation, but it is an implementation note,
   not an oracle claim: the redesign adds a persistent-state path, and both
   must agree with compiled-D behaviour. `Ctfe` is not an oracle; where it

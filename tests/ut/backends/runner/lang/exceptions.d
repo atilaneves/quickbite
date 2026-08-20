@@ -152,7 +152,6 @@ static foreach (backend; Matrix!()) {
 // receive the same object pointer that compiled D passes.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot call body-less _d_print_throwable"),
-    Omit!(Bytecode, Because.refusal, "index [0] is out of bounds for array of length 0"),
 )) {
     @("exception.nativeFunctionAcceptsCaughtRangeError." ~ backend.stringof)
     @Tags(backend.stringof)

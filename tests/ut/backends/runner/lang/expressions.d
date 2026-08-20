@@ -767,6 +767,30 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("floating.multiplicationUsesRuntimeOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float scaleFloat(float lower, float upper, float factor) {
+                return (upper - lower) * factor;
+            }
+
+            double scaleDouble(double lower, double upper, double factor) {
+                return (upper - lower) * factor;
+            }
+
+            unittest {
+                float factor = 3.0f;
+                double doubleFactor = 3.0;
+
+                assert(scaleFloat(1.0f, 3.0f, factor) == 6.0f);
+                assert(scaleDouble(1.0, 3.0, doubleFactor) == 6.0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1016,6 +1040,56 @@ static foreach (backend; Matrix!(
 
             unittest {
                 assert(typeid(Payload).tsize == Payload.sizeof);
+            }
+        });
+    }
+}
+
+// `typeid` reports the same layout size as `.sizeof` for a spread of
+// scalar type categories, and repeated evaluation of the same type yields
+// the same TypeInfo object.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `typeid(long)` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "0 != 8"),
+)) {
+    @("typeid.scalarTypeReportsLayoutSizeAndIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                assert(typeid(long).tsize == long.sizeof);
+                assert(typeid(double).tsize == double.sizeof);
+                assert(typeid(bool).tsize == bool.sizeof);
+                assert(typeid(char).tsize == char.sizeof);
+
+                assert(typeid(long) is typeid(long));
+                assert(typeid(double) is typeid(double));
+            }
+        });
+    }
+}
+
+// A guest-only struct's TypeInfo initializer carries the struct's actual
+// default field bytes, not a zero-filled span merely the right length.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `typeid(Payload)` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported interpreter TypeInfo initializer."),
+)) {
+    @("typeid.structInitializerCarriesFieldDefaults." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int value = 7;
+            }
+
+            unittest {
+                auto bytes = cast(ubyte[]) typeid(Payload).initializer;
+                assert(bytes.length == Payload.sizeof);
+                assert(bytes[0] == 7);
             }
         });
     }
@@ -14337,6 +14411,36 @@ static foreach (backend; Matrix!()) {
                     return __ctfe;
                 }
                 static assert(f() == true);
+            }
+        });
+    }
+}
+
+// DMD's semantic marks an `if (__ctfe)` block's scope `ctfeBlock` and skips
+// setting lowerings such as `~=`'s `_d_arrayappendcTX` call inside it
+// (`sc.needsCodegen()`, dscope.d), on the assumption that a compiled,
+// non-interpreting backend never executes that branch. A backend that
+// compiles the branch anyway (rather than recognising it as unreachable)
+// walks into an unlowered append and fails to compile it. `__ctfe` reads
+// `false` at runtime for every backend but `Ctfe` (the invariant above), so
+// the `else` branch is the only one that may run here.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which legitimately observes __ctfe as true and takes the `if` " ~
+        "branch instead"),
+)) {
+    @("identifier.ifCtfeBlockDoesNotCompileAtRuntime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] result;
+                if (__ctfe)
+                    result ~= 1;
+                else
+                    result ~= 2;
+                assert(result == [2]);
             }
         });
     }

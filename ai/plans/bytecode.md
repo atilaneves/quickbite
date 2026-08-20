@@ -17,27 +17,61 @@ profile, then make it fast.
 
 ## Milestone 1 — druntime-first convergence
 
-AGENTS.md's druntime-first rule applied to the VM's existing
-reimplementations, after milestone 1 (whose rules forbid restructuring):
+Principle: every operation either compiles to bytecode from its D body or
+crosses to native via FFI because no body exists (extern without source,
+inline asm, DMD BUILTIN intrinsics). Where the frontend populates
+`Expression.lowering`, the backend compiles that lowering — agreement with
+dmd/LDC/GDC by construction. Name-based diversion of code with an available
+body is forbidden, enforced by porting the Interpreter's
+interception-policy guard (assertion at function-compilation time, an
+enumerated exemption list, each entry with a stated retirement condition).
 
-- Associative arrays: compile druntime's real `core.internal.newaa`
-  source through the VM's own compiler, like any user code — guest-only
-  key/value types have no host-compiled instantiations to call anyway.
-  The VM-owned linear-scan `AssocArray` table, its `Op.aa*` opcodes, and
-  the `AssocArrayHook` interception table are deleted with the switch.
-- Array append: execute druntime's real append/allocation templates.
-  The hand-rolled grow path (`appendElement`/`resizeArray`) reallocates
-  exact-size, making repeated `~=` quadratic; it retires with the
-  switch.
-- Port the Interpreter's interception-policy invariant: one enumerated
-  hook-exemption list, each entry with a stated retirement condition,
-  enforced by assertion; everything else with a D body and no inline
-  asm executes for real. The current separate `AssocArrayHook` and
-  `isNewArrayRuntimeCall` mechanisms fold into it or retire.
+Work queue (each item = one commit, exposing red fixture written before the
+fix, SystemLinker as the behavior oracle):
 
-Recorded, demand-driven (take up when a corpus fixture forces the
-area): real `Throwable` objects replacing the synthetic
-`ExceptionObjectLocal` catch shape.
+1. Port the interception-policy guard with the enumerated exemption list. DMD
+   BUILTIN intrinsics (core/builtins.d matching) remain exempt. `_aApply*`
+   string-foreach: the frontend resolves these calls to synthetic bodyless
+   `extern(C)` declarations (dmd's `genCfunc` — no module, `fbody` permanently
+   null) and passes the loop body as a VM delegate, so executing them for real
+   needs a native→VM callback; retirement condition: inbound FFI/native-
+   callback support. The guard must enumerate ALL width/reverse variants in
+   rt/aApply.d and rt/aApplyR.d (~12), not just the four currently matched, and
+   an unmatched variant must raise an honest unsupported diagnostic instead of
+   falling through to FFI with a table-index delegate value.
+2. Real object model: real GC allocation with DMD's field offsets, real
+   `__vptr`/`TypeInfo_Class`; the VM-private heap, class table, and parallel
+   vtables are deleted. Unlocks class receivers across FFI and makes
+   `CastExp.lowering` (`_d_cast`) compileable — the unchecked-downcast bug gets
+   its exposing fixture first.
+3. Real `Throwable`: throw allocates real class objects, catch matches through
+   the real hierarchy; `ExceptionObjectLocal` and the throw-string fast path
+   die; the VM's handler-stack unwinder stays as mechanism. Two named gates,
+   both retiring with real Throwable objects: binding a caught error object
+   (`catch (RangeError e)`) does not materialize a guest-visible object today
+   (bare `catch (RangeError)` works); and the index/slice bounds failure raise
+   is still VM-synthetic (machine.d's host `ArrayIndexError` throw).
+
+Item 1 is independent of 2-3; 2 gates 3. Two more open caveats:
+- `compileDynamicArrayInto`'s cast handling accepts only dynamic-array/string
+  sources; `int[] b = cast(int[]) someStaticArray;` as a declaration
+  initializer takes a cast-unaware path (the equality-side twin of this gate
+  was already fixed).
+- Expression-level `ConstructExp`/`BlitExp` receivers resolve to real storage
+  only in `storageAddressOrValue`; hoisting the same handling into shared
+  `resolvePlace` made
+  `typeid.arrayEqualityUsesStoredReferenceIdentity.Bytecode` flake 1-in-4
+  combined-module runs, un-root-caused.
+
+Recorded deviation, item 2's territory: a guest function-pointer value is
+currently a `Program.functions` table index, not a native code address —
+the VM emits no machine code for a bytecode-compiled function, so no such
+address exists yet. A native-leaf target (`&f` where `f` has no body, e.g.
+`core.internal.dassert`'s `assumeFakeAttributes` closing over a druntime
+hook) shares the same index space via a table-entry marker rather than a
+real address. This encoding must never cross the FFI boundary; it retires,
+at least for native-leaf targets (which do have real addresses), once
+inbound FFI/native-callback support forces a raw-address representation.
 
 ## Milestone 2 — cerealed green via bench.sh
 

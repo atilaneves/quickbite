@@ -54,3 +54,55 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A dynamic array's contents must survive a collection cycle that runs while
+// the array is still reachable only through the local variable holding it, no
+// matter how many other allocations happen in between. `GC.collect` can
+// reclaim and reuse any block the collector cannot prove reachable, so this
+// would read back mixed-up values from unrelated allocations if the backend's
+// own storage for the local variable is invisible to the collector.
+enum collectDoesNotCorruptReachableArraySource = q{
+    unittest {
+        import core.memory: GC;
+
+        size_t len = 4;
+        ++len; // 5, kept out of `new int[](len)` as a runtime value
+
+        auto original = new int[](len);
+        int base = 42;
+        foreach (i; 0 .. len)
+            original[i] = base + cast(int) i;
+
+        int rounds = 19;
+        ++rounds; // 20
+        foreach (round; 0 .. rounds) {
+            GC.collect;
+
+            int junkCount = 199;
+            ++junkCount; // 200
+            foreach (junk; 0 .. junkCount) {
+                auto scratch = new int[](len);
+                foreach (i; 0 .. len)
+                    scratch[i] = junk + cast(int) i;
+            }
+        }
+
+        int sum;
+        foreach (v; original)
+            sum += v;
+
+        assert(sum == 42 + 43 + 44 + 45 + 46);
+    }
+};
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot force a collection cycle"),
+)) {
+    @("collect.doesNotCorruptReachableArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(
+            collectDoesNotCorruptReachableArraySource,
+        );
+    }
+}

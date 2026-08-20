@@ -1207,9 +1207,7 @@ static foreach (backend; Matrix!()) {
 // Generated equality recurses through nested aggregate fields. An
 // associative array reached through a dynamic-array element therefore still
 // compares its runtime entries, including struct-typed values.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal, "Assertion failure (==)"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.structFieldEqualityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
