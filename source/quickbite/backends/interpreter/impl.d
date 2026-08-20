@@ -4180,10 +4180,10 @@ unsupportedExpression:
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            mergeFunctionState(call.f, argumentExpressions, child, arguments);
+            mergeFunctionState(call.f, argumentExpressions, child);
             throw exception;
         }
-        mergeFunctionState(call.f, argumentExpressions, child, arguments);
+        mergeFunctionState(call.f, argumentExpressions, child);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
@@ -4339,7 +4339,6 @@ unsupportedExpression:
                 dot.e1,
                 argumentExpressions,
                 child,
-                arguments,
             );
             throw exception;
         }
@@ -4348,7 +4347,6 @@ unsupportedExpression:
             dot.e1,
             argumentExpressions,
             child,
-            arguments,
         );
         return returnedLvalueAddress(function_, argumentExpressions, child);
     }
@@ -7450,7 +7448,6 @@ unsupportedExpression:
                 function_,
                 argumentExpressions,
                 child,
-                arguments,
                 captureLocals,
             );
             throw exception;
@@ -7459,7 +7456,6 @@ unsupportedExpression:
             function_,
             argumentExpressions,
             child,
-            arguments,
             captureLocals,
         );
         // A construction-destination call already wrote its result directly
@@ -7695,7 +7691,6 @@ unsupportedExpression:
                 receiverExpression,
                 argumentExpressions,
                 child,
-                arguments,
             );
             throw exception;
         }
@@ -7704,7 +7699,6 @@ unsupportedExpression:
             receiverExpression,
             argumentExpressions,
             child,
-            arguments,
         );
 
         if (function_.isConstructorFunction) {
@@ -7726,7 +7720,6 @@ unsupportedExpression:
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
-        in ExpressionResult[] arguments,
         in bool captureLocals = false,
     ) {
         mergeLazyArgumentMapsFrom(child);
@@ -7737,7 +7730,6 @@ unsupportedExpression:
         imported!"dmd.expression".Expression receiverExpression,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
-        in ExpressionResult[] arguments,
     ) {
         mergeLazyArgumentMapsFrom(child);
         child.returned = false;
@@ -9955,7 +9947,6 @@ unsupportedExpression:
                 dot.e1,
                 argumentExpressions,
                 child,
-                arguments,
             );
             throw exception;
         }
@@ -9964,7 +9955,6 @@ unsupportedExpression:
             dot.e1,
             argumentExpressions,
             child,
-            arguments,
         );
         return true;
     }
@@ -10058,10 +10048,10 @@ unsupportedExpression:
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            mergeFunctionState(call.f, argumentExpressions, child, arguments);
+            mergeFunctionState(call.f, argumentExpressions, child);
             throw exception;
         }
-        mergeFunctionState(call.f, argumentExpressions, child, arguments);
+        mergeFunctionState(call.f, argumentExpressions, child);
         return true;
     }
 
