@@ -5527,7 +5527,7 @@ unsupportedExpression:
     private ExpressionResult runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
-        return dereferencePointerValue(pointer, runExpressionValue(pointer.e1));
+        return dereferencePointerValue(pointer, constructedExpressionValue(pointer.e1));
     }
 
     // The dereference half of `runPointerExpression`, split out so a caller
@@ -12598,7 +12598,7 @@ unsupportedExpression:
     private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        auto value = runExpressionValue(cast_.e1);
+        auto value = constructedExpressionValue(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_)
             return value;
@@ -12675,7 +12675,7 @@ unsupportedExpression:
         if (!typeChars(cast_.to).canFind("Throwable"))
             return false;
 
-        auto value = runExpressionValue(cast_.e1);
+        auto value = constructedExpressionValue(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_) {
             result = value;
@@ -13062,13 +13062,16 @@ unsupportedExpression:
         // declined. A non-ref call result or a literal is a genuine rvalue
         // with no backing to preserve; nothing appends through either in
         // place. A captured (non-frame-slot) variable's closure storage has
-        // no static predicate that resolves it yet either. All three read a
-        // snapshot below. A struct-typed `DotVarExp` receiver -- an implicit
-        // `this.field`, a deeper `this.inner.arr`, or any other chain the
-        // fast path above declined -- still derives its live address just
-        // below, through the same `projectionPlace` composer a direct field
-        // write already uses.
-        const source = runExpressionValue(slice.e1);
+        // no static predicate that resolves it yet either. All three
+        // construct into an activation-frame temporary below, whose
+        // `NativeAggregate` borrows that temporary's storage rather than
+        // copying it -- fine precisely because none of the three has a
+        // backing to alias against. A struct-typed `DotVarExp` receiver --
+        // an implicit `this.field`, a deeper `this.inner.arr`, or any other
+        // chain the fast path above declined -- still derives its live
+        // address just below, through the same `projectionPlace` composer a
+        // direct field write already uses.
+        const source = constructedExpressionValue(slice.e1);
         if (slice.lengthVar !is null)
             setLocal(slice.lengthVar,
                 AggregateValue.length(AggregateValue.native(source)));
