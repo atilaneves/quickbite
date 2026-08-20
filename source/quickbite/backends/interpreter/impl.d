@@ -3521,33 +3521,13 @@ variableExpression:
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
 
-            materializeDatasegInitializer(variable);
-
-            if (hasBindingPlace(variable))
-                return readBindingValue(variable);
-
             // A module-level or static variable read before any write (e.g.
-            // std.encoding's immutable bomTable): materialize its static
-            // initializer, and remember it so repeated reads agree. Locals
-            // are excluded: their DeclarationExp evaluates their initializer
-            // (an initializer like _d_arrayctor's even reads the variable
-            // itself). Seed the type's default first so an initializer that
-            // reads the variable back (directly or through calls) terminates,
-            // as compiled D's pre-initialized statics do.
-            if (variable.isDataseg && variable._init !is null) {
-                resolveNonRootInitializer(variable);
-                if (auto initializer = variable._init.isExpInitializer) {
-                    defaultLocalValue(variable);
-                    const value = storageValue(
-                        variable.type,
-                        evaluateDatasegInitializerExpression(initializer.exp),
-                    );
-                    setLocal(variable, value);
-                    return value;
-                }
-            }
-
-            return defaultValueResult(variable.type);
+            // std.encoding's immutable bomTable) is `readBindingValue`'s own
+            // `materializeDatasegInitializer` call: it seeds the module-table
+            // binding before that function's own `hasBindingPlace` check --
+            // unconditionally true for any dataseg variable -- so every
+            // dataseg read resolves through the ordinary bound-value path.
+            return readBindingValue(variable);
         }
 
 unsupportedExpression:
