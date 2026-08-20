@@ -2530,6 +2530,12 @@ private struct Compiler {
             // code; semantic has already resolved it.
             if (declaration.declaration.isAggregateDeclaration !is null)
                 return Operand.init;
+            // A local enum *type* (`enum Foo : ubyte { ... }` inside a
+            // function body) is compile-time-only in the same way: it has no
+            // runtime storage of its own, only its members' constant values,
+            // which are resolved wherever they are referenced.
+            if (declaration.declaration.isEnumDeclaration !is null)
+                return Operand.init;
             if (auto storage =
                     declaration.declaration.isStorageClassDeclaration)
                 if (storage.decl !is null && storage.decl.length == 1)

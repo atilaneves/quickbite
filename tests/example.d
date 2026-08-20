@@ -1229,6 +1229,22 @@ unittest {
 }
 
 unittest {
+    enum Direction : ubyte {
+        north = 0,
+        south = 1,
+    }
+
+    ubyte[] raw = [0, 1];
+    size_t index;
+
+    Direction first = cast(Direction) raw[index++];
+    Direction second = cast(Direction) raw[index++];
+
+    assert(first == Direction.north);
+    assert(second == Direction.south);
+}
+
+unittest {
     uint function(uint) fn = &factorial;
     assert(fn(5) == 120);
 }

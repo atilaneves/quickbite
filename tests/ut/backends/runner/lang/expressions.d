@@ -878,6 +878,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `enum Foo : ubyte { ... }` declared inside a function body (rather than at
+// module scope) is a local type declaration: DMD wraps it in a
+// `DeclarationExp`, the same AST shape used for a local `struct`.
+static foreach (backend; Matrix!()) {
+    @("enum.localDeclarationInsideUnittestCompiles." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                enum Foo : ubyte {
+                    bar = 0,
+                    baz = 1,
+                }
+
+                ubyte[] raw = [0, 1];
+                size_t index;
+
+                Foo first = cast(Foo) raw[index++];
+                Foo second = cast(Foo) raw[index++];
+
+                assert(first == Foo.bar);
+                assert(second == Foo.baz);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.diverges,
         "see Interpreter pin below; passes the real assertions instead " ~
