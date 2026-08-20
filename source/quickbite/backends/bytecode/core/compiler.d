@@ -6025,8 +6025,19 @@ private struct Compiler {
                 // capturing `Tdelegate` field at any depth is exactly as sound
                 // to heap-escape as one at the top level (see the `Tdelegate`
                 // branch below).
-                if (auto inner = element.isStructLiteralExp)
+                if (auto inner = element.isStructLiteralExp) {
                     compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
+                    continue;
+                }
+
+                // A field whose own type has a user-defined constructor is
+                // not itself a struct literal: DMD lowers a call such as
+                // `Inner(payload)` into a temporary declaration followed by
+                // a constructor call on it. Run that general struct-valued
+                // expression the same way any other struct-typed
+                // destination does, so the constructor call - and any side
+                // effect it has - always runs.
+                compileStructValueInto(fieldOffset, fieldType, element);
                 continue;
             }
 

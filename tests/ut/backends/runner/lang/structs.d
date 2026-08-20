@@ -327,6 +327,41 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct's user-defined constructor with a side effect (writing to a
+// module-scope variable) is invoked as a field-initializer argument of
+// another struct's implicit field-wise constructor call. D still runs the
+// inner constructor's body in that position - the side effect must be
+// visible once construction completes. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'gInputBytes' cannot be read at compile time`"),
+)) {
+    @("struct.nestedConstructorRunsWhenUsedAsFieldInitializerArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            private ubyte[] gInputBytes;
+
+            struct Inner {
+                this(ubyte[] bytes) { gInputBytes = bytes; }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Inner(payload));
+
+                assert(gInputBytes == [9, 7, 6]);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
