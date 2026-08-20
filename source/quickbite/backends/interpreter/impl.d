@@ -2746,25 +2746,6 @@ private struct Walker {
         loopControlLabel = null;
     }
 
-    // This function's callers reach it for a value in a wider range of
-    // static shapes than `constructedExpressionValue`'s own ~30 call sites
-    // ever pass through construction: an unsized dereferenced-function-
-    // pointer type, a void-typed call kept only for a side effect, and (found
-    // empirically, via the full gate) at least one `constructInto` arm that
-    // answers a shape it was never exercised against with a wrong value
-    // rather than declining it (`constructPointerExpressionInto`'s `CastExp`
-    // branch, a `*p`-shaped pointer operand). Routing every caller through
-    // `constructedExpressionValue` is therefore not byte-identical without
-    // also auditing or extending `constructInto`'s own coverage, which is
-    // explicitly out of scope for this flip (`constructInto` is consumed
-    // here, not extended). This keeps the walk-only entry.
-    private ExpressionResult runExpressionValue(imported!"dmd.expression".Expression expression) {
-        const full = beginFullExpression;
-        scope(exit) endFullExpression(full);
-
-        return runExpressionImpl(expression);
-    }
-
     // Construct an rvalue in caller-owned typed storage. `runExpressionImpl`'s
     // per-arm dispatch is used only as a bridge for expression kinds
     // `constructInto`/`constructScalarExpressionInto` do not yet construct
@@ -3889,7 +3870,7 @@ unsupportedExpression:
             // In particular, `&a[i++].inner.x` first composes the address of
             // `a[i++].inner`; that evaluates `i++` exactly once, then the
             // outer field offset composes from the resulting native pointer.
-            // Re-running `runExpressionValue(dot)` for a detached aggregate read would
+            // Re-running `constructedExpressionValue(dot)` for a detached aggregate read would
             // walk the index a second time.
             if (auto innerDot = dot.e1.isDotVarExp)
                 if (auto field = dot.var.isVarDeclaration) {
@@ -3918,7 +3899,7 @@ unsupportedExpression:
                 if (auto field = dot.var.isVarDeclaration) {
                     // `$` inside `index.e2` (a `DollarExp`) is bound to
                     // `index.lengthVar`; the ordinary eager path binds it
-                    // from `runExpressionValue(index.e1)`'s length before
+                    // from `constructedExpressionValue(index.e1)`'s length before
                     // evaluating the index, but this branch exists
                     // specifically to avoid evaluating `index.e1` a second,
                     // independent way -- `arrayPointer` below already
@@ -4053,10 +4034,10 @@ unsupportedExpression:
 
     // A ref return's lvalue, evaluated in the returning function's own
     // frame (`addressOfRefReturn` mode). Both branches still resolve
-    // through `runExpressionValue`/`addressOfExpression`, genuinely
-    // carrier-typed producers; this is the one boundary that lifts their
-    // pointer into the typed place the rest of the ref-return channel
-    // carries.
+    // through `pointerOperandPlace`'s construction or `addressOfExpression`,
+    // the latter still a carrier-typed producer; this is the one boundary
+    // that lifts their pointer into the typed place the rest of the
+    // ref-return channel carries.
     private Place refReturnPlace(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -4576,7 +4557,7 @@ unsupportedExpression:
     // placeOfLvalue` would walk it, through `DotVarExp`/`PtrExp` receivers --
     // runs through an `IndexExp` anywhere. Pure syntax, no evaluation:
     // `arrayPointer`'s `IndexExp` arm uses this to detect, before evaluating
-    // anything, whether its own unconditional `runExpressionValue(index.e1)`
+    // anything, whether its own unconditional `constructedExpressionValue(index.e1)`
     // would duplicate a side effect that `placeOfLvalue` is about to
     // evaluate again while resolving the same chain's address (`i++` inside
     // `arr[i++].mid.a[j]`).
@@ -4636,7 +4617,7 @@ unsupportedExpression:
     // for a real, already-committed out-of-range guest index -- translate it
     // to the guest's own range error rather than letting the host exception
     // type escape. Deliberately narrower than a bare `Exception` catch:
-    // `computeIndex` typically runs a full `runExpressionValue` of an index
+    // `computeIndex` typically runs a full `constructedExpressionValue` of an index
     // expression along the way, which can raise an unrelated host failure
     // that must not be mislabeled as a guest range error.
     private ExpressionResult mapIndexOutOfBounds(
@@ -4780,7 +4761,7 @@ unsupportedExpression:
                 // chain runs through an `IndexExp` somewhere
                 // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be
                 // resolved through `lvalue_place.placeOfLvalue` BEFORE this
-                // arm's own unconditional `runExpressionValue(index.e1)` below
+                // arm's own unconditional `constructedExpressionValue(index.e1)` below
                 // ever runs: that eager evaluation exists to read
                 // `index.e1`'s VALUE (for `$` support and the
                 // native-aggregate fallback further down), but it fully
@@ -5017,7 +4998,7 @@ unsupportedExpression:
                 // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its
                 // receiver's address the same way the `VarExp` case above
                 // does, rather than falling through to `arrayValue` below:
-                // `arrayValue` is `runExpressionValue(index.e1)`'s result, and
+                // `arrayValue` is `constructedExpressionValue(index.e1)`'s result, and
                 // reading a static-array-typed rvalue copies its bytes
                 // (`place_value.readValue`'s array arm returns
                 // `AggregateValue.copyFromAddress`). Composing the address
@@ -6369,7 +6350,25 @@ unsupportedExpression:
         if (auto variable = lazyCallVariable(call))
             return runLazyArgument(variable, constructionDestination);
 
-        const callee = runExpressionValue(call.e1);
+        // DMD's implicit dereference of a function-pointer-typed callee
+        // (`fp1()`) leaves `call.e1.type` the bare, unsized function type
+        // (`int()`); `typeByteSize` cannot size a temporary from that.
+        // Retype to the sized function-pointer form instead -- at native
+        // layout the callee value IS a pointer, exactly what compiled D
+        // loads here. A delegate-typed `call.e1` already has a sized type
+        // and is used unchanged.
+        import quickbite.backends.interpreter.place: Place;
+        import dmd.typesem: pointerTo;
+
+        auto calleeType = call.e1.type.toBasetype.isTypeFunction !is null
+            ? call.e1.type.pointerTo
+            : call.e1.type;
+        auto calleeTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call.e1, calleeType),
+            calleeType,
+        ));
+        runExpression(call.e1, calleeTemporary);
+        const callee = readStoredValue(calleeTemporary.place);
         if (!callee.isNativeDelegate && !callee.isFunctionPointer)
             throw new Exception("Unsupported eval call.");
 
@@ -6412,7 +6411,9 @@ unsupportedExpression:
     // __t).__ctor(args)`, where `<placeholder>` is `__t`'s type's own
     // default value -- never the constructor's real arguments. Evaluating
     // that declaration (`executeDeclaration`, reached through
-    // `addressOfExpression`'s `CommaExp` handling or `runExpressionValue`) arms
+    // `executeForEffect`'s `runExpressionImpl` fallback, whether from
+    // `addressOfExpression`'s `CommaExp` handling or the receiver's own
+    // value evaluation) arms
     // `__t`'s destructor as soon as the placeholder assignment succeeds,
     // which is correct once `__t` is a complete value but wrong here: when
     // `call` is that same `__ctor`, `__t` is still just reserved storage,
@@ -9315,7 +9316,7 @@ unsupportedExpression:
         // the literal through naively -- but a synthesized out-parameter
         // initializer is a bare top-level assignment, not wrapped in a
         // `DeclarationExp`, so it never reached that check and instead fell
-        // through to `runExpressionValue(assign.e2)` below, which evaluated the
+        // through to `constructedExpressionValue(assign.e2)` below, which evaluated the
         // `IntegerExp` as a scalar `ExpressionResult(0)` and tried to clobber the
         // parameter's native struct value with a bare int.
         //
@@ -14480,7 +14481,7 @@ unsupportedExpression:
 
     // Decision 7's no-result operation for a declaration: the initializer
     // constructs the variable's own storage and there is no value left over
-    // to hand back (`runExpressionValue`'s `declarationExpression` arm).
+    // to hand back (`runExpressionImpl`'s `declarationExpression` arm).
     //
     // Mirrors `Dsymbol_toElem` in DMD's `e2ir.d`: once construction succeeds,
     // arm the variable's destructor (`vd.edtor`) so it runs at a later

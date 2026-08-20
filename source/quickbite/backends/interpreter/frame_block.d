@@ -59,6 +59,20 @@ public struct FrameBlock {
     // context in the layout walk allocates a typed block only when executed;
     // the activation owns that block for the binding's whole lifetime.
     public void* temporaryAddress(Expression expression) @trusted {
+        return temporaryAddress(expression, expression.type);
+    }
+
+    // The `temporaryAddress` sibling for a caller whose temporary is sized
+    // and scanned from a type OTHER than `expression.type` -- e.g. a
+    // function-pointer call's callee, whose DMD-typed expression is the
+    // bare, unsized dereferenced function type, while the value actually
+    // read is pointer-shaped. Still keyed by `expression`'s own identity, so
+    // a caller that later re-resolves the same expression's address (through
+    // either overload) reaches the same storage.
+    public void* temporaryAddress(
+        Expression expression,
+        imported!"dmd.mtype".Type type,
+    ) @trusted {
         import quickbite.backends.interpreter.layout:
             typeByteSize, typeHasPointers;
 
@@ -69,11 +83,11 @@ public struct FrameBlock {
         if (auto existing = key in _dynamicTemporaries)
             return existing.address;
 
-        const scan = typeHasPointers(expression.type)
+        const scan = typeHasPointers(type)
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no;
         _dynamicTemporaries[key] = NativeBlock.allocate(
-            typeByteSize(expression.type),
+            typeByteSize(type),
             scan,
         );
         return _dynamicTemporaries[key].address;
