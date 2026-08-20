@@ -3114,7 +3114,9 @@ comparisonExpression:
 
 conditionalExpression:
         if (auto conditional = expression.isCondExp)
-            return runConditionalExpression(conditional);
+            return conditional.type.toBasetype.ty == TY.Tvoid
+                ? runConditionalExpression(conditional)
+                : constructedExpressionValue(conditional);
 
 throwExpression:
         if (auto throw_ = expression.isThrowExp) {
@@ -5501,10 +5503,12 @@ unsupportedExpression:
         return offset;
     }
 
-    // A conditional expression's arms are not fixed to one type family: an
-    // arm can be an associative array (among other aggregate kinds) whose
-    // value the typed-place write path does not yet support. Keep both arms
-    // on the carrier here rather than routing through a typed destination.
+    // A void-typed conditional has no result to construct: each arm runs for
+    // its own effect only, mirroring `runLogicalAndExpression`/
+    // `runLogicalOrExpression`'s void-typed case. A non-void conditional
+    // goes through `constructedExpressionValue` instead (`constructInto`'s
+    // `CondExp` arm recurses into whichever arm is selected, so it already
+    // covers every result type family).
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
