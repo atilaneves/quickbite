@@ -24,7 +24,14 @@ public bool hasNoInterpretableSource(
 
 // Imported functions are analyzed on demand. DMD can defer semantic3 work
 // created while analyzing the body, so drain that queue before a backend reads
-// parameters or the body. The inline-asm shim is likewise post-semantic.
+// parameters or the body. The inline-asm shim is likewise post-semantic, but
+// its own snapshot is deferred to first read (`ensureInlineAsmSnapshot`)
+// rather than retaken here: a backend lazily analyzing one callee at a time
+// (`quickbite.backends.bytecode`'s on-first-call compilation) reaches this
+// function once per newly discovered callee, and `snapshotInlineAsmInstructions`
+// walks every symbol in every loaded module every time it runs -- paying that
+// cost on each callee, rather than once before the one lookup that actually
+// needs it, was the dominant cost behind issue #509's memory blowup.
 public void ensureFunctionBodySemantic(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
@@ -42,7 +49,7 @@ public void ensureFunctionBodySemantic(
 
     functionSemantic3(function_);
     runDeferredSemantic3;
-    snapshotInlineAsmInstructions;
+    _inlineAsmSnapshotStale = true;
     assert(function_.semanticRun >= PASS.semantic3done);
 }
 
@@ -86,6 +93,9 @@ private InlineAsmToken[][][
 private imported!"dmd.func".FuncDeclaration[
     imported!"dmd.statement".CompoundAsmStatement
 ] _inlineAsmOwners;
+// Set whenever semantic work may have added or changed inline-asm-bearing
+// AST the snapshot has not seen yet; cleared once a lookup retakes it.
+private bool _inlineAsmSnapshotStale = true;
 
 public void snapshotInlineAsmInstructions() {
     import dmd.dmodule: Module;
@@ -101,11 +111,22 @@ public void snapshotInlineAsmInstructions() {
         auto module_ = Module.amodules[index];
         snapshotSymbols(module_.members, visited);
     }
+    _inlineAsmSnapshotStale = false;
+}
+
+// Retakes the snapshot only if semantic work has run since the last one:
+// `ensureFunctionBodySemantic` marks it stale per newly analyzed callee
+// instead of paying the full-program walk there, so the cost lands here,
+// once, right before a lookup that actually needs current data.
+private void ensureInlineAsmSnapshot() {
+    if (_inlineAsmSnapshotStale)
+        snapshotInlineAsmInstructions;
 }
 
 public const(InlineAsmToken[][]) inlineAsmInstructions(
     imported!"dmd.statement".CompoundAsmStatement statement,
 ) {
+    ensureInlineAsmSnapshot;
     const saved = statement in _inlineAsmInstructions;
     return saved is null ? null : *saved;
 }
@@ -113,6 +134,7 @@ public const(InlineAsmToken[][]) inlineAsmInstructions(
 public imported!"dmd.func".FuncDeclaration inlineAsmOwner(
     imported!"dmd.statement".CompoundAsmStatement statement,
 ) {
+    ensureInlineAsmSnapshot;
     // `const` would qualify the DMD class reference and make it unreturnable.
     auto saved = statement in _inlineAsmOwners;
     return saved is null ? null : *saved;

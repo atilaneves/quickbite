@@ -639,3 +639,29 @@
   same kind of value; check every path that loads a pointer-typed value
   routes through it. `asPointerValue` (`compiler.d`) promoted `*p`/`p[i]`
   loads to `isPointer`, but a `ref T` parameter's own read never used it.
+
+- A bug report's own root-cause hypothesis can be wrong even when carefully
+  written by a prior diagnostic pass; bisect down to a hermetic, minimal
+  repro before trusting the named mechanism. Issue #509 was filed as a
+  cerealed `struct { string value; }` + whole-array slice-reassignment
+  (`data[] = data2[]`) memory bug; bisecting the fixture statement by
+  statement showed the slice reassignment was never involved at all -- the
+  real defect was a nested immediately-invoked function literal
+  (`() { return S(value); }()`) reading an enclosing function's `auto ref`
+  parameter through a stale, wrong-function frame offset, exercised
+  incidentally by `unit-threaded`'s `.should ==` machinery.
+
+- An inlining/short-circuit optimization that bypasses one code path (here,
+  `compiler.d`'s `immediateLambdaReturn`, which compiles an IIFE's single
+  `return expr;` directly in the caller's context instead of a real nested
+  call) must be transparent to every OTHER special-case a caller applies to
+  the un-inlined shape, not just the one the optimization was written for.
+  `placeOrNull`'s dedicated constructor-call receiver handling checked
+  `expression.isCallExp`/`callFunction(call).isCtorDeclaration` directly, so
+  it never saw through an inlined IIFE wrapping a constructor call and fell
+  back to a receiver-unaware path. Narrowing the optimization itself (e.g.
+  declining to inline whenever anything is captured) is the wrong fix -- it
+  silently forces many more closures through unrelated, separately limited
+  machinery (a multi-level nested-frame walk here) than the actual bug
+  requires. The precise fix: make every caller that pattern-matches a
+  specific expression shape unwrap the same inlining wrapper first.

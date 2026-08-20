@@ -1331,3 +1331,22 @@ unittest {
     uint function(uint) fn = &factorial;
     assert(fn(5) == 120);
 }
+
+struct Reading {
+    int amount;
+
+    this(int amount) {
+        this.amount = amount;
+    }
+}
+
+auto wrapReading(V)(auto ref V value) {
+    return () { return Reading(value); }();
+}
+
+unittest {
+    int measured = 5;
+    auto reading = wrapReading(measured);
+
+    assert(reading.amount == measured);
+}

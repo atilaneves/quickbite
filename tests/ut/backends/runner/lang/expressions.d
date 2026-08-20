@@ -1531,6 +1531,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An immediately-invoked function literal (`() { return S(value); }()`)
+// evaluates its single `return` expression exactly as if it were written
+// directly in the enclosing function's own body: reading `value`, an
+// `auto ref` parameter of that enclosing function, from inside the literal
+// must still see the argument the caller passed, not an unrelated value.
+static foreach (backend; Matrix!()) {
+    @("closure.immediatelyInvokedLiteralConstructsFromEnclosingRefParameter." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+
+                this(int amount) {
+                    this.amount = amount;
+                }
+            }
+
+            auto wrap(V)(auto ref V value) {
+                return () { return Reading(value); }();
+            }
+
+            unittest {
+                int measured = 5;
+                auto reading = wrap(measured);
+
+                assert(reading.amount == measured);
+            }
+        });
+    }
+}
+
 // A function-local struct stored in a module global keeps working across the
 // unittest boundary: a later unittest can still call a method that reaches
 // back into the now-returned enclosing function's parameter.

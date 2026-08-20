@@ -2364,6 +2364,25 @@ private struct Compiler {
                         *pointer, ScalarType.ulong_, true, ScalarType.void_,
                     );
 
+            // A declaration's cached `DeclarationRecord` (`.scalar`,
+            // `.refPointer`, ...) carries a frame offset relative to
+            // whichever function's `compileFunctionBody` call first
+            // registered it. Reading it here without checking ownership
+            // would misread an enclosing function's parameter slot as one
+            // in the CURRENT function's own (unrelated, much smaller) frame
+            // whenever a nested lambda captures it -- e.g. a lambda
+            // forwarding an enclosing `auto ref` parameter into another
+            // call. Route a genuinely captured declaration through
+            // `placeOrNull`, which already resolves the enclosing frame
+            // correctly (`Place.Kind.captured`/`Place.Kind.pointer`),
+            // instead of trusting the stale cached offset directly.
+            if (_hasNestedContext)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (declaration in _capturedOffsets &&
+                        _capturedOwners[declaration] !is _currentFunction)
+                        if (auto place = placeOrNull(expression))
+                            return loadPlaceValue(*place);
+
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declarationRecordView(declaration).scalarOrNull) {
                     if (declarationRecordView(declaration).structPointerOrNull)
@@ -3167,6 +3186,17 @@ private struct Compiler {
             return null;
         }
         if (auto call = expression.isCallExp) {
+            // `(){ return S(args); }()`: `compileCall` itself inlines this
+            // shape (`immediateLambdaReturn`) by compiling `S(args)` in
+            // place of the whole call, so look through the same wrapper
+            // here before testing for a constructor call below -- otherwise
+            // `callFunction(call)` sees the IIFE, not the constructor, and
+            // this falls back to the receiver-unaware `isAggregate` branch
+            // further down, which never gives the constructor a real
+            // receiver to initialise (issue #509).
+            if (auto inlined = immediateLambdaReturn(call))
+                return placeOrNull(inlined);
+
             auto function_ = callFunction(call);
             if (facts.isAggregate && function_ !is null &&
                 function_.isCtorDeclaration !is null) {
@@ -12359,6 +12389,19 @@ private struct Compiler {
         return allocateBytes(size(returnType), 8);
     }
 
+    // An IIFE (`() { return expr; }()`) is compiled by evaluating `expr`
+    // directly in the caller's own context rather than a real nested-function
+    // call: cheaper, and it still needs no context/capture wiring, because
+    // any variable `expr` reads is one the caller already owns (a capture
+    // read merely resolves through the SAME machinery a direct reference
+    // in the caller's own body would -- `compileExpression`'s VarExp
+    // handling and `placeOrNull` route a captured declaration through its
+    // real owning frame regardless of how deeply the read is nested
+    // syntactically). Callers that recognise a specific shape of `expr`
+    // (e.g. `placeOrNull`'s constructor-call receiver handling) must apply
+    // this same unwrapping themselves before testing that shape, or an
+    // IIFE wrapping it silently falls back to a plainer, receiver-unaware
+    // path (issue #509's second, narrower finding).
     private Expression immediateLambdaReturn(CallExp call) {
         auto literal = call.e1 is null ? null : call.e1.isFuncExp;
         if (literal is null ||
