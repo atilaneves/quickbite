@@ -5654,6 +5654,17 @@ unsupportedExpression:
                 right == ExpressionResult.null_ ||
             right.isPointer && right.pointerAddress is null &&
                 left == ExpressionResult.null_;
+        // A symbolic typeid/classinfo (no host `TypeInfo` for the type it
+        // names) never reaches here as a raw written slot: `runClassInfoExpression`/
+        // `runTypeidExpression` always answer with the resolved identity
+        // itself -- a real host address when one exists, the display name
+        // otherwise -- so comparing the two evaluated carriers directly
+        // already compares identities, not incidental storage. Two
+        // evaluations of the same guest-only type share one display name
+        // (`left == right` on `TypeName` compares that string); two of the
+        // same resolved native type share one host address (falls through
+        // to `classIdentityAddress`'s `isPointer` arm below, an ordinary
+        // address compare).
         return
             left.isTypeName || right.isTypeName
             ? left == right
@@ -8729,15 +8740,20 @@ unsupportedExpression:
             return readStoredValue(projectionPlace(dot));
 
         if (auto field = dot.var.isVarDeclaration) {
+            // Only a HIT answers directly: this fast path's `fieldPlace` is
+            // the field's offset within `variable`'s own storage, correct
+            // only when `variable` (unlike a class receiver, always a
+            // reference) holds the enclosing STRUCT by value. A class
+            // receiver falls through unregistered and is answered correctly
+            // further down, by the general path that first dereferences the
+            // receiver to the object body before composing the field
+            // address.
             if (field.type.toBasetype.isTypeClass !is null)
                 if (auto variableExpression = dot.e1.isVarExp)
                     if (auto variable = variableExpression.var.isVarDeclaration)
                         if (hasBindingPlace(variable)) {
                             auto fieldPlace = bindingPlace(variable).field(field);
-                            if (
-                                auto typeInfo = fieldPlace.address
-                                    in nativeTypeInfoSlots
-                            )
+                            if (auto typeInfo = fieldPlace.address in nativeTypeInfoSlots)
                                 return ExpressionResult.typeName(*typeInfo);
                         }
 
@@ -8817,10 +8833,12 @@ unsupportedExpression:
         // TypeInfo the qualified type's own TypeInfo wraps.
         if (declarationName(dot.var) == "base")
             if (auto typeid_ = dot.e1.isTypeidExp)
-                if (auto type = typeidObjectType(typeid_))
-                    return ExpressionResult.typeName(
-                        typeInfoName(unqualifiedTypeInfoType(type)),
-                    );
+                if (auto type = typeidObjectType(typeid_)) {
+                    auto unqualified = unqualifiedTypeInfoType(type);
+                    if (auto address = resolvedClassTypeInfoAddress(unqualified))
+                        return ExpressionResult.pointerValue(cast(void*) address);
+                    return ExpressionResult.typeName(typeInfoName(unqualified));
+                }
 
 
         const receiver = constructedExpressionValue(dot.e1);
@@ -8875,17 +8893,11 @@ unsupportedExpression:
                 auto fieldPlace = Place(bodyAddress, bodyType)
                     .field(dot.var.isVarDeclaration);
                 if (fieldPlace.type.isTypeClass !is null) {
-                    if (
-                        auto typeInfo = fieldPlace.address
-                            in nativeTypeInfoSlots
-                    )
-                        return ExpressionResult.typeName(*typeInfo);
-                    auto address = fieldPlace.deref.address;
-                    if (address is null)
-                        return ExpressionResult.null_;
-                    if (auto object = address in nativeClassOwners)
-                        return ExpressionResult.nativeAggregateValue(*object);
-                    return ExpressionResult.pointerValue(address);
+                    const value = readStoredValue(fieldPlace);
+                    if (value.isPointer)
+                        if (auto object = value.pointerAddress in nativeClassOwners)
+                            return ExpressionResult.nativeAggregateValue(*object);
+                    return value;
                 }
                 // A live delegate value has no native ABI function address
                 // (the same gap `nativeDelegateSlots`'s own field comment
@@ -8900,16 +8912,8 @@ unsupportedExpression:
             }
             if (target.isNativeAggregate) {
                 import dmd.astenums: TY;
-                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-                import quickbite.backends.interpreter.place: Place;
 
                 auto field = dot.var.isVarDeclaration;
-                auto native = AggregateValue.native(target);
-                auto fieldPlace = Place(native.address, native.type).field(field);
-                if (
-                    auto typeInfo = fieldPlace.address in nativeTypeInfoSlots
-                )
-                    return ExpressionResult.typeName(*typeInfo);
                 if (auto variableExpression = dot.e1.isVarExp)
                     if (auto variable = variableExpression.var.isVarDeclaration)
                     if (hasBindingPlace(variable)) {
@@ -8980,6 +8984,9 @@ unsupportedExpression:
             if (dynamicClass(receiver) !is null)
                 return ExpressionResult.typeName(dynamicClassName(receiver));
         }
+
+        if (auto address = resolvedClassTypeInfoAddress(classInfo.e1.type))
+            return ExpressionResult.pointerValue(cast(void*) address);
 
         return ExpressionResult.typeName(typeInfoName(classInfo.e1.type));
     }
@@ -9056,7 +9063,7 @@ unsupportedExpression:
             if (type is null)
                 throw new Exception("Unsupported interpreter typeid expression.");
 
-            return typeidValue(typeid_, typeInfoName(type));
+            return typeidValue(typeid_, type, typeInfoName(type));
         }
 
         auto value = runExpressionValue(expression);
@@ -9070,21 +9077,34 @@ unsupportedExpression:
                 "` is `null`",
             ));
 
+        // A dynamic class the interpreter tracks is guest-only by
+        // construction (`dynamicClass` only ever resolves an
+        // interpreter-allocated object), so it has no host symbol to
+        // recover; only the static-type fallback below can name a real one.
         if (dynamicClass(value) !is null)
-            return typeidValue(typeid_, dynamicClassName(value));
+            return typeidValue(typeid_, null, dynamicClassName(value));
 
-        return typeidValue(typeid_, typeInfoName(expression.type));
+        return typeidValue(typeid_, expression.type, typeInfoName(expression.type));
     }
 
+    // A real host `TypeInfo_Class` symbol for `resolvedType` takes priority
+    // over the symbolic display-name path, exactly as `runClassInfoExpression`
+    // resolves `.classinfo`; `resolvedType` is null wherever the caller has
+    // already answered from interpreter-tracked dynamic-class identity.
     private ExpressionResult typeidValue(
         imported!"dmd.expression".TypeidExp typeid_,
+        imported!"dmd.mtype".Type resolvedType,
         in string name,
     ) {
         import quickbite.frontend.dmd.types: isCharacterArrayType;
 
-        return isCharacterArrayType(typeid_.type)
-            ? characterArrayValue(this, typeid_.type, name)
-            : ExpressionResult.typeName(name);
+        if (isCharacterArrayType(typeid_.type))
+            return characterArrayValue(this, typeid_.type, name);
+
+        if (auto address = resolvedClassTypeInfoAddress(resolvedType))
+            return ExpressionResult.pointerValue(cast(void*) address);
+
+        return ExpressionResult.typeName(name);
     }
 
     private ExpressionResult runVectorExpression(
@@ -12480,11 +12500,17 @@ unsupportedExpression:
         // `typeid` yields the TypeInfo describing a type, and for a class or
         // interface that TypeInfo's own dynamic type is `TypeInfo_Class`, so
         // casting one to `TypeInfo_Class` (or to a base of it) succeeds and
-        // keeps describing the same type.
+        // keeps describing the same type. A resolved host address is a real
+        // `TypeInfo_Class` unconditionally: `resolvedClassTypeInfoAddress`
+        // only ever produces one for a class type, so the value's own
+        // qualified name never needs recovering to confirm it.
         if (
-            value.isTypeName &&
             isClassTypeInfoClass(classType.sym) &&
-            classDeclarationByQualifiedName(value.asTypeNameString) !is null
+            (
+                value.isPointer ||
+                value.isTypeName &&
+                    classDeclarationByQualifiedName(value.asTypeNameString) !is null
+            )
         )
             return value;
 
@@ -16566,6 +16592,27 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
         return classInfoName(classType.sym);
 
     return typeChars(type);
+}
+
+
+// A class `TypeInfo`'s real host address, for a class an imported native
+// image actually defines -- the same resolution `fillNativeCallOperands`
+// already performs for a `typeid(T)` FFI call argument. A class declared
+// only in interpreted code was never compiled, so `resolveDataSymbol` finds
+// no such symbol and the caller falls back to the symbolic display-name
+// path. Scoped to class types only: a non-class `TypeInfo` value has no
+// interpreter-tracked declaration to recover from a bare address later (see
+// `classCastValue`'s `TypeInfo_Class` narrowing), so this never manufactures
+// one for a struct or scalar `typeid`.
+private const(void)* resolvedClassTypeInfoAddress(imported!"dmd.mtype".Type type) {
+    import quickbite.ffi.ffi: resolveDataSymbol;
+
+    if (type is null)
+        return null;
+    if (type.toBasetype.isTypeClass is null)
+        return null;
+    auto typeInfo = type.vtinfo;
+    return typeInfo is null ? null : resolveDataSymbol(typeInfo);
 }
 
 
