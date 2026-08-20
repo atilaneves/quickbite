@@ -5953,6 +5953,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The class-receiver sibling of the compound-assignment write above
+// (`c.vals[i][j] += value` where `c` is a class instance rather than a
+// struct element): `writeIndexLocation`'s nested-`IndexExp` `DotVarExp` arm
+// had no class/struct split of its own, unlike every other receiver arm in
+// this function, so a class receiver here fell into the struct-only
+// snapshot path and `structFieldIndex` threw "Unsupported interpreter
+// field access." (`receiverStructType` answers `null` for a class type).
+// Fixed by giving this arm the same `receiverClassType` split its sibling
+// arms already have.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.nestedStaticArrayFieldElementOfClassAddAssigned." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Outer { int[2][3] vals; int tag; }
+            unittest {
+                auto c = new Outer();
+                c.vals = [[1, 2], [3, 4], [5, 6]];
+                c.tag = 10;
+                c.vals[1][0] += 5;
+                assert(c.vals[1][0] == 8);
+                assert(c.vals[0][0] == 1);
+                assert(c.vals[2][1] == 6);
+                assert(c.tag == 10);
+            }
+        });
+    }
+}
+
 // The `Tarray` sibling of the doubly-indexed static-array-field write above
 // (`arr[i].matrixField[j][k] = value`, e.g. `int[][] matrixField`, a
 // dynamic-array-of-dynamic-arrays field): `arrayElementFieldPointer` only

@@ -10155,15 +10155,130 @@ unsupportedExpression:
         // `DotVarExp`, not a `DotVarExp`/`VarExp` directly, so it fell through
         // both arms below. `value` here is already the compound-assignment's
         // computed result (`writeLocation`'s caller resolved it), so only the
-        // write-back composition is needed, not an rhs evaluation. `dot.e1`'s
-        // struct receiver also has no addressable `Place`, so the updated
-        // field can only be composed as a whole rebuilt struct value and
-        // written back through `writeLocation`'s own receiver recursion.
+        // write-back composition is needed, not an rhs evaluation.
         if (auto outer = index.e1.isIndexExp) {
             auto dot = outer.e1.isDotVarExp;
             if (dot is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
+            if (receiverClassType(dot.e1) !is null) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue, writeValue;
+
+                const receiver = constructedExpressionValue(dot.e1);
+                // A class local exposes its object-body pointer. Resolve the
+                // field's `Place` directly through that pointer and write the
+                // updated nested element back through it, mirroring this
+                // function's singly-indexed `DotVarExp` class arm below.
+                const nativeClassReceiver = receiver.isPointer
+                    ? receiver
+                    : receiver.isNativeAggregate
+                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : ExpressionResult.null_;
+                if (!nativeClassReceiver.isPointer)
+                    throw new Exception("Class field assignment needs a native address.");
+
+                auto bodyAddress = nativeClassReceiver.pointerAddress;
+                auto bodyType = dot.e1.type;
+                if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                    bodyType = (*metadata).type;
+                }
+                auto fieldPlace = Place(bodyAddress, bodyType)
+                    .field(dot.var.isVarDeclaration);
+                const fieldValue = readValue(fieldPlace);
+                const outerIndex = scalarOperand!size_t(outer.e2);
+                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                const outerElement = readStoredValue(
+                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                );
+                checkStaticArrayIndexInBounds(outerElement, arrayIndex);
+                const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                    AggregateValue.native(fieldValue),
+                    outerIndex,
+                    ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                        AggregateValue.native(outerElement), arrayIndex, value,
+                    )),
+                ));
+                writeValue(fieldPlace, updatedField);
+                return;
+            }
+
+            // A `this`/`super`-rooted receiver chain (`this.arr[i][j] += v`,
+            // or a deeper `this.inner.arr[i][j] += v`) is bound to this
+            // activation's own receiver storage for its whole lifetime --
+            // `projectionPlace` composes the field's live address the same
+            // way `writeLocation`'s own `DotVarExp` arm does for an
+            // unindexed field write.
+            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                auto fieldPlace = projectionPlace(dot);
+                const fieldValue = readValue(fieldPlace);
+                const outerIndex = scalarOperand!size_t(outer.e2);
+                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                const outerElement = readStoredValue(
+                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                );
+                checkStaticArrayIndexInBounds(outerElement, arrayIndex);
+                writeStoredValue(
+                    fieldPlace.index(outerIndex).index(arrayIndex),
+                    storageValue(index.type, value),
+                );
+                clearProjectionRootUninitialized(index);
+                return;
+            }
+
+            // A ref-returning call's receiver (`f().arr[i][j] += v` where
+            // `f` returns `ref S`) names a live struct lvalue, not a
+            // temporary -- the same lvalue this function's own
+            // `index.e1.isCallExp` arm above already resolves through
+            // `refReturningCallAddress` for the top-level index-is-call
+            // shape.
+            if (auto call = dot.e1.isCallExp)
+                if (
+                    call.f !is null &&
+                    returnsRef(call.f) &&
+                    dot.e1.type.toBasetype.isTypeStruct !is null
+                ) {
+                    import dmd.tokens: EXP;
+                    import quickbite.backends.interpreter.place: Place;
+                    import quickbite.backends.interpreter.place_value: readValue;
+
+                    const address = refReturningCallAddress(call, EXP.address);
+                    if (address.isPointer) {
+                        auto fieldPlace = Place(address.pointerAddress, dot.e1.type)
+                            .field(dot.var.isVarDeclaration);
+                        const fieldValue = readValue(fieldPlace);
+                        const outerIndex = scalarOperand!size_t(outer.e2);
+                        checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                        const outerElement = readStoredValue(
+                            AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                        );
+                        checkStaticArrayIndexInBounds(outerElement, arrayIndex);
+                        writeStoredValue(
+                            fieldPlace.index(outerIndex).index(arrayIndex),
+                            storageValue(index.type, value),
+                        );
+                        return;
+                    }
+                }
+
+            // Whatever remains here has no addressable place this
+            // activation can compose in place: a plain (non-ref) call
+            // result or a literal receiver is a genuine rvalue -- DMD
+            // itself makes `f().field[j][k] += v` a compile error for a
+            // non-ref `f` returning a struct by value, so this shape is
+            // reachable only through an already-lowered AST. A
+            // captured-variable receiver has live storage but no static
+            // predicate resolves it yet (the frame/dataseg-scoped
+            // `hasBindingPlace` does not see a closure's cross-activation
+            // captures) -- separate follow-on work. A `VarExp`-rooted
+            // struct receiver (`local.field[j][k] += v`) also lands here:
+            // `local` itself has a place, but this function composes its
+            // write targets by hand rather than through the direct-write
+            // predicates, so a plain local receiver keeps the snapshot
+            // rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const fieldValue = readStoredValue(
@@ -10221,11 +10336,68 @@ unsupportedExpression:
                 throw new Exception("Class field assignment needs a native address.");
             }
 
-            // A struct receiver here (as opposed to the class branch above)
-            // has no addressable `Place`: `receiver` is a value snapshot
-            // read by `runExpressionValue`, so the updated element can only
-            // be composed as a whole rebuilt struct value and written back
-            // through `writeLocation`'s own receiver recursion.
+            // A `this`/`super`-rooted receiver chain (`this.arr[i] += v`, or
+            // a deeper `this.inner.arr[i] += v`) is bound to this
+            // activation's own receiver storage for its whole lifetime --
+            // `projectionPlace` composes the field's live address the same
+            // way `writeLocation`'s own `DotVarExp` arm does for an
+            // unindexed field write.
+            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                auto fieldPlace = projectionPlace(dot);
+                checkStaticArrayIndexInBounds(readValue(fieldPlace), arrayIndex);
+                writeStoredValue(
+                    fieldPlace.index(arrayIndex),
+                    storageValue(index.type, value),
+                );
+                clearProjectionRootUninitialized(index);
+                return;
+            }
+
+            // A ref-returning call's receiver (`f().arr[i] += v` where `f`
+            // returns `ref S`) names a live struct lvalue, not a temporary
+            // -- the same lvalue this function's own `index.e1.isCallExp`
+            // arm above already resolves through `refReturningCallAddress`
+            // for the top-level index-is-call shape.
+            if (auto call = dot.e1.isCallExp)
+                if (
+                    call.f !is null &&
+                    returnsRef(call.f) &&
+                    dot.e1.type.toBasetype.isTypeStruct !is null
+                ) {
+                    import dmd.tokens: EXP;
+                    import quickbite.backends.interpreter.place: Place;
+                    import quickbite.backends.interpreter.place_value: readValue;
+
+                    const address = refReturningCallAddress(call, EXP.address);
+                    if (address.isPointer) {
+                        auto fieldPlace = Place(address.pointerAddress, dot.e1.type)
+                            .field(dot.var.isVarDeclaration);
+                        checkStaticArrayIndexInBounds(readValue(fieldPlace), arrayIndex);
+                        writeStoredValue(
+                            fieldPlace.index(arrayIndex),
+                            storageValue(index.type, value),
+                        );
+                        return;
+                    }
+                }
+
+            // Whatever remains here has no addressable place this
+            // activation can compose in place: a plain (non-ref) call
+            // result or a literal receiver is a genuine rvalue -- DMD
+            // itself makes `f().field[j] += v` a compile error for a
+            // non-ref `f` returning a struct by value, so this shape is
+            // reachable only through an already-lowered AST. A
+            // captured-variable receiver has live storage but no static
+            // predicate resolves it yet (the frame/dataseg-scoped
+            // `hasBindingPlace` does not see a closure's cross-activation
+            // captures) -- separate follow-on work. A `VarExp`-rooted
+            // struct receiver (`local.field[j] += v`) also lands here for
+            // the same reason as `writeIndexLocation`'s nested-`IndexExp`
+            // arm above: this function composes its write targets by hand
+            // rather than through the direct-write predicates, so a plain
+            // local receiver keeps the snapshot rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const fieldValue = readStoredValue(
