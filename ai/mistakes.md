@@ -634,3 +634,8 @@
   before bytecode core ever sees a `CondExp` node, so an exposing test needs
   a non-constant condition (a `bool` local, as the existing lvalue-ternary
   fixture already used).
+
+- A helper for one load site does not cover another site loading the
+  same kind of value; check every path that loads a pointer-typed value
+  routes through it. `asPointerValue` (`compiler.d`) promoted `*p`/`p[i]`
+  loads to `isPointer`, but a `ref T` parameter's own read never used it.

@@ -2398,7 +2398,14 @@ private struct Compiler {
                                 true,
                                 ScalarType.void_,
                             );
-                        return loaded;
+                        // A `ref` parameter whose own static type is a
+                        // pointer (`ref T val` with `T` a pointer type, e.g.
+                        // a generic `ref T` bound to `int*`): the value just
+                        // loaded through the frame slot's address IS that
+                        // pointer, so a further dereference (`*val`) must see
+                        // an operand carrying pointer semantics, not a bare
+                        // scalar.
+                        return asPointerValue(loaded, declaration.type);
                     }
                     if (declarationRecordView(declaration).complexDoubleOrNull)
                         return Operand(
