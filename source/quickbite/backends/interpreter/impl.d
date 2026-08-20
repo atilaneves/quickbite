@@ -11125,6 +11125,91 @@ unsupportedExpression:
                 return value;
             }
 
+            // A `this`/`super`-rooted receiver chain (`this.m[i][j] = v`, or
+            // a deeper `this.inner.m[i][j] = v`) is bound to this
+            // activation's own receiver storage for its whole lifetime --
+            // `projectionPlace` composes the field's live address the same
+            // way the class arm above composes its own `fieldPlace`, and
+            // `writeLocation`'s own `DotVarExp` arm does for an unindexed
+            // field write. With the field itself now a live place, the
+            // element write goes through the same typed-temporary
+            // discipline the class arm above uses, instead of composing a
+            // whole rebuilt struct value.
+            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                auto fieldPlace = projectionPlace(dot);
+                const fieldValue = readValue(fieldPlace);
+                const outerIndex = scalarOperand!size_t(outer.e2);
+                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                const outerElement = readStoredValue(
+                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                );
+                const innerIndex = scalarOperand!size_t(inner.e2);
+                checkStaticArrayIndexInBounds(outerElement, innerIndex);
+                auto destination = fieldPlace.index(outerIndex).index(innerIndex);
+                if (canAssignThroughTypedTemporary(destination, rhs)) {
+                    const value = assignThroughTypedTemporary(destination, rhs);
+                    clearProjectionRootUninitialized(inner);
+                    return value;
+                }
+                const value = constructedExpressionValue(rhs);
+                writeStoredValue(destination, value);
+                clearProjectionRootUninitialized(inner);
+                return value;
+            }
+
+            // A ref-returning call's receiver (`f().m[i][j] = v` where `f`
+            // returns `ref S`) names a live struct lvalue, not a temporary
+            // -- the same lvalue the sibling `dot.e1.isCallExp` arms in
+            // `runIndexAssignExpression` and `writeIndexLocation` already
+            // resolve through `refReturningCallAddress` for their own
+            // singly-indexed struct fallbacks.
+            if (auto call = dot.e1.isCallExp)
+                if (
+                    call.f !is null &&
+                    returnsRef(call.f) &&
+                    dot.e1.type.toBasetype.isTypeStruct !is null
+                ) {
+                    import dmd.tokens: EXP;
+                    import quickbite.backends.interpreter.place: Place;
+                    import quickbite.backends.interpreter.place_value: readValue;
+
+                    const address = refReturningCallAddress(call, EXP.address);
+                    if (address.isPointer) {
+                        auto fieldPlace = Place(address.pointerAddress, dot.e1.type)
+                            .field(dot.var.isVarDeclaration);
+                        const fieldValue = readValue(fieldPlace);
+                        const outerIndex = scalarOperand!size_t(outer.e2);
+                        checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                        const outerElement = readStoredValue(
+                            AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                        );
+                        const innerIndex = scalarOperand!size_t(inner.e2);
+                        checkStaticArrayIndexInBounds(outerElement, innerIndex);
+                        auto destination = fieldPlace.index(outerIndex).index(innerIndex);
+                        if (canAssignThroughTypedTemporary(destination, rhs))
+                            return assignThroughTypedTemporary(destination, rhs);
+                        const value = constructedExpressionValue(rhs);
+                        writeStoredValue(destination, value);
+                        return value;
+                    }
+                }
+
+            // Whatever remains here has no addressable place this
+            // activation can compose in place: a plain (non-ref) call
+            // result or a literal receiver is a genuine rvalue -- DMD
+            // itself makes `f().m[i][j] = v` a compile error for a
+            // non-ref `f` returning a struct by value, so this shape is
+            // reachable only through an already-lowered AST. A
+            // captured-variable receiver has live storage but no static
+            // predicate resolves it yet (the frame/dataseg-scoped
+            // `hasBindingPlace` does not see a closure's cross-activation
+            // captures) -- separate follow-on work. A `VarExp`-rooted
+            // struct receiver (`local.m[i][j] = v`) also lands here: this
+            // function composes its write targets by hand rather than
+            // through the direct-write predicates, so a plain local
+            // receiver keeps the snapshot rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const fieldValue = readStoredValue(
