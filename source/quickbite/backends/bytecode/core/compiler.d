@@ -5802,6 +5802,23 @@ private struct Compiler {
                         }
             }
 
+        // `S dest = cond ? a : b`: neither arm need be a Place on its own (a
+        // struct-typed ternary is not itself an lvalue merely because both
+        // arms are), so branch here and block-copy each arm's own value into
+        // the declared slot directly -- the same destination-directed shape
+        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
+        // arrays.
+        if (auto conditional = source.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const falseJump = emitJumpIfFalse(condition);
+            compileStructValueInto(offset, variable.type, conditional.e1);
+            const endJump = emitJump;
+            patchJump(falseJump);
+            compileStructValueInto(offset, variable.type, conditional.e2);
+            patchJump(endJump);
+            return;
+        }
+
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
         // materialised struct-valued call) into the declared slot.
@@ -5837,6 +5854,55 @@ private struct Compiler {
         throw new Exception(text(
             "Unsupported struct initializer in bytecode core: ",
             declarationChars(variable),
+        ));
+    }
+
+    // One arm of a struct-typed ternary (`compileStructDeclaration`'s CondExp
+    // arm above): block-copy `source`'s value into `offset` directly, rather
+    // than resolving it through Place first, since an arm need not be a Place
+    // on its own (a string-literal arm in the dynamic-array analogue is the
+    // same shape). `structValueOffsetOrNull` already unwraps a CommaExp
+    // source itself, so only the struct-literal and default-init shapes need
+    // their own arm here.
+    private void compileStructValueInto(
+        in ushort offset, Type type, Expression source,
+    ) {
+        import std.conv: text;
+
+        source = initializerExpression(source);
+
+        if (auto literal = source.isStructLiteralExp) {
+            compileStructLiteralInto(offset, literal);
+            return;
+        }
+
+        if (auto sourceOffset = structValueOffsetOrNull(source)) {
+            _code ~= Instruction(
+                Op.copy, offset, *sourceOffset,
+                cast(ushort) typeFacts(type).byteWidth,
+            );
+            return;
+        }
+
+        // `S.init` (DMD's init-symbol VarExp): materialise its real default
+        // bytes, matching compileStructDeclaration's own VarExp fallback.
+        if (source.isVarExp !is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            auto defaultLiteral = type.toBasetype.isTypeStruct
+                .defaultInitLiteral(source.loc).isStructLiteralExp;
+            if (defaultLiteral !is null) {
+                compileStructLiteralInto(offset, defaultLiteral);
+                return;
+            }
+
+            if (compileDefaultStructFields(offset, structDeclarationOf(type)))
+                return;
+        }
+
+        throw new Exception(text(
+            "Unsupported struct ternary arm in bytecode core: ",
+            expressionChars(source),
         ));
     }
 

@@ -4653,3 +4653,54 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// A struct-typed local's initializer may be a ternary between two
+// lvalues of that struct type (the shape cerealed's `grain` uses for its
+// associative-array key/value locals). SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("structTernaryInit.twoLvalues." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int i;
+            }
+
+            unittest {
+                Pair a = Pair(1);
+                Pair b = Pair(2);
+                bool cond = true;
+                Pair k = cond ? a : b;
+                assert(k.i == 1);
+            }
+        });
+    }
+}
+
+
+// One arm of the ternary may be `S.init` rather than an lvalue (the exact
+// shape cerealed's `grain` uses: `KeyType!T k = keys.length ? keys[i] :
+// KeyType!T.init;`), exercised on both branches. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!()) {
+    @("structTernaryInit.lvalueAndInit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int i;
+            }
+
+            unittest {
+                Pair a = Pair(1);
+                bool cond = true;
+                Pair whenTrue = cond ? a : Pair.init;
+                cond = false;
+                Pair whenFalse = cond ? a : Pair.init;
+                assert(whenTrue.i == 1);
+                assert(whenFalse.i == 0);
+            }
+        });
+    }
+}
