@@ -1208,6 +1208,14 @@ private struct Walker {
         writeStoredValue(bindingPlace(variable), value, true);
     }
 
+    // An index/slice `$`-length binding is always a native `size_t`
+    // already, never a carrier or metadata-bearing value -- this overload
+    // lets that call site hand it over directly instead of boxing it into
+    // an `ExpressionResult` only to satisfy the general overload above.
+    private void setLocal(VarDeclaration variable, in size_t value) {
+        setLocal(variable, ExpressionResult(value));
+    }
+
     // Out-of-band callable and symbolic-reference entries are part of the
     // value stored in their native byte range. Copy them by byte offset so
     // unions, nested aggregates, and mixed metadata fields obey the same
@@ -1934,10 +1942,7 @@ private struct Walker {
                     if (pendingBoundsCheck)
                         pendingLength = base.arrayLength;
                     if (index.lengthVar !is null)
-                        setLocal(
-                            index.lengthVar,
-                            ExpressionResult(pendingLength),
-                        );
+                        setLocal(index.lengthVar, pendingLength);
                 },
             );
         } catch (IndexOutOfBoundsException exception) {
@@ -1996,10 +2001,7 @@ private struct Walker {
             auto staticArray = index.e1.type.toBasetype.isTypeSArray;
             if (index.lengthVar !is null) {
                 assert(staticArray !is null);
-                setLocal(
-                    index.lengthVar,
-                    ExpressionResult(staticArrayLength(staticArray)),
-                );
+                setLocal(index.lengthVar, staticArrayLength(staticArray));
             }
 
             expressions[i] = index.e2;
@@ -3913,9 +3915,9 @@ unsupportedExpression:
                         if (auto receiverVar = index.e1.isVarExp)
                             setLocal(
                                 index.lengthVar,
-                                ExpressionResult(AggregateValue.length(
+                                AggregateValue.length(
                                     AggregateValue.native(constructedExpressionValue(receiverVar)),
-                                )),
+                                ),
                             );
                     const elementIndex = scalarOperand!long(index.e2);
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
@@ -4594,9 +4596,9 @@ unsupportedExpression:
         if (index.lengthVar !is null)
             setLocal(
                 index.lengthVar,
-                ExpressionResult(AggregateValue.length(
+                AggregateValue.length(
                     AggregateValue.native(readValue(receiverPlace)),
-                )),
+                ),
             );
         const outerOffset = scalarOperand!size_t(index.e2);
         auto elementPlace = receiverPlace.index(outerOffset);
@@ -4700,7 +4702,7 @@ unsupportedExpression:
                                     if (chainIndex.lengthVar !is null)
                                         setLocal(
                                             chainIndex.lengthVar,
-                                            ExpressionResult(base.arrayLength),
+                                            base.arrayLength,
                                         );
                                 },
                             );
@@ -4722,7 +4724,7 @@ unsupportedExpression:
 
                             const rowLength = staticArrayLength(rowArray);
                             if (index.lengthVar !is null)
-                                setLocal(index.lengthVar, ExpressionResult(rowLength));
+                                setLocal(index.lengthVar, rowLength);
                             const elementOffset = scalarOperand!size_t(index.e2);
                             if (elementOffset >= rowLength)
                                 throwRangeError(
@@ -4830,7 +4832,7 @@ unsupportedExpression:
                                         if (chainIndex.lengthVar !is null)
                                             setLocal(
                                                 chainIndex.lengthVar,
-                                                ExpressionResult(base.arrayLength),
+                                                base.arrayLength,
                                             );
                                     },
                                 );
@@ -4874,7 +4876,7 @@ unsupportedExpression:
                 const arrayValue = constructedExpressionValue(index.e1);
                 if (index.lengthVar !is null) {
                     const sourceLength = AggregateValue.length(AggregateValue.native(arrayValue));
-                    setLocal(index.lengthVar, ExpressionResult(sourceLength));
+                    setLocal(index.lengthVar, sourceLength);
                 }
 
                 const outerOffset = scalarOperand!long(index.e2);
@@ -10819,9 +10821,8 @@ unsupportedExpression:
                         .field(dot.var.isVarDeclaration);
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
-                        setLocal(index.lengthVar, ExpressionResult(
-                            AggregateValue.length(AggregateValue.native(source)),
-                        ));
+                        setLocal(index.lengthVar,
+                            AggregateValue.length(AggregateValue.native(source)));
                     const arrayIndex = scalarOperand!size_t(index.e2);
                     auto destination = fieldPlace.index(arrayIndex);
                     if (canAssignThroughTypedTemporary(destination, rhs))
@@ -10847,9 +10848,8 @@ unsupportedExpression:
                 auto fieldPlace = projectionPlace(dot);
                 const source = readStoredValue(fieldPlace);
                 if (index.lengthVar !is null)
-                    setLocal(index.lengthVar, ExpressionResult(
-                        AggregateValue.length(AggregateValue.native(source)),
-                    ));
+                    setLocal(index.lengthVar,
+                        AggregateValue.length(AggregateValue.native(source)));
                 const arrayIndex = scalarOperand!size_t(index.e2);
                 auto destination = fieldPlace.index(arrayIndex);
                 if (canAssignThroughTypedTemporary(destination, rhs)) {
@@ -10883,9 +10883,8 @@ unsupportedExpression:
                             .field(dot.var.isVarDeclaration);
                         const source = readStoredValue(fieldPlace);
                         if (index.lengthVar !is null)
-                            setLocal(index.lengthVar, ExpressionResult(
-                                AggregateValue.length(AggregateValue.native(source)),
-                            ));
+                            setLocal(index.lengthVar,
+                                AggregateValue.length(AggregateValue.native(source)));
                         const arrayIndex = scalarOperand!size_t(index.e2);
                         auto destination = fieldPlace.index(arrayIndex);
                         if (canAssignThroughTypedTemporary(destination, rhs))
@@ -10923,9 +10922,8 @@ unsupportedExpression:
                 AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
             );
             if (index.lengthVar !is null)
-                setLocal(index.lengthVar, ExpressionResult(
-                    AggregateValue.length(AggregateValue.native(source)),
-                ));
+                setLocal(index.lengthVar,
+                    AggregateValue.length(AggregateValue.native(source)));
             const arrayIndex = scalarOperand!size_t(index.e2);
             const value = runExpressionValue(rhs);
             const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
@@ -12959,9 +12957,8 @@ unsupportedExpression:
         // write already uses.
         const source = runExpressionValue(slice.e1);
         if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, ExpressionResult(
-                AggregateValue.length(AggregateValue.native(source)),
-            ));
+            setLocal(slice.lengthVar,
+                AggregateValue.length(AggregateValue.native(source)));
         lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
@@ -13078,7 +13075,7 @@ unsupportedExpression:
             : projectionPlace(slice.e1);
         const sourceLength = source.arrayLength;
         if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, ExpressionResult(sourceLength));
+            setLocal(slice.lengthVar, sourceLength);
 
         lower = slice.lwr is null
             ? 0
@@ -13603,7 +13600,7 @@ unsupportedExpression:
 
             const sourceLength = sourcePlace.arrayLength;
             if (index.lengthVar !is null)
-                setLocal(index.lengthVar, ExpressionResult(sourceLength));
+                setLocal(index.lengthVar, sourceLength);
             arrayIndex = scalarOperand!size_t(index.e2);
             if (_evaluatedReferenceArgumentIndices !is null)
                 (*_evaluatedReferenceArgumentIndices)[
@@ -13653,7 +13650,7 @@ unsupportedExpression:
 
         const sourceLength = AggregateValue.length(AggregateValue.native(source));
         if (index.lengthVar !is null)
-            setLocal(index.lengthVar, ExpressionResult(sourceLength));
+            setLocal(index.lengthVar, sourceLength);
 
         // matches CTFE, which formats the index as unsigned
         arrayIndex = scalarOperand!size_t(index.e2);
@@ -14966,7 +14963,7 @@ destinationFallback:
         const pointer = isPointerType(index.e1.type);
         const length = pointer ? 0 : source.arrayLength;
         if (!pointer && index.lengthVar !is null)
-            setLocal(index.lengthVar, ExpressionResult(length));
+            setLocal(index.lengthVar, length);
 
         const arrayIndex = scalarOperand!size_t(index.e2);
         if (_evaluatedReferenceArgumentIndices !is null)
@@ -15895,7 +15892,7 @@ destinationFallback:
         auto source = directWriteProjectionPlace(slice.e1);
         const sourceLength = source.arrayLength;
         if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, ExpressionResult(sourceLength));
+            setLocal(slice.lengthVar, sourceLength);
 
         const lower = slice.lwr is null
             ? 0
