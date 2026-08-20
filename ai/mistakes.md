@@ -651,35 +651,14 @@
   helper itself; re-add it (rather than special-case the new call site) as
   soon as another caller needs the same expression shape.
 
-- Do not carry forward a prior diagnostic agent's "one root cause covers
-  both symptoms" claim without independently re-tracing the SECOND symptom
-  through the actual compiled instructions and runtime bytes. A pointer-cast
-  throw (issue #508's first symptom, fixed by the `asPointerValue` entry
-  above) and a struct-equality silent wrong answer (its second symptom) were
-  filed as sharing one root cause because both repros happened to route a
-  value through a second `auto ref` template layer. Tracing the equality
-  repro's actual runtime bytes (a temporary `debug{}`-gated
-  `stderr.writefln` at the `equal1`/`equal2`/`equal4`/`equal8` dispatch in
-  `machine.d`, enabled via plain `debug` rather than `debug=identifier` --
-  dub's `dflags` silently drops a bare `-debug=name` with only a warning,
-  `debugVersions` in `dub.sdl` is the right knob but reggae does not
-  translate it into a dmd flag either, so an unguarded `debug { }` block
-  gated only by the ambient `-debug` the `unittest` build type already
-  passes is the only reliable route) showed the SAME wrong-comparison bug on
-  the repro's first, NON-forwarded assertion (`direct == e`, no `auto ref`
-  involved at all) -- it only happened to pass because the 4 garbage bytes
-  past the 4-byte struct's real width were zero on both sides that
-  particular run. The actual defect was unrelated to ref-parameter
-  metadata: `compileIdentityExpression`'s generic fallback (`compiler.d`)
-  hardcoded `Op.equal8`/`Op.notEqual8` for any operand pair reaching it,
-  because DMD lowers a struct's `==` with no user `opEquals` into a plain
-  `IdentityExp` (bitwise identity), and nothing routed a `Tstruct` operand
-  pair through `compileStructIdentity`'s field-by-field comparison the way
-  `compileEqualExpression`'s own `Tstruct` branch already did. A struct
-  narrower than 8 bytes (or a narrower scalar reached through a bare `is`)
-  read past its own storage into whatever adjacent frame bytes happened to
-  be there. Fixed by adding the same `Tstruct` routing to
-  `compileIdentityExpression`, and by deriving the fallback's own width from
-  `size(lhs.type)` (computing "equal" at that width, then `Op.notBool` to
-  invert for `!is`) instead of assuming every remaining operand kind is
-  8 bytes wide.
+- Re-trace every symptom in a multi-symptom bug independently, even when a
+  diagnosis says they share one root cause. Issue #508's pointer-cast throw
+  and struct-equality silent wrong answer did not: only the first was a
+  ref-parameter metadata gap; the second was `compileIdentityExpression`'s
+  unrelated hardcoded 8-byte width.
+
+- dub's `dflags` silently drops a bare `-debug=name` (warns, does not add
+  it); `debugVersions` in `dub.sdl` is the right knob, but reggae does not
+  translate it into a dmd flag either. An unguarded `debug { }` block, gated
+  only by the ambient `-debug` the `unittest` build type already passes, is
+  the reliable way to add a temporary trace.
