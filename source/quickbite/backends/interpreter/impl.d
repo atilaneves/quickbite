@@ -11429,29 +11429,87 @@ unsupportedExpression:
     }
 
     private ExpressionResult runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
-        return reconstructStoredArray(
-            cat.type,
-            concatenationElements(cat.type, cat.e1) ~
-                concatenationElements(cat.type, cat.e2),
-        );
+        return concatenatedArray(cat.type, cat.e1, cat.e2);
     }
 
-    private ExpressionResult[] concatenationElements(
+    // A `~`/`~=` result array. Both operands are read once each, then their
+    // elements are written directly into the freshly allocated destination:
+    // no intermediate element array ever mirrors either operand or the
+    // result.
+    private ExpressionResult concatenatedArray(
+        imported!"dmd.mtype".Type resultType,
+        imported!"dmd.expression".Expression e1,
+        imported!"dmd.expression".Expression e2,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto left = concatenationOperand(resultType, e1);
+        auto right = concatenationOperand(resultType, e2);
+        auto owner = AggregateValue.allocateArray(resultType, left.count + right.count);
+        auto destination = Place(owner.address, resultType);
+        writeConcatenationOperand(destination, 0, left);
+        writeConcatenationOperand(destination, left.count, right);
+        return ExpressionResult.nativeAggregateValue(owner);
+    }
+
+    // One concatenation operand's contribution. An array operand's elements
+    // stay a borrowed view of its own storage -- never a copy of it, since
+    // the source array's identity is capacity-bearing and its own append
+    // machinery, not this read, owns any reallocation. A scalar operand
+    // contributes its native append elements instead (`nativeAppendElements`'s
+    // UTF-8 code-unit split for a wide character appended to `string`, or a
+    // single value otherwise).
+    private struct ConcatenationOperand {
+        bool isArray;
+        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
+        ExpressionResult[] scalarElements;
+
+        size_t count() @safe {
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+            return isArray ? AggregateValue.elementCount(aggregate) : scalarElements.length;
+        }
+    }
+
+    private ConcatenationOperand concatenationOperand(
         imported!"dmd.mtype".Type resultType,
         imported!"dmd.expression".Expression operand,
     ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.frontend.dmd.types: isArrayType;
 
         const value = constructedExpressionValue(operand);
-        if (!isArrayType(operand.type))
-            return nativeAppendElements(resultType, value);
+        if (!isArrayType(operand.type)) {
+            ConcatenationOperand result;
+            result.scalarElements = nativeAppendElements(resultType, value);
+            return result;
+        }
 
-        auto aggregate = AggregateValue.native(value);
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.elementCount(value))
-            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
+        ConcatenationOperand result;
+        result.isArray = true;
+        result.aggregate = AggregateValue.native(value);
+        return result;
+    }
 
-        return elements;
+    private void writeConcatenationOperand(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in size_t startIndex,
+        ConcatenationOperand operand,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        if (!operand.isArray) {
+            foreach (offset, element; operand.scalarElements)
+                writeStoredValue(destination.index(startIndex + offset), element);
+            return;
+        }
+
+        foreach (index; 0 .. AggregateValue.elementCount(operand.aggregate))
+            writeStoredValue(
+                destination.index(startIndex + index),
+                readStoredValue(AggregateValue.elementAt(operand.aggregate, index)),
+            );
     }
 
     private ExpressionResult runArrayAppendAssignExpression(
@@ -11461,13 +11519,17 @@ unsupportedExpression:
 
         // A field or a dereferenced pointer (`*log ~= id`, e.g. a
         // destructor appending through a captured `int[]*` field) both read
-        // and write through the fully generic `runExpressionValue`/`writeLocation`
-        // pair -- neither needs the ref-array-parameter or bounds-check
-        // handling the `VarExp`/`IndexExp` arms below exist for.
+        // through their own typed places and write through the generic
+        // `writeLocation` -- neither needs the ref-array-parameter or
+        // bounds-check handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
+            auto literal = assign.e2.isFuncExp;
+            const element = literal is null
+                ? constructedExpressionValue(assign.e2)
+                : runFunctionLiteralDeclaration(literal);
             const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
-                AggregateValue.native(runExpressionValue(assign.e1)),
-                runExpressionValue(assign.e2),
+                AggregateValue.native(constructedExpressionValue(assign.e1)),
+                element,
             ));
             writeLocation(assign.e1, appended);
             return appended;
@@ -11488,17 +11550,20 @@ unsupportedExpression:
 
         auto literal = assign.e2.isFuncExp;
         const value = literal is null
-            ? runExpressionValue(assign.e2)
+            ? constructedExpressionValue(assign.e2)
             : runFunctionLiteralDeclaration(literal);
         {
             import dmd.astenums: TY;
 
             // Begin each append from the binding's current native slice
-            // header so captured slices observe prior iterations.
+            // header (already read above as `current`) so captured slices
+            // observe prior iterations. Explicit LHS type: `auto` would infer
+            // `const(ExpressionResult)` from the `current` arm, and the loop
+            // below reassigns `appended` on every iteration.
             ExpressionResult[] noElements;
-            auto appended = current == ExpressionResult.null_
+            ExpressionResult appended = current == ExpressionResult.null_
                 ? reconstructStoredArray(variable.type, noElements)
-                : runExpressionValue(assign.e1);
+                : current;
             auto elementType = variable.type.toBasetype.isTypeDArray !is null
                 ? variable.type.toBasetype.isTypeDArray.next
                 : null;
@@ -11618,33 +11683,17 @@ unsupportedExpression:
     private ExpressionResult runArrayConcatenateAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        if (assign.e1.isDotVarExp !is null) {
-            const concatenated = reconstructStoredArray(
-                assign.e1.type,
-                concatenationElements(assign.e1.type, assign.e1) ~
-                    concatenationElements(assign.e1.type, assign.e2),
-            );
-            writeLocation(assign.e1, concatenated);
-            return concatenated;
-        }
-
-        if (auto var = assign.e1.isVarExp) {
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null)
+        if (assign.e1.isDotVarExp is null) {
+            auto var = assign.e1.isVarExp;
+            if (var is null || var.var.isVarDeclaration is null)
                 throw new Exception(
                     "Unsupported interpreter array concatenate target.",
                 );
-
-            const concatenated = reconstructStoredArray(
-                assign.e1.type,
-                concatenationElements(assign.e1.type, assign.e1) ~
-                    concatenationElements(assign.e1.type, assign.e2),
-            );
-            writeLocation(assign.e1, concatenated);
-            return concatenated;
         }
 
-        throw new Exception("Unsupported interpreter array concatenate target.");
+        const concatenated = concatenatedArray(assign.e1.type, assign.e1, assign.e2);
+        writeLocation(assign.e1, concatenated);
+        return concatenated;
     }
 
     private ExpressionResult runIndexedArrayAppendAssignExpression(
@@ -11665,8 +11714,12 @@ unsupportedExpression:
         const currentElement = readStoredValue(
             AggregateValue.elementAt(AggregateValue.native(current), arrayIndex),
         );
+        auto literal = rhs.isFuncExp;
+        const element = literal is null
+            ? constructedExpressionValue(rhs)
+            : runFunctionLiteralDeclaration(literal);
         const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
-            AggregateValue.native(currentElement), runExpressionValue(rhs),
+            AggregateValue.native(currentElement), element,
         ));
         writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
