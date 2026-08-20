@@ -6498,6 +6498,24 @@ unsupportedExpression:
                 }
             }
 
+        // A `this`/`super`-rooted argument (`foo(this)`, `ref this` itself,
+        // or `foo(this.field)`/`foo(this.inner.field)`) is bound to this
+        // activation's own receiver storage for its whole lifetime --
+        // `projectionPlace` composes that chain's live address the same way
+        // `writeLocation`'s own `DotVarExp` arm does for a field write. A
+        // bare `this`/`super` argument is not itself a `DotVarExp`, so this
+        // has to run ahead of the general `DotVarExp` arm below, which has
+        // no arm of its own for that shape.
+        if (isThisRootedProjection(argument) && hasProjectionPlace(argument)) {
+            import quickbite.backends.interpreter.place_value: readValue;
+
+            auto place = projectionPlace(argument);
+            evaluated.address = place.address;
+            if (!materializeValue)
+                return ExpressionResult.void_;
+            return readValue(place);
+        }
+
         if (argument.isDotVarExp !is null) {
             import dmd.tokens: EXP;
             import quickbite.backends.interpreter.place: Place;
@@ -6593,6 +6611,15 @@ unsupportedExpression:
             }
         }
 
+        // Whatever remains here has no addressable place this activation
+        // can compose: an arbitrary rvalue expression DMD's own semantic
+        // pass allows to bind a `ref`/`out` parameter (a literal materialized
+        // into an implicit temporary, a `CondExp` branch that is itself none
+        // of the recognized shapes, ...) is a genuine rvalue with no live
+        // storage of its own to alias -- DMD's own implicit-temporary
+        // materialization for such an argument is exactly what evaluating it
+        // here and letting the caller bind a fresh synthetic reference slot
+        // reproduces.
         auto previous = _evaluatedReferenceArgumentIndices;
         _evaluatedReferenceArgumentIndices = &evaluated.indices;
         scope(exit)
@@ -12859,13 +12886,16 @@ unsupportedExpression:
             );
         }
 
-        // What remains is an array-typed source with no place this
-        // activation can compose (a struct member function's implicit
-        // `this.field`, a call result, a literal, ...). A call result or a
-        // literal is a genuine rvalue with no backing to preserve; nothing
-        // appends through it in place. `this.field` does have live backing,
-        // but composing a place for an implicit `this` receiver is not yet
-        // supported by the projection-place machinery above.
+        // What remains is an array-typed source the fast path above
+        // declined. A non-ref call result or a literal is a genuine rvalue
+        // with no backing to preserve; nothing appends through either in
+        // place. A captured (non-frame-slot) variable's closure storage has
+        // no static predicate that resolves it yet either. All three read a
+        // snapshot below. A struct-typed `DotVarExp` receiver -- an implicit
+        // `this.field`, a deeper `this.inner.arr`, or any other chain the
+        // fast path above declined -- still derives its live address just
+        // below, through the same `projectionPlace` composer a direct field
+        // write already uses.
         const source = runExpressionValue(slice.e1);
         if (slice.lengthVar !is null)
             setLocal(slice.lengthVar, ExpressionResult(
@@ -12886,23 +12916,38 @@ unsupportedExpression:
             throwRangeError("Range violation");
 
         auto nativeAddress = AggregateValue.nativeArrayAddress(source);
-        // A class receiver's field has no projection place above (unlike a
-        // struct receiver, already routed through `runAddressableSliceExpression`):
-        // dereferencing the class reference also performs dynamic-object
-        // metadata handling the projection-place machinery does not
-        // replace, so it stays hand-composed here.
         if (auto dot = slice.e1.isDotVarExp)
-            if (auto receiver = dot.e1.isVarExp)
-                if (auto variable = receiver.var.isVarDeclaration)
-                    if (auto field = dot.var.isVarDeclaration) {
-                        auto place = bindingPlace(variable);
-                        if (place.type.toBasetype.isTypeClass !is null)
-                            place = place.deref;
-                        place = place.field(field);
-                        nativeAddress = place.type.toBasetype.isTypeDArray !is null
-                            ? cast(const(ubyte)*) place.sliceDataPointer
-                            : cast(const(ubyte)*) place.address;
-                    }
+            if (auto field = dot.var.isVarDeclaration) {
+                // A class receiver's field has no projection place below
+                // (unlike a struct receiver, already routed through
+                // `runAddressableSliceExpression` or derived just below):
+                // dereferencing the class reference also performs
+                // dynamic-object metadata handling the projection-place
+                // machinery does not replace, so it stays hand-composed
+                // here.
+                if (auto receiver = dot.e1.isVarExp)
+                    if (auto variable = receiver.var.isVarDeclaration)
+                        if (variable.type.toBasetype.isTypeClass !is null) {
+                            auto place = bindingPlace(variable).deref.field(field);
+                            nativeAddress = place.type.toBasetype.isTypeDArray !is null
+                                ? cast(const(ubyte)*) place.sliceDataPointer
+                                : cast(const(ubyte)*) place.address;
+                        }
+
+                // Every struct-typed receiver chain this tail can still
+                // reach -- an implicit `this.field[a..b]`, a deeper
+                // `this.inner.arr[a..b]`, or any other struct-typed chain
+                // the fast path above declined -- derives the same live
+                // address `projectionPlace` already composes for a direct
+                // field write, recursing through the full `DotVarExp` chain
+                // instead of hand-matching a single `VarExp` level.
+                if (hasProjectionPlace(dot)) {
+                    auto place = projectionPlace(dot);
+                    nativeAddress = place.type.toBasetype.isTypeDArray !is null
+                        ? cast(const(ubyte)*) place.sliceDataPointer
+                        : cast(const(ubyte)*) place.address;
+                }
+            }
         if (nativeAddress !is null) {
             import quickbite.backends.interpreter.layout: typeByteSize;
 

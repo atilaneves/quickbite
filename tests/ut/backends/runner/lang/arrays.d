@@ -2849,6 +2849,72 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct method slicing its own static-array field (`values[1 .. 3]`,
+// resolved as an implicit `this.values[1 .. 3]`) returns a view of that
+// field's own storage, not a detached copy -- a write through the returned
+// slice must be visible through the receiver afterwards, the same way
+// `dynamicArray.nestedSliceWritesPropagateToOriginalArray` above holds for a
+// slice of a plain local.
+static foreach (backend; Matrix!()) {
+    @("staticArray.thisFieldSliceWritesPropagateToStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[4] values;
+
+                int[] slice() {
+                    return values[1 .. 3];
+                }
+            }
+
+            unittest {
+                auto holder = Holder([10, 11, 12, 13]);
+
+                auto s = holder.slice();
+                s[0] = 99;
+
+                assert(holder.values[1] == 99);
+            }
+        });
+    }
+}
+
+// The nested-receiver sibling of `staticArray.thisFieldSliceWritesPropagateToStruct`
+// above: a struct method slicing a static-array field of its own struct-typed
+// field (`inner.values[1 .. 3]`, an implicit `this.inner.values[1 .. 3]`)
+// must return a view of that nested field's own storage too.
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedThisFieldSliceWritesPropagateToStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int[4] values;
+            }
+
+            struct Holder {
+                Inner inner;
+
+                int[] nestedSlice() {
+                    return inner.values[1 .. 3];
+                }
+            }
+
+            unittest {
+                auto holder = Holder(Inner([20, 21, 22, 23]));
+
+                auto n = holder.nestedSlice();
+                n[0] = 77;
+
+                assert(holder.inner.values[1] == 77);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("staticArray.structFieldPartialSliceAssignmentWritesThroughRealStorage." ~
         backend.stringof)
