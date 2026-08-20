@@ -5847,18 +5847,10 @@ private struct Compiler {
 
         // `S dest = cond ? a : b`: neither arm need be a Place on its own (a
         // struct-typed ternary is not itself an lvalue merely because both
-        // arms are), so branch here and block-copy each arm's own value into
-        // the declared slot directly -- the same destination-directed shape
-        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
-        // arrays.
-        if (auto conditional = source.isCondExp) {
-            const condition = compileBoolCondition(conditional.econd);
-            const falseJump = emitJumpIfFalse(condition);
-            compileStructValueInto(offset, variable.type, conditional.e1);
-            const endJump = emitJump;
-            patchJump(falseJump);
-            compileStructValueInto(offset, variable.type, conditional.e2);
-            patchJump(endJump);
+        // arms are), so let `compileStructValueInto`'s own CondExp arm branch
+        // and block-copy each arm's value into the declared slot directly.
+        if (source.isCondExp !is null) {
+            compileStructValueInto(offset, variable.type, source);
             return;
         }
 
@@ -5900,19 +5892,36 @@ private struct Compiler {
         ));
     }
 
-    // One arm of a struct-typed ternary (`compileStructDeclaration`'s CondExp
-    // arm above): block-copy `source`'s value into `offset` directly, rather
-    // than resolving it through Place first, since an arm need not be a Place
-    // on its own (a string-literal arm in the dynamic-array analogue is the
-    // same shape). `structValueOffsetOrNull` already unwraps a CommaExp
-    // source itself, so only the struct-literal and default-init shapes need
-    // their own arm here.
+    // Compile a struct-typed value directly into `offset`, whatever
+    // expression shape it comes in: a caller with a destination slot already
+    // in hand (a declared local, a ternary arm, or a nested literal's field)
+    // does not need `source` to resolve through Place on its own -- a
+    // struct-typed ternary is not itself an lvalue merely because both arms
+    // are, and a field-initializer argument built by a constructor call is
+    // not a `StructLiteralExp` at all. `structValueOffsetOrNull` already
+    // unwraps a CommaExp source itself, so only the ternary, struct-literal,
+    // and default-init shapes need their own arm here.
     private void compileStructValueInto(
         in ushort offset, Type type, Expression source,
     ) {
         import std.conv: text;
 
         source = initializerExpression(source);
+
+        // `cond ? a : b`: block-copy each arm's own value into `offset`
+        // directly -- the same destination-directed shape
+        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
+        // arrays.
+        if (auto conditional = source.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const falseJump = emitJumpIfFalse(condition);
+            compileStructValueInto(offset, type, conditional.e1);
+            const endJump = emitJump;
+            patchJump(falseJump);
+            compileStructValueInto(offset, type, conditional.e2);
+            patchJump(endJump);
+            return;
+        }
 
         if (auto literal = source.isStructLiteralExp) {
             compileStructLiteralInto(offset, literal);
@@ -6055,8 +6064,19 @@ private struct Compiler {
                 // capturing `Tdelegate` field at any depth is exactly as sound
                 // to heap-escape as one at the top level (see the `Tdelegate`
                 // branch below).
-                if (auto inner = element.isStructLiteralExp)
+                if (auto inner = element.isStructLiteralExp) {
                     compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
+                    continue;
+                }
+
+                // A field whose own type has a user-defined constructor is
+                // not itself a struct literal: DMD lowers a call such as
+                // `Inner(payload)` into a temporary declaration followed by
+                // a constructor call on it. Run that general struct-valued
+                // expression the same way any other struct-typed
+                // destination does, so the constructor call - and any side
+                // effect it has - always runs.
+                compileStructValueInto(fieldOffset, fieldType, element);
                 continue;
             }
 
@@ -10892,6 +10912,7 @@ private struct Compiler {
     private Operand compileIdentityExpression(IdentityExp identity) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
+        import std.conv: text;
 
         // `dg1 is dg2` / `dg1 !is dg2`: a delegate has no `opEquals`, so `is`
         // is the same bitwise comparison `==` already needs
@@ -10922,13 +10943,71 @@ private struct Compiler {
             );
         }
 
+        // `s1 is s2` / `s1 !is s2` on two structs: a struct's `==` with no
+        // user `opEquals` lowers to plain bitwise identity, so a struct
+        // reaches this function from an ordinary `==` at least as often as
+        // from an explicit `is`. Route through the same field-by-field
+        // comparison `compileEqualExpression`'s own `Tstruct` branch uses,
+        // so inter-field padding (e.g. the byte after a `ubyte` before a
+        // 2-byte-aligned field) is skipped rather than read as part of one
+        // fixed-width compare.
+        if (identity.e1.type.toBasetype.ty == TY.Tstruct &&
+            identity.e2.type.toBasetype.ty == TY.Tstruct)
+            return compileStructIdentity(
+                identity.e1.type,
+                structOperandOffset(identity.e1),
+                structOperandOffset(identity.e2),
+                identity.op == EXP.notIdentity,
+            );
+
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
-        const op = identity.op == EXP.notIdentity
-            ? Op.notEqual8
-            : Op.equal8;
+        // Bitwise identity at the operand's own width: a pointer or class
+        // reference is always 8 bytes, but a plain scalar reached through
+        // `is` (e.g. a narrower generic `T` bound to `int`) can be
+        // narrower. Comparing a fixed 8 bytes regardless of that width
+        // reads adjacent, uninitialised frame bytes past the operand's
+        // real storage -- compute equality at its real width, then invert
+        // the boolean result for `!is` rather than reaching for a dedicated
+        // narrow "not equal" opcode family that does not exist below 4
+        // bytes.
+        const width = lhs.isPointer ? size_t.sizeof : size(lhs.type);
+
+        // `real is real`: a native `real` assignment always writes its full
+        // storage, including the unused tail past its 80-bit payload (10 of
+        // the type's 16 bytes on this target) -- confirmed by assigning a
+        // computed `real` value over memory pre-filled with `0xFF` and
+        // observing the trailing bytes come back zero regardless. Two
+        // `real` values holding the same number therefore always agree
+        // bit-for-bit over the type's whole width, so it can be compared
+        // the same two-machine-word way a delegate's `{functionIndex,
+        // context}` pair already is, with no separate narrower-payload
+        // extraction needed.
+        if (lhs.type == ScalarType.real_ && width == 2 * size_t.sizeof)
+            return compileWordPairEquality(
+                lhs.offset, cast(ushort) (lhs.offset + size_t.sizeof),
+                rhs.offset, cast(ushort) (rhs.offset + size_t.sizeof),
+                identity.op == EXP.notIdentity,
+            );
+
+        // `equalOp` only has opcodes for 1/2/4/8-byte operands; a complex
+        // operand's own width (reported as `ScalarType.void_`, size 0 --
+        // `==` itself is not yet supported for complex types in this
+        // backend) falls outside that family. Refuse loudly rather than
+        // let `equalOp`'s own `assert(0)` halt the process -- a documented
+        // refusal, not a crash, is this backend's convention for a
+        // construct it does not support.
+        if (width != 1 && width != 2 && width != 4 && width != 8)
+            throw new Exception(text(
+                "Unsupported identity comparison width in bytecode core: ",
+                expressionChars(identity),
+            ));
         const offset = allocate(ScalarType.bool_);
-        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        _code ~= Instruction(
+            equalOp(cast(uint) width), offset, lhs.offset, rhs.offset,
+        );
+        if (identity.op == EXP.notIdentity)
+            _code ~= Instruction(Op.notBool, offset, offset);
         return Operand(offset, ScalarType.bool_);
     }
 

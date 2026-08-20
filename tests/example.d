@@ -1332,6 +1332,131 @@ unittest {
     assert(fn(5) == 120);
 }
 
+struct FieldCtorPart {
+    size_t count;
+    ubyte first;
+
+    this(ubyte[] bytes) {
+        count = bytes.length;
+        first = bytes[0];
+    }
+}
+
+struct FieldCtorWhole {
+    ubyte tag;
+    FieldCtorPart part;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWhole(2, FieldCtorPart(payload));
+
+    assert(whole.tag == 2);
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+struct FieldCtorWholeFirst {
+    FieldCtorPart part;
+    ubyte tag;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWholeFirst(FieldCtorPart(payload), 2);
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+    assert(whole.tag == 2);
+}
+
+struct FieldCtorMiddle {
+    FieldCtorPart part;
+}
+
+struct FieldCtorOuterNested {
+    ubyte tag;
+    FieldCtorMiddle middle;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorOuterNested(2, FieldCtorMiddle(FieldCtorPart(payload)));
+
+    assert(whole.middle.part.count == 3);
+    assert(whole.middle.part.first == 9);
+}
+
+FieldCtorPart makeFieldCtorPart(ubyte[] bytes) {
+    return FieldCtorPart(bytes);
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWhole(2, makeFieldCtorPart(payload));
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto existing = FieldCtorPart(payload);
+    auto whole = FieldCtorWhole(2, existing);
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+unittest {
+    ubyte[] longer = [9, 7, 6];
+    ubyte[] shorter = [1, 2];
+    bool pickLonger = longer.length > shorter.length;
+    auto whole = FieldCtorWhole(
+        2, pickLonger ? FieldCtorPart(longer) : FieldCtorPart(shorter),
+    );
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+bool isPositive(T)(auto ref T value) {
+    return *value > 0;
+}
+
+bool isPositiveForwarded(T)(auto ref T value) {
+    return isPositive(value);
+}
+
+unittest {
+    int number = 42;
+
+    assert(isPositiveForwarded(&number));
+}
+
+struct Coordinates {
+    ubyte row;
+    ushort column;
+}
+
+Coordinates makeCoordinates(ubyte row, ushort column) {
+    Coordinates result;
+    result.row = row;
+    result.column = column;
+    return result;
+}
+
+bool matches(V, E)(auto ref V value, auto ref E expected) {
+    return value == expected;
+}
+
+unittest {
+    auto place = makeCoordinates(2, 300);
+    const expected = Coordinates(2, 300);
+
+    assert(matches(place, expected));
+}
+
 struct Reading {
     int amount;
 

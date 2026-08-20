@@ -640,6 +640,29 @@
   routes through it. `asPointerValue` (`compiler.d`) promoted `*p`/`p[i]`
   loads to `isPointer`, but a `ref T` parameter's own read never used it.
 
+- Don't trust a removed branch's "untested, not required by the reported
+  shape" comment when reusing the same helper from a new call site later.
+  `compileStructValueInto` (`compiler.d`) had its `CondExp` arm dropped as
+  untested; routing `compileStructLiteralInto`'s struct-typed field
+  initializers through it (issue #510's field-initializer-constructor fix)
+  made a ternary field initializer (`Outer(2, flag ? Inner(a) : Inner(b))`)
+  reach that same helper and need the arm back. A helper's removed branch is
+  scoped to the call sites that existed when it was removed, not to the
+  helper itself; re-add it (rather than special-case the new call site) as
+  soon as another caller needs the same expression shape.
+
+- Re-trace every symptom in a multi-symptom bug independently, even when a
+  diagnosis says they share one root cause. Issue #508's pointer-cast throw
+  and struct-equality silent wrong answer did not: only the first was a
+  ref-parameter metadata gap; the second was `compileIdentityExpression`'s
+  unrelated hardcoded 8-byte width.
+
+- dub's `dflags` silently drops a bare `-debug=name` (warns, does not add
+  it); `debugVersions` in `dub.sdl` is the right knob, but reggae does not
+  translate it into a dmd flag either. An unguarded `debug { }` block, gated
+  only by the ambient `-debug` the `unittest` build type already passes, is
+  the reliable way to add a temporary trace.
+
 - A bug report's own root-cause hypothesis can be wrong even when carefully
   written by a prior diagnostic pass; bisect down to a hermetic, minimal
   repro before trusting the named mechanism. Issue #509 was filed as a
