@@ -267,20 +267,39 @@ private string scalarText(
     }
 }
 
-// `place_value.readValue` already decodes an imaginary or complex place into
-// its `ExpressionResult` category; std.conv.text's rendering only needs that
-// category's parts, not a second native-layout reader.
+// An imaginary place's native bytes already hold a single magnitude scalar
+// at the place's own address; a complex place's native bytes hold the real
+// part at offset 0 and the imaginary part at offset `componentSize` -- the
+// compiled D ABI layout for `ifloat`/`idouble`/`ireal` and
+// `cfloat`/`cdouble`/`creal`. `Place.loadNativeScalar` already reads a
+// place at exactly those D types elsewhere in the interpreter (`runtime_
+// casts.d`'s imaginary/complex arms), so reusing it here needs no separate
+// native-layout reader, let alone a round trip through the value carrier.
 private string imaginaryOrComplexText(
     imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.place_value: readValue;
+    import dmd.astenums: TY;
     import std.conv: text;
 
-    auto decoded = readValue(value);
-    if (decoded.isImaginaryScalar)
-        return text(decoded.imaginaryPart, "i");
-
-    return text(decoded.complexRealPart.asReal, "+", decoded.complexImaginaryPart.asReal, "i");
+    switch (value.type.toBasetype.ty) with (TY) {
+        case Timaginary32:
+            return text(cast(real) value.loadNativeScalar!ifloat.im, "i");
+        case Timaginary64:
+            return text(cast(real) value.loadNativeScalar!idouble.im, "i");
+        case Timaginary80:
+            return text(cast(real) value.loadNativeScalar!ireal.im, "i");
+        case Tcomplex32:
+            auto complex = value.loadNativeScalar!cfloat;
+            return text(cast(real) complex.re, "+", cast(real) complex.im, "i");
+        case Tcomplex64:
+            auto complex = value.loadNativeScalar!cdouble;
+            return text(cast(real) complex.re, "+", cast(real) complex.im, "i");
+        case Tcomplex80:
+            auto complex = value.loadNativeScalar!creal;
+            return text(cast(real) complex.re, "+", cast(real) complex.im, "i");
+        default:
+            throw new Exception("std.conv.text needs an imaginary or complex place.");
+    }
 }
 
 private string characterText(
