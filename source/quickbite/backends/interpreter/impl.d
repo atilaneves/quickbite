@@ -181,12 +181,17 @@ private string formattedDisplay(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.place_value: readValue;
+    // `readScalarLeaf`, not the generic `readValue`: a formatted-display
+    // root is always a character array (the repl's own display-function
+    // contract), so each element place is already known to be a native
+    // character scalar -- `readValue`'s enum/aggregate dispatch ahead of
+    // its own native-scalar arm would never fire here.
+    import quickbite.backends.interpreter.place_value: readScalarLeaf;
 
     auto aggregate = AggregateValue.native(value);
     char[] display;
     foreach (index; 0 .. AggregateValue.elementCount(value))
-        display ~= readValue(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
+        display ~= readScalarLeaf(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
     return display.idup;
 }
 
@@ -663,12 +668,16 @@ private string exceptionMessage(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.place_value: readValue;
+    // `readScalarLeaf`, not the generic `readValue`: this reads an
+    // exception's `msg` field, always `string` (`char[]`, this function's
+    // sole caller's own field name), so each element place is already known
+    // to be a native character scalar.
+    import quickbite.backends.interpreter.place_value: readScalarLeaf;
 
     auto aggregate = AggregateValue.native(value);
     char[] result;
     foreach (index; 0 .. AggregateValue.length(aggregate))
-        result ~= readValue(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
+        result ~= readScalarLeaf(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
     return result.idup;
 }
 
@@ -2264,8 +2273,8 @@ private struct Walker {
             const name = fieldName(field);
             if (name == "msg" || name == "_nextInChainPtr")
                 continue;
-            // `copyPlaceValue`, not a bare `copyFrom`: a field could be a
-            // delegate/function-pointer/nested-context type carrying
+            // `copyPlaceValue`, not the raw `copyFromUnchecked`: a field
+            // could be a delegate/function-pointer/nested-context type carrying
             // out-of-band metadata (`ai/plans/value.md` decision 15), and
             // this destination is a class body the Walker may have already
             // populated once before -- this pairs the byte copy with the
@@ -15166,8 +15175,8 @@ destinationFallback:
         // wrapping it in a cast node, so `expression.type` can carry a
         // stricter qualifier than `e1`'s pointee. That qualifier is already
         // verified compatible with `destination` above; copy at that type
-        // rather than `e1`'s, or `copyFrom`'s exact-base-type check rejects
-        // a same-layout, differently-qualified pointer.
+        // rather than `e1`'s, or `copyFromUnchecked`'s exact-base-type check
+        // rejects a same-layout, differently-qualified pointer.
         copyPlaceValue(Place(source.address, expression.type), destination);
         return true;
     }
@@ -15956,7 +15965,7 @@ destinationFallback:
             cast(void*) source.address,
             destination.address,
         );
-        destination.copyFrom(source);
+        destination.copyFromUnchecked(source);
     }
 
 

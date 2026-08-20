@@ -242,17 +242,27 @@ public struct Place {
         writeStoredPointer(_address, reference);
     }
 
-    // Copy one complete native-layout value into this typed destination. The
-    // byte copy keeps aggregate padding and overlap intact. A class reference
-    // is a one-word slot, so derived and base class places can copy that slot
-    // despite their distinct static types.
-    public void copyFrom(Place source) @safe {
+    // Copy one complete native-layout value into this typed destination,
+    // bytes only: unlike `copyPlaceValue` (`impl.d`), this performs no
+    // out-of-band metadata copy/clear, so it is safe only where the caller
+    // has already accounted for that separately -- `copyPlaceValue` itself,
+    // pairing this with `copyStoredMetadata`, and `copyFromNative` below,
+    // whose own callers move a value that can never carry symbolic
+    // TypeName/delegate/function-pointer metadata (see each call site's own
+    // comment). `package` visibility keeps every caller inside this
+    // interpreter backend, where that precondition can be audited; a
+    // metadata-bearing type reaching this directly from outside the package
+    // would silently leak a stale side-table entry. The byte copy keeps
+    // aggregate padding and overlap intact. A class reference is a one-word
+    // slot, so derived and base class places can copy that slot despite
+    // their distinct static types.
+    package void copyFromUnchecked(Place source) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
         const classReference = isClassType(source.type) && isClassType(_type);
         if (!sameBaseType(source.type, _type) && !classReference)
             throw new Exception(
-                "quickbite.backends.interpreter.place.Place.copyFrom: "
+                "quickbite.backends.interpreter.place.Place.copyFromUnchecked: "
                 ~ "type mismatch " ~ typeName(source.type)
                 ~ " -> " ~ typeName(_type),
             );
@@ -263,6 +273,12 @@ public struct Place {
     // Copy an owned aggregate into this place. A catch variable is a
     // pointer-typed slot even when its source is a class reference, so it
     // stores the referenced body rather than the source reference slot.
+    // `copyFromUnchecked`, not `copyPlaceValue`: `place_value.writeValue`
+    // (this function's sole caller) already dispatches a native-aggregate
+    // value to here ahead of every metadata-bearing arm (TypeName,
+    // delegate, function pointer), so `sourceType` is always a plain
+    // aggregate or a class reference, never a type this module's
+    // out-of-band tables key on.
     public void copyFromNative(
         imported!"dmd.mtype".Type sourceType,
         void* sourceAddress,
@@ -272,7 +288,7 @@ public struct Place {
             return;
         }
 
-        copyFrom(Place(sourceAddress, sourceType));
+        copyFromUnchecked(Place(sourceAddress, sourceType));
     }
 
     public void storeNativeScalar(T)(in T value) @safe {
@@ -375,8 +391,9 @@ private string typeName(imported!"dmd.mtype".Type type) @trusted {
 
 
 // Both addresses come from DMD-sized storage of compatible static types,
-// checked by `Place.copyFrom` before this boundary. `memmove` preserves
-// overlap, aggregate padding, and union bytes without field traversal.
+// checked by `Place.copyFromUnchecked` before this boundary. `memmove`
+// preserves overlap, aggregate padding, and union bytes without field
+// traversal.
 private void copyPlaceBytes(
     void* destination,
     void* source,
