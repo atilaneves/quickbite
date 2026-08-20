@@ -2264,7 +2264,14 @@ private struct Walker {
             const name = fieldName(field);
             if (name == "msg" || name == "_nextInChainPtr")
                 continue;
-            destination.field(field).copyFrom(source.field(field));
+            // `copyPlaceValue`, not a bare `copyFrom`: a field could be a
+            // delegate/function-pointer/nested-context type carrying
+            // out-of-band metadata (`ai/plans/value.md` decision 15), and
+            // this destination is a class body the Walker may have already
+            // populated once before -- this pairs the byte copy with the
+            // same clear-then-copy invariant every other typed place write
+            // in this module observes.
+            copyPlaceValue(source.field(field), destination.field(field));
         }
     }
 
@@ -9531,8 +9538,6 @@ unsupportedExpression:
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: writeValue;
 
                 auto field = dot.var.isVarDeclaration;
                 if (
@@ -9550,13 +9555,17 @@ unsupportedExpression:
                     writeLocation(dot.e1, updated);
                     return;
                 }
+                // Both symbolic-field arms below hand the field's own place
+                // straight to `writeStoredValue` (rather than registering the
+                // out-of-band table entry here directly) so a stale entry left
+                // by a union sibling at this same address is cleared first --
+                // `writeStoredValue`'s own Tdelegate/function-pointer arms do
+                // exactly this clear-then-register-then-zero sequence.
                 if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
                     if (auto variableExpression = dot.e1.isVarExp)
                         if (auto variable = variableExpression.var.isVarDeclaration)
                         if (hasBindingPlace(variable)) {
-                            auto fieldPlace = bindingPlace(variable).field(field);
-                            nativeDelegateSlots[fieldPlace.address] = delegateSlotValue(value);
-                            writeValue(fieldPlace, ExpressionResult.null_);
+                            writeStoredValue(bindingPlace(variable).field(field), value);
                             return;
                         }
                 }
@@ -9571,9 +9580,7 @@ unsupportedExpression:
                     if (auto variableExpression = dot.e1.isVarExp)
                         if (auto variable = variableExpression.var.isVarDeclaration)
                         if (hasBindingPlace(variable)) {
-                            auto fieldPlace = bindingPlace(variable).field(field);
-                            nativeFunctionPointerSlots[fieldPlace.address] = value.functionPointerId;
-                            fieldPlace.storeReference(null);
+                            writeStoredValue(bindingPlace(variable).field(field), value);
                             return;
                         }
                 }
@@ -9589,7 +9596,6 @@ unsupportedExpression:
             ) {
                 import dmd.astenums: TY;
                 import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: writeValue;
 
                 auto field = dot.var.isVarDeclaration;
                 auto bodyAddress = nativeClassReceiver.pointerAddress;
@@ -9602,16 +9608,12 @@ unsupportedExpression:
                     .field(field);
                 // A live delegate value (an interpreted closure, not `null`)
                 // has no native ABI function address, so `place_value.
-                // writeValue`'s Tdelegate arm only ever accepts `null` --
-                // register it out-of-band in `nativeDelegateSlots`, keyed by
-                // the field's own address, just as the struct-field write arm
-                // above does. A class field's address is the object body's
-                // own storage, live for the object's whole lifetime.
-                if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
-                    nativeDelegateSlots[fieldPlace.address] = delegateSlotValue(value);
-                    writeValue(fieldPlace, ExpressionResult.null_);
-                    return;
-                }
+                // writeValue`'s Tdelegate arm only ever accepts `null`.
+                // `writeStoredValue` registers it out-of-band in
+                // `nativeDelegateSlots`, keyed by the field's own address,
+                // clearing any stale entry a union sibling left there first.
+                // A class field's address is the object body's own storage,
+                // live for the object's whole lifetime.
                 writeStoredValue(fieldPlace, value);
                 return;
             }
