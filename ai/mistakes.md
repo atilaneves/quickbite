@@ -614,3 +614,19 @@
   .isReference` alongside its offsets (`NativeCall.argumentIsReference`,
   `program.d`) and following the slot's own pointer value for a marked
   argument instead of treating the slot as the storage.
+
+- A struct-typed local's ternary initializer (`S s = cond ? a : b;`) had no
+  compile route in bytecode core's `compileStructDeclaration`
+  (`compiler.d`): the rvalue fallback only resolves a `CondExp` initializer
+  through `structValueOffsetOrNull` -> `placeOrNull` -> `resolvePlace`,
+  whose own `CondExp` arm declines unless `conditional.isLvalue` -- which a
+  struct-typed ternary between two ordinary lvalues is not guaranteed to be,
+  so it declines even for the simplest two-lvalue case. Dynamic arrays
+  already have the right shape for this
+  (`compileDynamicArrayInto`'s destination-directed `CondExp` arm: branch,
+  then recurse into the same destination offset for each arm), structs
+  never got the analogue. Fixed by adding the same destination-directed
+  `CondExp` arm to `compileStructDeclaration`, plus a recursive
+  `compileStructValueInto` helper so each arm (an lvalue, a struct literal,
+  `S.init`, or a nested ternary) block-copies into the declared slot
+  directly instead of going through `Place`.

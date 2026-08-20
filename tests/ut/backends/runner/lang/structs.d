@@ -4653,3 +4653,27 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// A struct-typed local's initializer may be a ternary between two
+// lvalues of that struct type (the shape cerealed's `grain` uses for its
+// associative-array key/value locals). SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("structTernaryInit.twoLvalues." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int i;
+            }
+
+            unittest {
+                Pair a = Pair(1);
+                Pair b = Pair(2);
+                bool cond = true;
+                Pair k = cond ? a : b;
+                assert(k.i == 1);
+            }
+        });
+    }
+}
