@@ -10912,13 +10912,41 @@ private struct Compiler {
             );
         }
 
+        // `s1 is s2` / `s1 !is s2` on two structs: a struct's `==` with no
+        // user `opEquals` lowers to plain bitwise identity, so a struct
+        // reaches this function from an ordinary `==` at least as often as
+        // from an explicit `is`. Route through the same field-by-field
+        // comparison `compileEqualExpression`'s own `Tstruct` branch uses,
+        // so inter-field padding (e.g. the byte after a `ubyte` before a
+        // 2-byte-aligned field) is skipped rather than read as part of one
+        // fixed-width compare.
+        if (identity.e1.type.toBasetype.ty == TY.Tstruct &&
+            identity.e2.type.toBasetype.ty == TY.Tstruct)
+            return compileStructIdentity(
+                identity.e1.type,
+                structOperandOffset(identity.e1),
+                structOperandOffset(identity.e2),
+                identity.op == EXP.notIdentity,
+            );
+
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
-        const op = identity.op == EXP.notIdentity
-            ? Op.notEqual8
-            : Op.equal8;
+        // Bitwise identity at the operand's own width: a pointer or class
+        // reference is always 8 bytes, but a plain scalar reached through
+        // `is` (e.g. a narrower generic `T` bound to `int`) can be
+        // narrower. Comparing a fixed 8 bytes regardless of that width
+        // reads adjacent, uninitialised frame bytes past the operand's
+        // real storage -- compute equality at its real width, then invert
+        // the boolean result for `!is` rather than reaching for a dedicated
+        // narrow "not equal" opcode family that does not exist below 4
+        // bytes.
+        const width = lhs.isPointer ? size_t.sizeof : size(lhs.type);
         const offset = allocate(ScalarType.bool_);
-        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        _code ~= Instruction(
+            equalOp(cast(uint) width), offset, lhs.offset, rhs.offset,
+        );
+        if (identity.op == EXP.notIdentity)
+            _code ~= Instruction(Op.notBool, offset, offset);
         return Operand(offset, ScalarType.bool_);
     }
 

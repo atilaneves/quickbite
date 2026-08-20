@@ -1419,3 +1419,40 @@ unittest {
     assert(whole.part.count == 3);
     assert(whole.part.first == 9);
 }
+
+bool isPositive(T)(auto ref T value) {
+    return *value > 0;
+}
+
+bool isPositiveForwarded(T)(auto ref T value) {
+    return isPositive(value);
+}
+
+unittest {
+    int number = 42;
+
+    assert(isPositiveForwarded(&number));
+}
+
+struct Coordinates {
+    ubyte row;
+    ushort column;
+}
+
+Coordinates makeCoordinates(ubyte row, ushort column) {
+    Coordinates result;
+    result.row = row;
+    result.column = column;
+    return result;
+}
+
+bool matches(V, E)(auto ref V value, auto ref E expected) {
+    return value == expected;
+}
+
+unittest {
+    auto place = makeCoordinates(2, 300);
+    const expected = Coordinates(2, 300);
+
+    assert(matches(place, expected));
+}

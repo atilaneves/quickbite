@@ -15631,3 +15631,49 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// `notEqual` calls `&constHolder.thing`/`&holder.thing` (a `const(Thing)*`
+// and a mutable `Thing*`, `Thing` a class) with `auto ref V value, auto ref
+// E expected` parameters: bound to these rvalue addresses, `value` and
+// `expected` become plain by-value locals of types `V`/`E` inside
+// `notEqual`. Forwarding them on to `isEqual`'s own `auto ref V value, auto
+// ref E expected` is a different case: `value`/`expected` are themselves
+// named parameters, hence lvalues, so `isEqual`'s template parameters
+// deduce the same two pointer types but bind to them *by reference*
+// instead. `isEqual`'s `value == expected` still needs one common
+// comparison type, so DMD implicitly widens the mutable side's qualifier
+// -- inserting an unwritten `cast(const(Thing)*)expected` node -- before
+// the comparison runs. No cast appears anywhere in this source; forwarding
+// a mismatched-qualifier pointer pair through a second `auto ref` template
+// layer is enough for DMD to synthesise one on its own.
+static foreach (backend; Matrix!()) {
+    @("notEqualForwardsMismatchedQualifierClassPointerPair." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {
+                int value;
+            }
+
+            struct Holder {
+                Thing thing;
+            }
+
+            bool isEqual(V, E)(auto ref V value, auto ref E expected) {
+                return value == expected;
+            }
+
+            bool notEqual(V, E)(auto ref V value, auto ref E expected) {
+                return !isEqual(value, expected);
+            }
+
+            unittest {
+                auto holder = Holder(new Thing);
+                const constHolder = holder;
+
+                assert(notEqual(&constHolder.thing, &holder.thing));
+            }
+        });
+    }
+}

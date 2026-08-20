@@ -583,6 +583,71 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct freshly built by a template `@property` getter (the exact shape
+// of cerealed's `Decerealiser.value!T`: default-construct a local, mutate
+// its fields through further generic dispatch, return it by value) is
+// passed straight into a second generic function whose parameters are
+// `in auto ref` (the exact shape of unit-threaded's `isEqual`). Calling
+// `==` directly on the getter's result works; forwarding that same result
+// through the second function's `in auto ref` parameters observes a
+// different, unequal value. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.autoRefForwardingOfTemplatePropertyRvalueObservesWrongValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Simple {
+                ubyte first;
+                ushort second;
+            }
+
+            struct Decoder {
+                ubyte[] bytes;
+
+                @property T value(T)() {
+                    T val;
+                    grainStruct(this, val);
+                    return val;
+                }
+            }
+
+            void grainStruct(T)(ref Decoder d, ref T val) {
+                foreach (member; __traits(allMembers, T))
+                    grainField(d, __traits(getMember, val, member));
+            }
+
+            void grainField(T)(ref Decoder d, ref T val) if (is(T == ubyte)) {
+                val = d.bytes[0];
+                d.bytes = d.bytes[1 .. $];
+            }
+
+            void grainField(T)(ref Decoder d, ref T val) if (is(T == ushort)) {
+                val = cast(ushort)((d.bytes[0] << 8) | d.bytes[1]);
+                d.bytes = d.bytes[2 .. $];
+            }
+
+            bool isEqual(V, E)(in auto ref V value, in auto ref E expected) {
+                return value == expected;
+            }
+
+            unittest {
+                ubyte[] bytes = [2, 0, 3];
+                const e = Simple(2, 3);
+
+                auto dec = Decoder(bytes);
+                assert(dec.value!Simple == e, "direct == on the getter's result");
+
+                auto dec2 = Decoder(bytes);
+                assert(
+                    isEqual(dec2.value!Simple, e),
+                    "the same result, forwarded through `in auto ref`",
+                );
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
