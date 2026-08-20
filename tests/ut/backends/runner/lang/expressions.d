@@ -824,6 +824,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
         "assert formatter uses sprintf",
     )
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -1898,6 +1899,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Widget {}
@@ -2370,6 +2372,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.ptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -2444,6 +2447,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.funcptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -4152,6 +4156,39 @@ static foreach (backend; Matrix!()) {
                 more ~= () => 2;
                 assert(more[0]() == 1);
                 assert(more[1]() == 2);
+            }
+        });
+    }
+}
+
+// A whole-slice assignment from an array literal (`actions[] = [&addFirst,
+// &addSecond];`) constructs the right-hand side as its own independent
+// native array, then re-reads each of THAT array's elements while filling
+// `actions`' own range (`runSliceAssignExpression`'s literal-fill loop).
+// That intermediate element read must reach the same out-of-band
+// delegate-slot bookkeeping every other delegate-element path in this file
+// uses; a live delegate has no native-bytes representation to copy.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "\"Unsupported expression in bytecode core: &addFirst\""),
+)) {
+    @("delegate.dynamicArraySliceAssignedFromLiteralIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 10;
+                int second = 20;
+                int addFirst() { return first; }
+                int addSecond() { return second; }
+
+                int delegate()[] actions;
+                actions.length = 2;
+                actions[] = [&addFirst, &addSecond];
+
+                assert(actions[0]() == 10);
+                assert(actions[1]() == 20);
             }
         });
     }
@@ -7320,6 +7357,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.staticArrayPointerSurvivesWholeArrayAssignment.ctfeDivergence." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int one() {
@@ -15419,6 +15457,7 @@ static foreach (backend; Matrix!(
 // other null-class-dereference site in the backend.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class C {}
@@ -15510,6 +15549,332 @@ static foreach (backend; Matrix!()) {
 
                 assert(evaluations == 1);
                 assert(value == 7);
+            }
+        });
+    }
+}
+
+// D's pointer post-increment/decrement moves the pointer by one element of
+// its pointee type, the same scaling `p + n`/`p - n` pointer arithmetic
+// already applies -- not by one byte. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.postIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p++;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.postDecrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p--;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` post-increment arm.
+    @("pointer.structFieldPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p++;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` post-increment arm, where the array's
+    // own elements are pointers.
+    @("pointer.arrayElementPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0]++;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // `(*pp)++` through a pointer to a pointer post-increments the
+    // pointee -- itself a pointer -- so it too moves by one element of its
+    // own pointee type.
+    @("pointer.dereferencedPointerToPointerPostIncrementAdvancesByElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto pp = &p;
+                auto a = **pp;
+                (*pp)++;
+                auto b = **pp;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}
+
+// D's pointer compound assignment (`p += n`/`p -= n`) moves the pointer by
+// `n` elements of its pointee type, the same scaling plain `p + n` pointer
+// arithmetic and `p++`/`p--` already apply -- not by `n` bytes. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 1;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.addAssignAdvancesByMultipleElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 2;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` compound-assignment arm.
+    @("pointer.structFieldAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p += 1;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` compound-assignment arm, where the
+    // array's own elements are pointers.
+    @("pointer.arrayElementAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0] += 1;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}
+
+// The bytecode core does not yet implement pointer `-=`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported compound assignment in bytecode core: p -= 4L"),
+)) {
+    @("pointer.subAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p -= 1;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+}
+
+// D's compound assignment through a dereferenced, side-effecting
+// pointer-returning call (`*p() += v`) evaluates `p()` exactly once, the
+// same evaluation-order guarantee
+// `struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce` already
+// pins for a plain method-call receiver. `hasDirectWriteProjectionPlace`
+// never accepts a `PtrExp` target, so `runCompoundAssignExpression`'s slow
+// arm handles this case. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `target == 11` against a stale `1`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughDereferencedCallEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int target = 10;
+            int calls;
+            int* sideEffectingPointerReturn() {
+                calls++;
+                return &target;
+            }
+            unittest {
+                *sideEffectingPointerReturn() += 1;
+                assert(calls == 1);
+                assert(target == 11);
+            }
+        });
+    }
+}
+
+// The pointer-index sibling of the fixture above: D's compound assignment
+// through a pointer-typed index target (`(*q)[i] += v`) evaluates the index
+// expression exactly once, the same evaluation-order guarantee
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` already pins
+// for a plain method-call receiver. `hasDirectWriteProjectionPlace`'s
+// `IndexExp` arm excludes a pointer-typed `e1` outright, so this also
+// reaches the slow arm. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: & arr"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `arr[1] == 12` against a stale `13`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughPointerIndexEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[4] arr = [10, 11, 12, 13];
+            int* p;
+            int** q;
+            int calls;
+            int sideEffectingIndex() {
+                calls++;
+                return 1;
+            }
+            unittest {
+                p = arr.ptr;
+                q = &p;
+                (*q)[sideEffectingIndex()] += 1;
+                assert(calls == 1);
+                assert(arr[1] == 12);
             }
         });
     }

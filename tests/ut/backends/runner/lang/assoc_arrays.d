@@ -1420,6 +1420,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int key(int value) {

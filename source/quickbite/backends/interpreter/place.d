@@ -17,10 +17,9 @@ public class IndexOutOfBoundsException: Exception {
 // that address, nothing more. `field`/`index` below compute another
 // `Place` by address arithmetic over DMD's own offsets/strides, read
 // straight from `layout.d` -- never a second, hand-rolled copy of DMD's
-// layout rules. Scalar load/store at a place go through `native_scalar.
-// d`'s codec, the interpreter's single scalar<->bytes authority; an
-// aggregate place has no single scalar value of its own and is addressed
-// by composing `field`/`index` down to scalar leaves instead.
+// layout rules. Typed scalar loads/stores at a place go through
+// `native_scalar.d`; an aggregate place has no single scalar value of its own
+// and is addressed by composing `field`/`index` down to scalar leaves instead.
 public struct Place {
     import dmd.mtype: Type;
     import dmd.declaration: VarDeclaration;
@@ -243,39 +242,80 @@ public struct Place {
         writeStoredPointer(_address, reference);
     }
 
-    // Reads the scalar at this place's address, at this place's own
-    // static type, via `native_scalar.readScalar` -- this primitive never
-    // grows a second scalar<->bytes codec. Only a native scalar type
-    // (`native_scalar.isNativeScalarType`) is legal here; a non-scalar
-    // place refuses rather than guessing at a byte interpretation.
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult loadScalar() @safe {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar;
+    // Copy one complete native-layout value into this typed destination,
+    // bytes only: unlike `copyPlaceValue` (`impl.d`), this performs no
+    // out-of-band metadata copy/clear, so it is safe only where the caller
+    // has already accounted for that separately -- `copyPlaceValue` itself,
+    // pairing this with `copyStoredMetadata`, and `copyFromNative` below,
+    // whose own callers move a value that can never carry symbolic
+    // TypeName/delegate/function-pointer metadata (see each call site's own
+    // comment). `package` visibility keeps every caller inside this
+    // interpreter backend, where that precondition can be audited; a
+    // metadata-bearing type reaching this directly from outside the package
+    // would silently leak a stale side-table entry. The byte copy keeps
+    // aggregate padding and overlap intact. A class reference is a one-word
+    // slot, so derived and base class places can copy that slot despite
+    // their distinct static types.
+    package void copyFromUnchecked(Place source) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
-        if (!isNativeScalarType(_type))
+        const classReference = isClassType(source.type) && isClassType(_type);
+        if (!sameBaseType(source.type, _type) && !classReference)
             throw new Exception(
-                "quickbite.backends.interpreter.place.Place.loadScalar: "
-                ~ "type is not a native scalar type",
+                "quickbite.backends.interpreter.place.Place.copyFromUnchecked: "
+                ~ "type mismatch " ~ typeName(source.type)
+                ~ " -> " ~ typeName(_type),
             );
 
-        return readScalar(_type, placeBytes(_address, typeByteSize(_type)));
+        copyPlaceBytes(_address, source.address, typeByteSize(_type));
     }
 
-    // The inverse of `loadScalar`: writes `value`'s bits into this
-    // place's address at this place's own static type, via `native_scalar.
-    // writeScalar`. Refuses the same way `loadScalar` does for a
-    // non-scalar place.
-    public void storeScalar(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @safe {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
+    // Copy an owned aggregate into this place. A catch variable is a
+    // pointer-typed slot even when its source is a class reference, so it
+    // stores the referenced body rather than the source reference slot.
+    // `copyFromUnchecked`, not `copyPlaceValue`: `place_value.writeValue`
+    // (this function's sole caller) already dispatches a native-aggregate
+    // value to here ahead of every metadata-bearing arm (TypeName,
+    // delegate, function pointer), so `sourceType` is always a plain
+    // aggregate or a class reference, never a type this module's
+    // out-of-band tables key on.
+    public void copyFromNative(
+        imported!"dmd.mtype".Type sourceType,
+        void* sourceAddress,
+    ) @safe {
+        if (isClassType(sourceType) && _type.isTypePointer !is null) {
+            storeReference(Place(sourceAddress, sourceType).deref.address);
+            return;
+        }
+
+        copyFromUnchecked(Place(sourceAddress, sourceType));
+    }
+
+    public void storeNativeScalar(T)(in T value) @safe {
+        import quickbite.backends.interpreter.native_scalar: writeNativeScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
-        if (!isNativeScalarType(_type))
+        writeNativeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
+    }
+
+    // Read a scalar into the caller's statically selected host type. This is
+    // intentionally a typed operation: it is not a replacement value
+    // carrier. The caller selects T from the DMD expression type.
+    public T loadNativeScalar(T)() @trusted {
+        import core.stdc.string: memcpy;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        if (typeByteSize(_type) != T.sizeof)
             throw new Exception(
-                "quickbite.backends.interpreter.place.Place.storeScalar: "
-                ~ "type is not a native scalar type",
+                "quickbite.backends.interpreter.place.Place.loadNativeScalar: "
+                ~ "destination size does not match the scalar type",
             );
 
-        writeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
+        T value;
+        // @trusted: the checked byte size proves that this copy writes only
+        // the scalar local, and memcpy handles an unaligned place address.
+        memcpy(&value, _address, T.sizeof);
+        return value;
     }
 }
 
@@ -288,6 +328,80 @@ public Place placeAt(
     imported!"dmd.mtype".Type type,
 ) @safe {
     return Place(block.address, type);
+}
+
+
+// `Type.toBasetype` is not @safe; this keeps the class-reference check at a
+// narrow DMD boundary.
+private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
+    return type.toBasetype.isTypeClass !is null;
+}
+
+
+// DMD interns base types, while modifiers and aliases can give two different
+// Type objects for the same guest-layout value. A native copy needs layout
+// identity, not wrapper object identity.
+private bool sameBaseType(
+    imported!"dmd.mtype".Type lhs,
+    imported!"dmd.mtype".Type rhs,
+) @trusted {
+    import dmd.astenums: TY;
+    import dmd.typesem: mutableOf;
+
+    auto lhsVector = lhs.toBasetype.isTypeVector;
+    auto rhsVector = rhs.toBasetype.isTypeVector;
+    if (lhsVector !is null || rhsVector !is null)
+        return lhsVector !is null && rhsVector !is null &&
+            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
+
+    auto lhsArray = lhs.toBasetype.isTypeDArray;
+    auto rhsArray = rhs.toBasetype.isTypeDArray;
+    if (lhsArray !is null && rhsArray !is null) {
+        if (lhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
+        if (rhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
+        return sameBaseType(lhsArray.next, rhsArray.next);
+    }
+
+    // A druntime AA hook signature templated on `inout` sees the
+    // interpreted value's key and value types through that qualifier,
+    // diverging from the guest-declared unqualified types even though the
+    // layout is identical; compare key and value structurally, as the
+    // TypeDArray arm above does for its element type. Unlike a dynamic
+    // array, an AA literal cannot elide its key/value types to `void`, so
+    // there is no wildcard case to mirror here.
+    auto lhsAArray = lhs.toBasetype.isTypeAArray;
+    auto rhsAArray = rhs.toBasetype.isTypeAArray;
+    if (lhsAArray !is null && rhsAArray !is null)
+        return sameBaseType(lhsAArray.index, rhsAArray.index) &&
+            sameBaseType(lhsAArray.next, rhsAArray.next);
+
+    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
+}
+
+
+// DMD owns the null-terminated type spelling for the lifetime of the AST;
+// copying it makes the diagnostic independent of that internal buffer.
+private string typeName(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return type.toChars.fromStringz.idup;
+}
+
+
+// Both addresses come from DMD-sized storage of compatible static types,
+// checked by `Place.copyFromUnchecked` before this boundary. `memmove`
+// preserves overlap, aggregate padding, and union bytes without field
+// traversal.
+private void copyPlaceBytes(
+    void* destination,
+    void* source,
+    in size_t length,
+) pure nothrow @trusted {
+    import core.stdc.string: memmove;
+
+    memmove(destination, source, length);
 }
 
 

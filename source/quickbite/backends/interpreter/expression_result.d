@@ -36,7 +36,6 @@ public struct ExpressionResult {
         Pointer,
         NativeDelegate,
         TypeName,
-        EnumValue,
         FunctionPointer,
     );
 
@@ -77,10 +76,6 @@ public struct ExpressionResult {
         return ExpressionResult(TypeName(name));
     }
 
-    public static ExpressionResult enumValue(in string name, in long value = 0) @safe pure {
-        return ExpressionResult(EnumValue(name, value));
-    }
-
     public static ExpressionResult complexValue(in real realPart, in real imaginaryPart) @safe pure {
         return ExpressionResult(ComplexScalar(realPart, imaginaryPart));
     }
@@ -118,10 +113,6 @@ public struct ExpressionResult {
     }
 
     private this(in TypeName value) @safe pure {
-        data = Data(value);
-    }
-
-    private this(in EnumValue value) @safe pure {
         data = Data(value);
     }
 
@@ -214,8 +205,6 @@ public struct ExpressionResult {
                     return ExpressionResult(cast(T) value.value);
                 } else static if (is(U == ComplexScalar)) {
                     return ExpressionResult(cast(T) value.realPart);
-                } else static if (is(U == EnumValue)) {
-                    return ExpressionResult(cast(T) value.value);
                 } else static if (is(U == Pointer)) {
                     // `cast(ulong)ptr`/`cast(long)ptr` etc.: druntime's
                     // Throwable chaining (object.d, dip1008 scope-catch-var
@@ -312,8 +301,6 @@ public struct ExpressionResult {
 
                 static if (isIntegral!T || isSomeChar!T || is(T == bool)) {
                     return cast(long) value;
-                } else static if (is(T == EnumValue)) {
-                    return value.value;
                 } else {
                     throw new Exception("Expected integer-compatible scalar.");
                     return 0L;
@@ -332,33 +319,10 @@ public struct ExpressionResult {
 
                 static if (isIntegral!T || isSomeChar!T || is(T == bool)) {
                     return cast(ulong) value;
-                } else static if (is(T == EnumValue)) {
-                    return cast(ulong) value.value;
                 } else {
                     throw new Exception("Expected integer-compatible scalar.");
                     return 0UL;
                 }
-            },
-        );
-    }
-
-    public bool isEnumScalar() const @safe pure nothrow {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(EnumValue) value) => true,
-            (_) => false,
-        );
-    }
-
-    public string enumName() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(EnumValue) value) => value.name,
-            (_) {
-                throw new Exception("Expected enum scalar.");
-                return null;
             },
         );
     }
@@ -395,8 +359,7 @@ public struct ExpressionResult {
                 static if (
                     isIntegral!T ||
                     isSomeChar!T ||
-                    is(T == bool) ||
-                    is(T == EnumValue)
+                    is(T == bool)
                 ) {
                     return true;
                 } else {
@@ -588,8 +551,6 @@ public struct ExpressionResult {
                     isFloatingPoint!T
                 ) {
                     return cast(real) value;
-                } else static if (is(T == EnumValue)) {
-                    return cast(real) value.value;
                 } else static if (is(T == ImaginaryScalar)) {
                     return value.value;
                 } else static if (is(T == ComplexScalar)) {
@@ -614,7 +575,6 @@ public struct ExpressionResult {
                     isIntegral!T ||
                     is(T == bool) ||
                     isFloatingPoint!T ||
-                    is(T == EnumValue) ||
                     is(T == ImaginaryScalar) ||
                     is(T == ComplexScalar)
                 ) {
@@ -922,18 +882,6 @@ private struct TypeName {
 
     public this(in string name) @safe pure {
         this.name = name;
-    }
-
-}
-
-
-private struct EnumValue {
-    public string name;
-    public long value;
-
-    public this(in string name, in long value) @safe pure {
-        this.name = name;
-        this.value = value;
     }
 
 }

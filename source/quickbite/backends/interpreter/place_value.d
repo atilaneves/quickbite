@@ -20,8 +20,8 @@ private:
 // `real` (`TY.Tfloat80`) is ALSO a composable leaf, but through its OWN
 // codec below (`isRealType`/`readRealBits`/`writeRealBits`), not
 // `native_scalar`'s: `native_scalar` deliberately excludes `real` because
-// `native_call_adapter.d` routes exact-size scalar arms through its
-// `writeScalar`/`readScalar`, and widening that shared codec would change
+// `native_call_adapter.d` routes exact-size scalar arms through its typed
+// read/write operations, and widening that shared codec would change
 // shipping FFI behaviour, out of scope for this place-composition layer
 // (`ai/plans/value.md`'s decision 15 -- host layout IS the spec on THIS
 // host, not a hazard to refuse -- is what makes a place-local codec
@@ -31,8 +31,7 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout:
-        staticArrayLength, enumMemberQualifiedName, typeByteSize;
+    import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
@@ -41,17 +40,18 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     if (isNullType(type))
         return ExpressionResult.null_;
 
-    // An enum-typed place must come back tagged (`ExpressionResult.enumValue`), not as
-    // the plain integral `ExpressionResult` `native_scalar.readScalar` returns for it
-    // (it dispatches on the resolved base type, so an enum's own tagging is
-    // invisible to that codec) -- checked before the `isNativeScalarType`
-    // arm below, which would otherwise catch every enum type first since an
-    // enum's base type is itself a native scalar. `place.loadScalar` reads
-    // the underlying bits through that same codec; `layout.
-    // enumMemberQualifiedName` is DMD's own answer for which member (if
-    // any) owns those bits, qualified per `value.md`'s Display format spec
-    // rule 5 ("E.b"); a value matching no member renders that same spec's
-    // non-member form (`cast(E)N`) instead.
+    // An enum-typed place reads back as its plain base-type scalar, exactly
+    // like an ordinary native-scalar place (`ai/plans/value.md` decision 11:
+    // a scalar rvalue is a typed host local, not a separately-tagged
+    // value) -- there is no dedicated enum `ExpressionResult` shape to
+    // build. This still has to run before the `isNativeScalarType` arm
+    // below, but only to route a floating-base enum (`enum E : real`,
+    // `enum E : idouble`, ...) through this module's own real/imaginary
+    // codec; a non-floating enum falls straight to `readScalarLeaf`, the
+    // same call the `isNativeScalarType` arm below would make for it
+    // anyway. Any qualified member name a display surface needs is derived
+    // separately, on demand, from the type and these same bits (`layout.
+    // enumMemberQualifiedName`) -- never carried in the value itself.
     auto enumType = type.isTypeEnum;
     if (enumType !is null) {
         if (isFloatingBaseEnum(type)) {
@@ -62,24 +62,19 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
             if (auto componentType = imaginaryComponentType(baseType)) {
                 import quickbite.backends.interpreter.place: Place;
                 return ExpressionResult.imaginaryValue(
-                    Place(place.address, componentType).loadScalar.asReal,
+                    readScalarLeaf(Place(place.address, componentType)).asReal,
                 );
             }
 
             import quickbite.backends.interpreter.place: Place;
-            return Place(place.address, baseType).loadScalar;
+            return readScalarLeaf(Place(place.address, baseType));
         }
 
-        const bits = place.loadScalar.asLong;
-        const qualifiedName = enumMemberQualifiedName(enumType, bits);
-        return ExpressionResult.enumValue(
-            qualifiedName.length != 0 ? qualifiedName : nonMemberEnumName(enumType, bits),
-            bits,
-        );
+        return readScalarLeaf(place);
     }
 
     if (isNativeScalarType(type))
-        return place.loadScalar;
+        return readScalarLeaf(place);
 
     if (isRealType(type))
         return ExpressionResult(readRealBits(place.address, typeByteSize(type)));
@@ -97,22 +92,22 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto unionType = unionStructOf(type);
     if (unionType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     if (type.isTypeVector !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto sliceType = type.isTypeDArray;
     if (sliceType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     // An associative-array place stores only the one-word `Impl*` handle
     // interpreted druntime's own AA hooks (`core.internal.newaa`) build and
@@ -155,6 +150,98 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 }
 
 
+// The scalar leaf `readValue`'s own native-scalar arm shares with
+// `impl.d`'s struct/array cell field reconstruction, and with `readValue`'s
+// own (non-floating) enum arm: reads the bytes at `place`'s own static type
+// through the typed `Place.loadNativeScalar!T`, boxing the result only once
+// that typed read has completed. An enum-typed place reads back here as its
+// plain base-type bits -- exactly what a struct or array cell's native
+// scalar field storage needs too, since that storage has no enum-tag slot
+// of its own. Only a native scalar type (`native_scalar.isNativeScalarType`)
+// is legal here; every call site already gates on that before calling, an
+// enum resolving to its base type for that purpose the same way
+// `isNativeScalarType` itself does.
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalarLeaf(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+    switch (nativeScalarKindOf(place.type)) with (TY) {
+        case Tbool: return ExpressionResult(place.loadNativeScalar!bool);
+        case Tchar: return ExpressionResult(place.loadNativeScalar!char);
+        case Twchar: return ExpressionResult(place.loadNativeScalar!wchar);
+        case Tdchar: return ExpressionResult(place.loadNativeScalar!dchar);
+        case Tint8: return ExpressionResult(place.loadNativeScalar!byte);
+        case Tuns8: return ExpressionResult(place.loadNativeScalar!ubyte);
+        case Tint16: return ExpressionResult(place.loadNativeScalar!short);
+        case Tuns16: return ExpressionResult(place.loadNativeScalar!ushort);
+        case Tint32: return ExpressionResult(place.loadNativeScalar!int);
+        case Tuns32: return ExpressionResult(place.loadNativeScalar!uint);
+        case Tint64: return ExpressionResult(place.loadNativeScalar!long);
+        case Tuns64: return ExpressionResult(place.loadNativeScalar!ulong);
+        case Tfloat32: return ExpressionResult(place.loadNativeScalar!float);
+        case Tfloat64: return ExpressionResult(place.loadNativeScalar!double);
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.readScalarLeaf: "
+                ~ "unsupported native scalar type",
+            );
+    }
+}
+
+
+// The inverse of `readScalarLeaf`: casts `value` to `place`'s static type,
+// then writes it through the typed native scalar operation
+// (`Place.storeNativeScalar`). Refuses the same way `readScalarLeaf` does
+// for a non-scalar place.
+public void writeScalarLeaf(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+) @safe {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+    switch (nativeScalarKindOf(place.type)) with (TY) {
+        case Tbool: place.storeNativeScalar(value.castTo!bool.asLong != 0); return;
+        case Tint8: place.storeNativeScalar(cast(byte) value.castTo!byte.asLong); return;
+        case Tuns8: place.storeNativeScalar(cast(ubyte) value.castTo!ubyte.asLong); return;
+        case Tchar: place.storeNativeScalar(cast(char) value.castTo!char.asLong); return;
+        case Tint16: place.storeNativeScalar(cast(short) value.castTo!short.asLong); return;
+        case Tuns16: place.storeNativeScalar(cast(ushort) value.castTo!ushort.asLong); return;
+        case Twchar: place.storeNativeScalar(cast(wchar) value.castTo!wchar.asLong); return;
+        case Tint32: place.storeNativeScalar(cast(int) value.castTo!int.asLong); return;
+        case Tuns32: place.storeNativeScalar(cast(uint) value.castTo!uint.asLong); return;
+        case Tdchar: place.storeNativeScalar(cast(dchar) value.castTo!dchar.asLong); return;
+        case Tint64: place.storeNativeScalar(value.castTo!long.asLong); return;
+        case Tuns64: place.storeNativeScalar(cast(ulong) value.castTo!ulong.asLong); return;
+        case Tfloat32: place.storeNativeScalar(cast(float) value.castTo!float.asReal); return;
+        case Tfloat64: place.storeNativeScalar(cast(double) value.castTo!double.asReal); return;
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeScalarLeaf: "
+                ~ "unsupported native scalar type",
+            );
+    }
+}
+
+
+// This is the aggregate-to-carrier boundary for generic reads. Aggregate
+// copying itself stays typed: it accepts a place address and returns its
+// native owner, which preserves all copied bytes and any retained owner.
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readAggregate(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    return ExpressionResult.nativeAggregateValue(
+        AggregateValue.copyFromAddress(place.type, place.address),
+    );
+}
+
+
 private bool bytesAreZero(
     const(void)* address,
     in size_t length,
@@ -174,10 +261,8 @@ private bool bytesAreZero(
 // declines it before this is consulted, because the read side has no enum
 // `ExpressionResult` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
-// boundary for the identical call. `public`: `valueMatchesPlace` needs the
-// same check to decide whether a transient `ExpressionResult` reaching a
-// `real`-typed place is numeric before `writeValue`; sharing it prevents the
-// compatibility check and codec from drifting apart.
+// boundary for the identical call. `public`: the typed read and write paths
+// share this check, so the `real` codec cannot drift from its place dispatch.
 public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
@@ -244,133 +329,12 @@ private imported!"quickbite.backends.interpreter.place".Place componentPlace(
 }
 
 
-// `Type.toBasetype` is not @safe; this keeps the class-reference check at the
-// same narrow DMD boundary as `isRealType` above.
-private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
-    return type.toBasetype.isTypeClass !is null;
-}
-
-
 // `Type.toBasetype` is not `@safe`; the null type has one value and its
 // native place is therefore always the all-zero representation.
 private bool isNullType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
     return type.toBasetype.ty == TY.Tnull;
-}
-
-
-// DMD interns base types, while modifiers and aliases can give two different
-// Type objects for the same guest-layout value. The byte-copy gate cares about
-// that layout identity, not the wrapper object identity.
-private bool sameBaseType(
-    imported!"dmd.mtype".Type lhs,
-    imported!"dmd.mtype".Type rhs,
-) @trusted {
-    import dmd.astenums: TY;
-    import dmd.typesem: mutableOf;
-
-    auto lhsVector = lhs.toBasetype.isTypeVector;
-    auto rhsVector = rhs.toBasetype.isTypeVector;
-    if (lhsVector !is null || rhsVector !is null)
-        return lhsVector !is null && rhsVector !is null &&
-            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
-
-    // `mutableOf` removes the outer qualifier, but DMD is not required to
-    // intern the resulting wrapper (notably for a const AA field).  Semantic
-    // type equality is the layout identity here; pointer identity rejects a
-    // valid `long[string]` -> `const(long[string])` aggregate copy.
-    // A dynamic-array qualifier can instead live on its element (`inout(int)[]`
-    // versus `int[]`). The header layout is identical, and the element
-    // qualifier does not change the header copied at this boundary.
-    auto lhsArray = lhs.toBasetype.isTypeDArray;
-    auto rhsArray = rhs.toBasetype.isTypeDArray;
-    if (lhsArray !is null && rhsArray !is null) {
-        // The frontend represents an untyped empty/null slice carrier as
-        // `void[]`. Its value is only the ABI header, so copying that empty
-        // header into a concretely typed slice slot is the typed
-        // materialization step, not an element-layout conversion.
-        if (lhsArray.next.toBasetype.ty == TY.Tvoid)
-            return true;
-        // Any dynamic array implicitly converts to `void[]` (compiled D
-        // covariance, e.g. passing a `string` argument to a `void[]`
-        // parameter such as `std.array.overlap`/`doesPointTo`'s scratch
-        // range). The header layout -- {length, ptr} -- is element-type
-        // agnostic, so the same byte copy below is correct either way.
-        if (rhsArray.next.toBasetype.ty == TY.Tvoid)
-            return true;
-        // Compare the element layouts recursively. For a nested dynamic
-        // array, qualifying the inner slice header (`int[]` ->
-        // `const(int[])`) does not qualify its `int` elements and does not
-        // change either header's representation. A one-level `mutableOf`
-        // comparison retains that inner wrapper qualifier and rejects the
-        // ordinary implicit conversion `int[][]` -> `const(int[])[]`.
-        return sameBaseType(lhsArray.next, rhsArray.next);
-    }
-
-    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
-}
-
-
-// DMD owns the null-terminated type spelling for the lifetime of the AST;
-// copying it makes the diagnostic independent of that internal buffer.
-private string typeName(imported!"dmd.mtype".Type type) @trusted {
-    import std.string: fromStringz;
-
-    return type.toChars.fromStringz.idup;
-}
-
-
-// Whether a non-aggregate ExpressionResult can be encoded at `type`. Native
-// aggregates use their typed storage directly and are handled before this
-// scalar compatibility gate at execution boundaries.
-public bool valueMatchesPlace(
-    imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-) @safe {
-    if (!isPlaceComposable(type))
-        return false;
-
-    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    if (isNullType(type))
-        return value == ExpressionResult.null_;
-
-    if (isNativeScalarType(type))
-        return value.isNumericScalar || value.isCharacter;
-
-    // `real` is `isPlaceComposable` but not a native scalar. Its expression
-    // representation is always numeric (never character), matching
-    // `writeValue`'s `writeRealBits` arm.
-    if (isRealType(type))
-        return value.isNumericScalar;
-
-    if (imaginaryComponentType(type) !is null)
-        return value.isImaginaryScalar;
-
-    if (complexComponentType(type) !is null)
-        return value.isComplexScalar;
-
-    if (type.isTypePointer !is null)
-        return value.isPointer || value == ExpressionResult.null_;
-
-    // A scalar destined for a static-array place is a broadcast fill --
-    // ordinary D semantics for `T[N] x = scalar;` (declaration) and its
-    // reassignment form when it reaches this generic scalar path rather than
-    // the dedicated slice-assignment or struct-literal-field broadcasts,
-    // which already accept the identical shape. Recursing into the element
-    // type answers the same question `writeValue`'s own `Tsarray` arm below
-    // relies on before broadcasting.
-    if (auto arrayType = type.isTypeSArray)
-        return valueMatchesPlace(arrayType.next, value);
-
-    // An AA place holds interpreted druntime's own `Impl*` handle -- a
-    // pointer-shaped value or null, exactly like a raw pointer place.
-    if (type.isTypeAArray !is null)
-        return value.isPointer || value == ExpressionResult.null_;
-
-    return false;
 }
 
 
@@ -479,25 +443,7 @@ public void writeValue(
 
     if (value.isNativeAggregate) {
         auto source = AggregateValue.native(value);
-        // DMD uses a pointer-typed slot for a catch variable even though the
-        // caught value is a class reference. Store the referenced object body,
-        // not the address of the native class-reference carrier.
-        if (isClassType(source.type) && type.isTypePointer !is null) {
-            place.storeReference(Place(source.address, source.type).deref.address);
-            return;
-        }
-        // Class assignment stores only the reference slot, so a derived
-        // native class value may initialise a base-class slot just as a D
-        // reference does. Other aggregates still require their exact native
-        // layout type before copying their complete byte span.
-        const classReference = isClassType(source.type) && isClassType(type);
-        if (!sameBaseType(source.type, type) && !classReference)
-            throw new Exception(
-                "quickbite.backends.interpreter.place_value.writeValue: "
-                ~ "native aggregate type mismatch " ~ typeName(source.type)
-                ~ " -> " ~ typeName(type),
-            );
-        copyAggregateBytes(place.address, source.address, typeByteSize(type));
+        place.copyFromNative(source.type, source.address);
         return;
     }
 
@@ -522,12 +468,12 @@ public void writeValue(
                 ExpressionResult(value.imaginaryPart),
             );
         else
-            place.storeScalar(value);
+            writeScalarLeaf(place, value);
         return;
     }
 
     if (isNativeScalarType(type)) {
-        place.storeScalar(value);
+        writeScalarLeaf(place, value);
         return;
     }
 
@@ -618,6 +564,19 @@ public void writeValue(
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// Reset the complete native representation of one typed place. All-zero is
+// D's representation for the null references, slices, and delegates this
+// interpreter stores in native layout; it also gives aggregate padding a
+// deterministic state.
+public void clearPlace(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    zeroBytes(place.address, typeByteSize(place.type));
 }
 
 
@@ -729,7 +688,7 @@ out (result; !result || isPlaceComposable(type))
 // copies the complete typed byte span.
 //
 // A native scalar, a `real`, and a pointer each write exactly their own
-// `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
+// `typeByteSize` (`native_scalar.writeNativeScalar`, `writeRealBits`,
 // `Place.storeReference`). A static array's elements tile its whole extent,
 // D's own rule that a static array's size is exactly its length times its
 // element size, so only the element type is in question. A non-union struct
@@ -914,62 +873,4 @@ private imported!"dmd.mtype".Type baseTypeOf(
     import dmd.typesem: mutableOf;
 
     return mutableOf(type.toBasetype);
-}
-
-
-// Reinterpreting a raw address as a byte range is not `@safe`; this is the
-// `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. `length` is
-// always `NativeArray.sliceHeaderByteLength`, so the returned slice spans
-// exactly the header bytes at `address` -- never more.
-// Both addresses come from DMD-sized aggregate storage of the identical
-// static type, checked by `writeValue` before this boundary.  Copying exactly
-// that size is the whole-value assignment operation; recursive field writes
-// would recreate field-by-field aggregate traversal and lose union/padding
-// bits.
-private void copyAggregateBytes(
-    void* destination,
-    void* source,
-    in size_t length,
-) pure nothrow @trusted {
-    import core.stdc.string: memcpy;
-
-    memcpy(destination, source, length);
-}
-
-
-// `structType`'s own declared name (`StructDeclaration.ident`), verbatim --
-// the same derivation `quickbite.frontend.dmd.values`'s struct default-value
-// builder already uses to name a struct `ExpressionResult` built straight from a
-// `TypeStruct`, with no existing `ExpressionResult` to borrow a type name from.
-// The non-member enum rendering `value.md`'s Display format spec rule 5
-// gives for a `value` that matches no member of `enumType`: `cast(E)N`.
-// `readValue`'s enum arm falls back to this once `layout.
-// enumMemberQualifiedName` answers empty.
-private string nonMemberEnumName(
-    imported!"dmd.mtype".TypeEnum enumType,
-    in long value,
-) @safe {
-    import std.conv: text;
-
-    return text("cast(", enumTypeName(enumType), ")", value);
-}
-
-
-// `enumType`'s own bare name (`EnumDeclaration.ident`), verbatim -- the
-// same derivation `structTypeName` above uses for a struct's own name,
-// needed here only to build the `cast(E)N` non-member form (the member
-// case gets its own "E" prefix from `layout.enumMemberQualifiedName`).
-private string enumTypeName(
-    imported!"dmd.mtype".TypeEnum enumType,
-) @safe {
-    return enumTypeNameImpl(enumType);
-}
-
-// `EnumDeclaration.ident` is a plain field read, but `EnumDeclaration` (an
-// `extern (C++)` class) is not itself `@safe`-annotated; this is the
-// `@trusted` boundary for reading it, mirroring `structTypeNameImpl` above.
-private string enumTypeNameImpl(
-    imported!"dmd.mtype".TypeEnum enumType,
-) @trusted {
-    return enumType.sym.ident is null ? "" : enumType.sym.ident.toString.idup;
 }

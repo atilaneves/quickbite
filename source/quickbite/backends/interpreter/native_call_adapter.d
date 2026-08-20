@@ -34,12 +34,22 @@ private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
     return result;
 }
 
+// Identifies the interpreted delegate that an inbound native trampoline calls.
+// The identity belongs to the root execution's delegate registry.
+public struct InterpretedDelegate {
+    public size_t functionPointerId;
+}
+
 // Runs an interpreted delegate that native code called back into. The Walker
 // supplies it so callback plumbing can re-enter the interpreter without this
-// module importing the Walker.
-public alias DelegateInvoker = imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult callee,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments,
+// module importing the Walker. Argument and result bytes stay in their typed
+// native places; the callback adapter does not carry evaluated values.
+public alias DelegateInvoker = void delegate(
+    in InterpretedDelegate callback,
+    imported!"dmd.mtype".Type returnType,
+    imported!"dmd.mtype".Type[] parameterTypes,
+    void*[] argumentBuffers,
+    ubyte[] resultBuffer,
 );
 
 private alias InboundCallbackInvoker = void delegate(
@@ -264,11 +274,9 @@ private size_t alignedOffset(
 
 // Session-owned callback roots and callback-id invoker for durable FFI
 // trampolines. The registry owns libffi closure memory; this session owns
-// interpreter callback results and remains valid for the Walker session.
+// interpreted callback metadata and remains valid for the Walker session.
 public struct InterpreterInboundTrampolineSession {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    private ExpressionResult[] _callbacks;
+    private InterpretedDelegate[] _callbacks;
     private DelegateInvoker _invokeDelegate;
     private InboundTrampolineRegistry* _registry;
 
@@ -281,7 +289,7 @@ public struct InterpreterInboundTrampolineSession {
         return _registry;
     }
 
-    public size_t register(in ExpressionResult callback) {
+    public size_t register(in InterpretedDelegate callback) {
         _callbacks ~= callback;
         return _callbacks.length - 1;
     }
@@ -304,39 +312,21 @@ public struct InterpreterInboundTrampolineSession {
         void*[] argumentBuffers,
         ubyte[] resultBuffer,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue, writeValue;
-
         assert(callbackId < _callbacks.length, "unknown durable callback id");
-        ExpressionResult[1] inlineCallbackArgument;
-        auto callbackArguments = parameterTypes.length == 0
-            ? null
-            : parameterTypes.length == 1
-                ? inlineCallbackArgument[]
-                : new ExpressionResult[](parameterTypes.length);
-        foreach (index, parameterType; parameterTypes)
-            callbackArguments[index] = readValue(Place(
-                argumentBuffers[index],
-                parameterType,
-            ));
-        const callbackResult = _invokeDelegate(
-            _callbacks[callbackId], callbackArguments,
+        _invokeDelegate(
+            _callbacks[callbackId],
+            returnType,
+            parameterTypes,
+            argumentBuffers,
+            resultBuffer,
         );
-        if (returnType.ty == TY.Tvoid)
-            return;
-
-        resultBuffer[] = 0;
-        writeValue(Place(resultBuffer.ptr, returnType), callbackResult);
-        extendInboundIntegerResult(resultBuffer, returnType);
     }
 }
 
 // libffi reserves an ffi_arg-sized callback result cell for narrow integers.
 // The typed write above fills the D value's own bytes; this extends only the
 // ABI scratch tail, preserving the typed result place as the value authority.
-private void extendInboundIntegerResult(
+public void extendInboundIntegerResult(
     ubyte[] resultBuffer,
     imported!"dmd.mtype".Type returnType,
 ) {
@@ -367,6 +357,23 @@ public struct NativeOperand {
     public imported!"dmd.mtype".Type type;
     public void* address;
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock owner;
+    public InterpreterInboundTrampolineSession* callbackSession;
+    public size_t callbackId;
+    // Delegate result words cross the native boundary as typed metadata. They
+    // are not decoded by the general place-value codec, because that codec
+    // deliberately only recognizes the all-zero null delegate representation.
+    public NativeDelegate delegateMetadata;
+}
+
+// The native ABI representation of a D delegate. This metadata belongs to a
+// typed NativeOperand and crosses only at the native-call boundary.
+public struct NativeDelegate {
+    public const(void)* context;
+    public const(void)* funcptr;
+
+    public bool isNull() const @safe @nogc nothrow pure {
+        return context is null && funcptr is null;
+    }
 }
 
 // The address-only bridge's complete call shape. Preparation owns selecting
@@ -387,6 +394,8 @@ private struct NativeInvocation {
     private imported!"quickbite.ffi.ffi".TypedAddress _singleArgument;
     private imported!"quickbite.backends.interpreter.native_block".NativeBlock[3]
         _inlineRoots;
+    private imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        _resultOwner;
 
     public this(in size_t argumentCount) {
         import core.memory: GC;
@@ -488,20 +497,20 @@ public struct NativeCallRequest {
     public const(void)* delegateAddress;
     public const(void)* delegateContext;
     public imported!"dmd.mtype".Type receiverType;
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver;
     public NativeOperand receiverOperand;
     public bool virtualDispatch;
     public bool returnsReceiver;
-    public const(imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult)[] arguments;
+    // Non-null means the caller owns typed storage for an ordinary result.
+    // Reference returns and receiver returns still use their existing result
+    // paths because their ABI result is an address, not the value bytes.
+    public void* resultAddress;
     public imported!"dmd.mtype".Type[] argumentTypes;
     public NativeOperand[] argumentOperands;
     public InterpreterInboundTrampolineSession* callbackSession;
 }
 
 public struct NativeCallResult {
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value;
-    public void* referenceAddress;
+    public NativeOperand value;
 }
 
 public bool invokeNative(
@@ -547,19 +556,17 @@ private bool prepareNativeInvocation(
         return false;
 
     const fixedCount = signature.parameterList.length;
-    if (request.arguments.length != request.argumentTypes.length ||
-        cVariadic && request.arguments.length < fixedCount ||
-        !cVariadic && request.arguments.length != fixedCount)
+    if (request.argumentOperands.length != request.argumentTypes.length ||
+        cVariadic && request.argumentOperands.length < fixedCount ||
+        !cVariadic && request.argumentOperands.length != fixedCount)
         return false;
-    invocation = NativeInvocation(request.arguments.length);
+    invocation = NativeInvocation(request.argumentOperands.length);
 
     invocation.returnsReceiver = request.returnsReceiver;
     if (request.receiverType !is null) {
         if (!prepareNativeOperand(
             request.receiverType,
-            request.receiver,
             request.receiverOperand,
-            null,
             invocation,
             invocation.receiver,
         ))
@@ -597,7 +604,7 @@ private bool prepareNativeInvocation(
     if (invocation.callable.address is null)
         return false;
 
-    foreach (index, argument; request.arguments) {
+    foreach (index, supplied; request.argumentOperands) {
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : request.argumentTypes[index].toBasetype;
@@ -608,16 +615,11 @@ private bool prepareNativeInvocation(
         const isReference = index < fixedCount &&
             (signature.parameterList[index].storageClass &
                 (STC.ref_ | STC.out_)) != STC.none;
-        auto supplied = index < request.argumentOperands.length
-            ? request.argumentOperands[index]
-            : NativeOperand.init;
         if (isReference && !operandMatches(supplied, type))
             return false;
         if (!prepareNativeOperand(
             type,
-            argument,
             supplied,
-            request.callbackSession,
             invocation,
             invocation.arguments[index],
         ))
@@ -632,9 +634,12 @@ private bool prepareNativeInvocation(
             NativeBlock.Scan.conservative,
         );
         invocation.result = TypedAddress(returnType, owner.address);
+        invocation._resultOwner = owner;
         invocation.retainRoot(owner);
     } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn) {
         invocation.result = TypedAddress(returnType, null);
+    } else if (request.resultAddress !is null && !request.returnsReceiver) {
+        invocation.result = TypedAddress(returnType, request.resultAddress);
     } else {
         auto owner = NativeBlock.allocate(
             typeByteSize(returnType),
@@ -643,6 +648,7 @@ private bool prepareNativeInvocation(
                 : NativeBlock.Scan.no,
         );
         invocation.result = TypedAddress(returnType, owner.address);
+        invocation._resultOwner = owner;
         invocation.retainRoot(owner);
     }
     return invocation.isComplete;
@@ -650,68 +656,33 @@ private bool prepareNativeInvocation(
 
 private bool prepareNativeOperand(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     NativeOperand supplied,
-    InterpreterInboundTrampolineSession* callbackSession,
     ref NativeInvocation invocation,
     out imported!"quickbite.ffi.ffi".TypedAddress result,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import quickbite.ffi.ffi: TypedAddress;
 
-    const interpretedDelegate = type.toBasetype.ty == TY.Tdelegate &&
-        value != ExpressionResult.null_ &&
-        !value.isNativeDelegate;
-    if (!interpretedDelegate && operandMatches(supplied, type)) {
+    if (operandMatches(supplied, type)) {
         result = TypedAddress(type, supplied.address);
         if (supplied.owner.address !is null)
             invocation.retainRoot(supplied.owner);
         return true;
     }
-    if (value.isNativeAggregate) {
-        auto aggregate = AggregateValue.native(value);
-        if (sameNativeStorageType(aggregate.type, type)) {
-            result = TypedAddress(type, cast(void*) aggregate.address);
-            return true;
-        }
-    }
-
+    if (supplied.callbackSession is null)
+        return false;
     auto owner = NativeBlock.allocate(
         typeByteSize(type),
-        typeHasPointers(type)
-            ? NativeBlock.Scan.conservative
-            : NativeBlock.Scan.no,
+        typeHasPointers(type) ? NativeBlock.Scan.conservative :
+            NativeBlock.Scan.no,
     );
-    if (type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
-        if (value.isNativeDelegate) {
-            *cast(const(void)**) owner.address = value.nativeDelegateContext;
-            *cast(const(void)**) (cast(ubyte*) owner.address + (void*).sizeof) =
-                value.nativeDelegateFuncptr;
-        } else {
-            if (callbackSession is null)
-                return false;
-            callbackSession.registry.setupDelegateArgument(
-                owner.bytes,
-                type,
-                callbackSession.register(value),
-                invocation.callable.compilerAbi,
-            );
-        }
-    } else if (valueMatchesPlace(type, value) ||
-        type.toBasetype.ty == TY.Tclass &&
-            (value.isPointer || value == ExpressionResult.null_) ||
-        type.toBasetype.ty == TY.Tdelegate && value == ExpressionResult.null_)
-    {
-        writeValue(Place(owner.address, type), value);
-    } else
-        return false;
-
+    supplied.callbackSession.registry.setupDelegateArgument(
+        owner.bytes,
+        type,
+        supplied.callbackId,
+        invocation.callable.compilerAbi,
+    );
     result = TypedAddress(type, owner.address);
     invocation.retainRoot(owner);
     return true;
@@ -786,45 +757,65 @@ private NativeCallResult readNativeInvocationResult(
     ref NativeInvocation invocation,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: readValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     NativeCallResult result;
     if (invocation.returnsReceiver) {
-        result.value = readValue(Place(
-            invocation.receiver.address,
+        result.value = nativeResultOperand(
             invocation.receiver.type,
-        ));
+            invocation.receiver.address,
+        );
         return result;
     }
     if (invocation.returnsRef) {
-        result.referenceAddress = loadMutableReference(invocation.result.address);
-        result.value = readValue(Place(
-            result.referenceAddress,
+        result.value = nativeResultOperand(
             invocation.result.type,
-        ));
+            loadMutableReference(invocation.result.address),
+            invocation._resultOwner,
+        );
         return result;
     }
     switch (invocation.result.type.toBasetype.ty) with (TY) {
         case Tvoid, Tnoreturn:
-            result.value = ExpressionResult.void_;
-            break;
-        case Tdelegate:
-            result.value = ExpressionResult.nativeDelegateValue(
-                loadReference(invocation.result.address),
-                loadReference(cast(ubyte*) invocation.result.address +
-                    (void*).sizeof),
-            );
+            result.value = NativeOperand.init;
             break;
         default:
-            result.value = readValue(Place(
-                invocation.result.address,
+            result.value = nativeResultOperand(
                 invocation.result.type,
-            ));
+                invocation.result.address,
+                invocation._resultOwner,
+            );
             break;
     }
     return result;
+}
+
+private NativeOperand nativeResultOperand(
+    imported!"dmd.mtype".Type type,
+    void* address,
+    imported!"quickbite.backends.interpreter.native_block".NativeBlock owner =
+        imported!"quickbite.backends.interpreter.native_block".NativeBlock.init,
+) {
+    import dmd.astenums: TY;
+
+    auto result = NativeOperand(type, address, owner);
+    if (address !is null && type !is null && type.toBasetype.ty == TY.Tdelegate)
+        result.delegateMetadata = nativeDelegateMetadata(result);
+    return result;
+}
+
+// Read a D delegate's native ABI words from a typed address. Native delegate
+// result destinations can be caller-provided storage, so later typed reads use
+// this crossing too instead of the general place-value codec.
+public NativeDelegate nativeDelegateMetadata(NativeOperand operand) @trusted {
+    import dmd.astenums: TY;
+
+    assert(operand.type !is null && operand.type.toBasetype.ty == TY.Tdelegate);
+    if (operand.address is null)
+        return NativeDelegate.init;
+    return NativeDelegate(
+        loadReference(operand.address),
+        loadReference(cast(ubyte*) operand.address + (void*).sizeof),
+    );
 }
 
 private void* loadMutableReference(void* address) @trusted {

@@ -8,7 +8,6 @@ import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, stru
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
-import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
 private:
 
@@ -49,24 +48,24 @@ unittest {
     (cast(size_t) yPlace.address).should == cast(size_t) block.address + fieldByteOffset(yField);
     fieldByteOffset(yField).should == P.y.offsetof;
 
-    // Runtime-computed, not bare literals passed straight to `ExpressionResult`.
+    // Runtime-computed, not bare literals passed straight to `storeNativeScalar`.
     int writtenX = 3;
     writtenX = writtenX * 5 + 1;
     long writtenY = 1000L;
     writtenY = writtenY * 7 + 2;
 
-    xPlace.storeScalar(ExpressionResult(writtenX));
-    yPlace.storeScalar(ExpressionResult(writtenY));
+    xPlace.storeNativeScalar(writtenX);
+    yPlace.storeNativeScalar(writtenY);
 
-    xPlace.loadScalar.asLong.should == writtenX;
-    yPlace.loadScalar.asLong.should == writtenY;
+    xPlace.loadNativeScalar!int.should == writtenX;
+    yPlace.loadNativeScalar!long.should == writtenY;
 
     // Overwriting `y` must leave `x`'s already-stored bytes untouched.
     long overwrittenY = writtenY + 11;
-    yPlace.storeScalar(ExpressionResult(overwrittenY));
+    yPlace.storeNativeScalar(overwrittenY);
 
-    xPlace.loadScalar.asLong.should == writtenX;
-    yPlace.loadScalar.asLong.should == overwrittenY;
+    xPlace.loadNativeScalar!int.should == writtenX;
+    yPlace.loadNativeScalar!long.should == overwrittenY;
 }
 
 
@@ -86,12 +85,12 @@ unittest {
 
     int written = 6;
     written = written * 9 + 4;
-    root.index(2).storeScalar(ExpressionResult(written));
+    root.index(2).storeNativeScalar(written);
 
-    root.index(2).loadScalar.asLong.should == written;
+    root.index(2).loadNativeScalar!int.should == written;
 
     // Element 2's write must not perturb element 0.
-    root.index(0).loadScalar.asLong.should == 0;
+    root.index(0).loadNativeScalar!int.should == 0;
 }
 
 
@@ -116,12 +115,12 @@ unittest {
 
     int written = 6;
     written = written * 9 + 4;
-    root.index(2).storeScalar(ExpressionResult(written));
+    root.index(2).storeNativeScalar(written);
 
-    root.index(2).loadScalar.asLong.should == written;
+    root.index(2).loadNativeScalar!int.should == written;
 
     // Element 2's write must not perturb element 0.
-    root.index(0).loadScalar.asLong.should == 0;
+    root.index(0).loadNativeScalar!int.should == 0;
 }
 
 
@@ -146,9 +145,9 @@ unittest {
 
     int written = 4;
     written = written * 5 + 3;
-    dereffed.storeScalar(ExpressionResult(written));
+    dereffed.storeNativeScalar(written);
 
-    root.index(0).loadScalar.asLong.should == written;
+    root.index(0).loadNativeScalar!int.should == written;
 }
 
 
@@ -210,14 +209,14 @@ unittest {
     long writtenY = 100L;
     writtenY = writtenY * 3 + 4;
 
-    dereffed.field(xField).storeScalar(ExpressionResult(writtenX));
-    dereffed.field(yField).storeScalar(ExpressionResult(writtenY));
+    dereffed.field(xField).storeNativeScalar(writtenX);
+    dereffed.field(yField).storeNativeScalar(writtenY);
 
     (cast(size_t) dereffed.field(xField).address).should == cast(size_t) body_.address + fieldByteOffset(xField);
     (cast(size_t) dereffed.field(yField).address).should == cast(size_t) body_.address + fieldByteOffset(yField);
 
-    dereffed.field(xField).loadScalar.asLong.should == writtenX;
-    dereffed.field(yField).loadScalar.asLong.should == writtenY;
+    dereffed.field(xField).loadNativeScalar!int.should == writtenX;
+    dereffed.field(yField).loadNativeScalar!long.should == writtenY;
 }
 
 
@@ -260,43 +259,17 @@ unittest {
 
     int written = 3;
     written = written * 8 + 5;
-    root.index(1).storeScalar(ExpressionResult(written));
+    root.index(1).storeNativeScalar(written);
 
-    root.index(1).loadScalar.asLong.should == written;
+    root.index(1).loadNativeScalar!int.should == written;
 
     // Element 1's write must not perturb elements 0 or 2.
-    root.index(0).loadScalar.asLong.should == 0;
-    root.index(2).loadScalar.asLong.should == 0;
+    root.index(0).loadNativeScalar!int.should == 0;
+    root.index(2).loadNativeScalar!int.should == 0;
 
     root.index(3).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place.Place.index: "
         ~ "index out of range for slice place",
-    );
-}
-
-
-@("Place.loadScalar.nonScalarPlaceThrows")
-unittest {
-    auto type = structTypeOf(pSource, "P");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    root.loadScalar.shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place.Place.loadScalar: "
-        ~ "type is not a native scalar type",
-    );
-}
-
-
-@("Place.storeScalar.nonScalarPlaceThrows")
-unittest {
-    auto type = structTypeOf(pSource, "P");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    root.storeScalar(ExpressionResult(1)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place.Place.storeScalar: "
-        ~ "type is not a native scalar type",
     );
 }
 
@@ -321,17 +294,17 @@ unittest {
     aPlace.address.should == frame.bindingAddress(a);
     bPlace.address.should == frame.bindingAddress(b);
 
-    // Runtime-computed, not a bare literal passed straight to `ExpressionResult`.
+    // Runtime-computed, not a bare literal passed straight to `storeNativeScalar`.
     int writtenA = 2;
     writtenA = writtenA * 21;
 
-    aPlace.storeScalar(ExpressionResult(writtenA));
+    aPlace.storeNativeScalar(writtenA);
 
-    aPlace.loadScalar.asLong.should == writtenA;
+    aPlace.loadNativeScalar!int.should == writtenA;
 
     long writtenB = 5;
     writtenB = writtenB * 13;
-    bPlace.storeScalar(ExpressionResult(writtenB));
+    bPlace.storeNativeScalar(writtenB);
 
     target.should == writtenB;
 }

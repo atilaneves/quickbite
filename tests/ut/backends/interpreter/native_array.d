@@ -16,6 +16,7 @@ unittest {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.place_value: readValue;
 
     int[] storage;
     storage.reserve(2);
@@ -37,11 +38,14 @@ unittest {
         unrelatedRetention,
     ));
 
-    const appended = AggregateValue.withAppendedArrayElement(value, ExpressionResult(2));
+    auto appendedAggregate = AggregateValue.withAppendedArrayElement(
+        AggregateValue.native(value), ExpressionResult(2),
+    );
+    const appended = ExpressionResult.nativeAggregateValue(appendedAggregate);
 
     AggregateValue.nativeArrayAddress(appended).should == originalAddress;
-    AggregateValue.elementAt(appended, 0).should == ExpressionResult(1);
-    AggregateValue.elementAt(appended, 1).should == ExpressionResult(2);
+    readValue(AggregateValue.elementAt(appendedAggregate, 0)).should == ExpressionResult(1);
+    readValue(AggregateValue.elementAt(appendedAggregate, 1)).should == ExpressionResult(2);
 }
 
 

@@ -9,7 +9,7 @@ import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout:
     fieldByteOffset, structFields, typeByteSize, classInstanceByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import quickbite.backends.interpreter.native_scalar: writeScalar;
+import quickbite.backends.interpreter.native_scalar: writeNativeScalar;
 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 import quickbite.backends.interpreter.expression_result: ExpressionResult;
 import dmd.mtype: Type;
@@ -18,47 +18,48 @@ import dmd.typesem: sarrayOf, pointerTo;
 private:
 
 
-// An enum-typed place must read back as an `ExpressionResult.enumValue`
-// qualified with the member's own name (`Colour.green`), not the plain integral
-// `ExpressionResult` that `native_scalar.readScalar` alone would give.
-@("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
+// An enum-typed place reads back as its plain base-type scalar
+// (`ai/plans/value.md` decision 11: a scalar rvalue is a typed host local,
+// not a separately-tagged value), even when the stored bits match a
+// declared member (`Colour.green`) -- the same `ExpressionResult`
+// `native_scalar.readNativeScalar` alone would give.
+@("place_value.readValue.enumMemberValueReadsBackAsItsUnderlyingScalar")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, ExpressionResult(1));
+    writeNativeScalar(type, block.bytes, 1);
 
-    readValue(root).should == ExpressionResult.enumValue("Colour.green", 1);
+    readValue(root).should == ExpressionResult(1);
 }
 
 
-// A value with no owning member reads back in the non-member `cast(E)N`
-// form `value.md`'s Display format spec rule 5 gives, rather than a
-// qualified member name that doesn't exist.
-@("place_value.readValue.nonMemberEnumValueReadsBackInCastForm")
+// A value with no owning member reads back exactly the same way -- there is
+// no member-matching special case to diverge from.
+@("place_value.readValue.nonMemberEnumValueReadsBackAsItsUnderlyingScalar")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, ExpressionResult(5));
+    writeNativeScalar(type, block.bytes, 5);
 
-    readValue(root).should == ExpressionResult.enumValue("cast(Colour)5", 5);
+    readValue(root).should == ExpressionResult(5);
 }
 
 
 // `writeValue` already stores an enum's underlying bits correctly (its
-// `isNativeScalarType` arm goes through `native_scalar.writeScalar` ->
-// `scalarLong` -> `ExpressionResult.asLong`'s `EnumValue` arm); this pins the full
-// round trip through the now enum-aware `readValue`.
+// `isNativeScalarType` arm goes through `Place.storeNativeScalar` ->
+// `native_scalar.writeNativeScalar`); this pins the full round trip
+// through `readValue`'s own (untagged) enum arm.
 @("place_value.writeValue.readValue.enumValueRoundTrips")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    auto written = ExpressionResult.enumValue("Colour.blue", 2);
+    auto written = ExpressionResult(2);
 
     writeValue(root, written);
 
@@ -67,9 +68,10 @@ unittest {
 
 
 // Cross-checks `readValue`'s field composition against an entirely
-// independent path: `native_scalar.writeScalar` writes straight into `P.y`'s
-// own bytes at `layout.fieldByteOffset`, never going through `Place`/
-// `writeValue` at all, and `readValue` must still see it at the same field.
+// independent path: `native_scalar.writeNativeScalar` writes straight into
+// `P.y`'s own bytes at `layout.fieldByteOffset`, never going through
+// `Place`/`writeValue` at all, and `readValue` must still see it at the
+// same field.
 @("place_value.readValue.reflectsScalarWrittenDirectlyViaNativeScalarAtFieldOffset")
 unittest {
     auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
@@ -83,9 +85,10 @@ unittest {
     writtenY = writtenY * 11 + 3;
 
     const offset = fieldByteOffset(yField);
-    writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], ExpressionResult(writtenY));
+    writeNativeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], writtenY);
 
-    AggregateValue.fieldAt(readValue(root), 1).asLong.should == writtenY;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 1))
+        .asLong.should == writtenY;
 }
 
 
@@ -135,9 +138,9 @@ unittest {
     int third = 9;
     third = third * 2 + 3;
 
-    writeScalar(sliceType.nextOf, elementsArray.element(0), ExpressionResult(first));
-    writeScalar(sliceType.nextOf, elementsArray.element(1), ExpressionResult(second));
-    writeScalar(sliceType.nextOf, elementsArray.element(2), ExpressionResult(third));
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(0), first);
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(1), second);
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(2), third);
 
     auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
     elementsArray.writeSliceHeader(headerBlock, 0);
@@ -145,10 +148,11 @@ unittest {
     auto root = placeAt(headerBlock, sliceType);
 
     auto readBack = readValue(root);
+    auto readBackAggregate = AggregateValue.native(readBack);
     AggregateValue.elementCount(readBack).should == 3;
-    AggregateValue.elementAt(readBack, 0).should == ExpressionResult(first);
-    AggregateValue.elementAt(readBack, 1).should == ExpressionResult(second);
-    AggregateValue.elementAt(readBack, 2).should == ExpressionResult(third);
+    readValue(AggregateValue.elementAt(readBackAggregate, 0)).should == ExpressionResult(first);
+    readValue(AggregateValue.elementAt(readBackAggregate, 1)).should == ExpressionResult(second);
+    readValue(AggregateValue.elementAt(readBackAggregate, 2)).should == ExpressionResult(third);
 }
 
 
@@ -181,28 +185,26 @@ unittest {
     int secondY = 4;
     secondY = secondY * 3 + 4;
 
-    const firstPoint = AggregateValue.reconstructStruct(
-        sliceType.nextOf,
-        [ExpressionResult(firstX), ExpressionResult(firstY)],
-    );
-    const secondPoint = AggregateValue.reconstructStruct(
-        sliceType.nextOf,
-        [ExpressionResult(secondX), ExpressionResult(secondY)],
-    );
+    auto pointFields = structFields(sliceType.nextOf.isTypeStruct);
 
-    writeValue(root.index(0), firstPoint);
-    writeValue(root.index(1), secondPoint);
+    writeValue(root.index(0).field(pointFields[0]), ExpressionResult(firstX));
+    writeValue(root.index(0).field(pointFields[1]), ExpressionResult(firstY));
+    writeValue(root.index(1).field(pointFields[0]), ExpressionResult(secondX));
+    writeValue(root.index(1).field(pointFields[1]), ExpressionResult(secondY));
 
     auto readBack = readValue(root);
     readBack.isNativeAggregate.should == true;
+    auto readBackAggregate = AggregateValue.native(readBack);
     AggregateValue.elementCount(readBack).should == 2;
 
-    auto readFirst = AggregateValue.elementAt(readBack, 0);
-    AggregateValue.fieldAt(readFirst, 0).should == ExpressionResult(firstX);
-    AggregateValue.fieldAt(readFirst, 1).should == ExpressionResult(firstY);
-    auto readSecond = AggregateValue.elementAt(readBack, 1);
-    AggregateValue.fieldAt(readSecond, 0).should == ExpressionResult(secondX);
-    AggregateValue.fieldAt(readSecond, 1).should == ExpressionResult(secondY);
+    auto readFirst = readValue(AggregateValue.elementAt(readBackAggregate, 0));
+    auto readFirstAggregate = AggregateValue.native(readFirst);
+    readValue(AggregateValue.fieldAt(readFirstAggregate, 0)).should == ExpressionResult(firstX);
+    readValue(AggregateValue.fieldAt(readFirstAggregate, 1)).should == ExpressionResult(firstY);
+    auto readSecond = readValue(AggregateValue.elementAt(readBackAggregate, 1));
+    auto readSecondAggregate = AggregateValue.native(readSecond);
+    readValue(AggregateValue.fieldAt(readSecondAggregate, 0)).should == ExpressionResult(secondX);
+    readValue(AggregateValue.fieldAt(readSecondAggregate, 1)).should == ExpressionResult(secondY);
 }
 
 
@@ -220,7 +222,8 @@ unittest {
 
     writeValue(root.field(fields[0]), ExpressionResult(writtenI));
 
-    AggregateValue.fieldAt(readValue(root), 1).asLong.should == cast(short) writtenI;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 1))
+        .asLong.should == cast(short) writtenI;
 }
 
 
@@ -242,8 +245,10 @@ unittest {
 
     writeValue(root.field(fields[1]), ExpressionResult(writtenS));
 
-    AggregateValue.fieldAt(readValue(root), 0).asLong.should == cast(int) cast(ushort) writtenS;
-    AggregateValue.fieldAt(readValue(root), 0).asLong.shouldNotEqual(cast(int) writtenS);
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 0))
+        .asLong.should == cast(int) cast(ushort) writtenS;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 0))
+        .asLong.shouldNotEqual(cast(int) writtenS);
 }
 
 
@@ -401,7 +406,7 @@ unittest {
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
     int writtenPointee = 9;
     writtenPointee = writtenPointee * 3 + 2;
-    writeScalar(pointerType.nextOf, pointee.bytes, ExpressionResult(writtenPointee));
+    writeNativeScalar(pointerType.nextOf, pointee.bytes, writtenPointee);
 
     writeValue(root, ExpressionResult.pointerValue(pointee.address));
 
@@ -487,8 +492,8 @@ unittest {
 
 // Floating-base enums use their underlying floating scalar as the execution
 // carrier. Typed native storage retains the enum type, so reads and writes
-// still preserve the complete guest representation without forcing the
-// integral-only `ExpressionResult.enumValue` tag.
+// still preserve the complete guest representation without forcing it
+// through the integral-only native-scalar codec.
 @("place_value.isPlaceComposable.trueForRealBasedEnum")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
@@ -650,5 +655,5 @@ unittest {
 
     writeValue(root, ExpressionResult.null_);
 
-    AggregateValue.length(readValue(root)).should == 0;
+    AggregateValue.length(AggregateValue.native(readValue(root))).should == 0;
 }
