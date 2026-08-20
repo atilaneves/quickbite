@@ -717,6 +717,23 @@ unittest {
     assert(counter.value == 88);
 }
 
+void addTo(ref int target, int amount) {
+    target = target + amount;
+}
+
+void addThroughPointer(T)(ref T val, int amount) {
+    addTo(*val, amount);
+}
+
+unittest {
+    int value = 5;
+    int* pointer = &value;
+
+    addThroughPointer(pointer, 37);
+
+    assert(value == 42);
+}
+
 interface Codec {
     int transform();
 }

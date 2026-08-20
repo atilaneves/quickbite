@@ -634,3 +634,20 @@
   before bytecode core ever sees a `CondExp` node, so an exposing test needs
   a non-constant condition (a `bool` local, as the existing lvalue-ternary
   fixture already used).
+
+- Compiling a `ref T val` parameter's read (`compileExpression`'s `VarExp`
+  branch, `compiler.d`) dereferences the frame slot's stored address once
+  through `loadThroughPointer` to yield `T`'s value, but returned that value
+  as a bare scalar `Operand` even when `T` itself is a pointer type. A
+  further dereference of that value (`*val` where `val`'s declared type is a
+  pointer, e.g. a generic `ref T` bound to `int*`) needs the operand's
+  `isPointer` flag set, since `placeOrNull`'s `PtrExp` arm and every other
+  pointer-consuming path key off that flag, not off the static D type. The
+  `asPointerValue` helper already existed for exactly this promotion (added
+  for `*p`/`p[i]` where the loaded value is itself a pointer) but was never
+  wired into the ref-parameter read path, so it sat unused by any call site.
+  A helper introduced for one dereference site does not automatically cover
+  a different site that loads the same kind of value through a different
+  mechanism (an address stored in a frame slot vs. a pointer operand already
+  in hand); each place a pointer-typed value is loaded needs to route through
+  it explicitly.

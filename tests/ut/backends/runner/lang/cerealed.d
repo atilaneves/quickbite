@@ -1902,3 +1902,45 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `Decerealiser.value!T` for a pointer type `T` reads through `grain`'s
+// pointer overload: `grain(C, T)(auto ref C cereal, ref T val) if
+// (isPointer!T) { ...; cereal.grain(*val); }` (cerealed's cereal.d). `val`
+// is `ref T` -- DMD auto-dereferences a `ref` parameter transparently, so
+// reading `val` yields the caller's pointer value, and `*val` is a second,
+// separate dereference of that runtime pointer into its pointee, forwarded
+// onward as its own `ref` argument. This is the same fixture shape as
+// `writeThroughPointer` below, minus the cerealed dependency.
+static foreach (backend; Matrix!()) {
+    @("pointerTypedRefParameterDereferenceForwardsByRef." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 5;
+            }
+
+            int extra() {
+                return 37;
+            }
+
+            void write(ref int target, int amount) {
+                target = target + amount;
+            }
+
+            void writeThroughPointer(T)(ref T val, int amount) {
+                write(*val, amount);
+            }
+
+            unittest {
+                int value = seed;
+                int* pointer = &value;
+
+                writeThroughPointer(pointer, extra);
+
+                assert(value == 42);
+            }
+        });
+    }
+}
