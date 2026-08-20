@@ -8006,14 +8006,13 @@ unsupportedExpression:
                     callerFrame,
                 );
                 if (!bound) {
-                    if (
-                        index < evaluatedArguments.length &&
-                        evaluatedArguments[index].valuePlace.address !is null
-                    )
-                        bindSyntheticReferenceSlot(
-                            parameter,
-                            evaluatedArguments[index].valuePlace,
-                        );
+                    const syntheticSource = synthesizedReferenceSource(
+                        index,
+                        evaluatedArguments,
+                        argumentPlaces,
+                    );
+                    if (syntheticSource.address !is null)
+                        bindSyntheticReferenceSlot(parameter, syntheticSource);
                     else
                         bindSyntheticReferenceSlot(parameter, arguments[index]);
                 }
@@ -8021,14 +8020,13 @@ unsupportedExpression:
             }
 
             if (parameterIsReference) {
-                if (
-                    index < evaluatedArguments.length &&
-                    evaluatedArguments[index].valuePlace.address !is null
-                )
-                    bindSyntheticReferenceSlot(
-                        parameter,
-                        evaluatedArguments[index].valuePlace,
-                    );
+                const syntheticSource = synthesizedReferenceSource(
+                    index,
+                    evaluatedArguments,
+                    argumentPlaces,
+                );
+                if (syntheticSource.address !is null)
+                    bindSyntheticReferenceSlot(parameter, syntheticSource);
                 else
                     bindSyntheticReferenceSlot(parameter, arguments[index]);
                 continue;
@@ -8039,6 +8037,32 @@ unsupportedExpression:
             else
                 setLocal(parameter, arguments[index]);
         }
+    }
+
+    // Prefer a caller-supplied typed place over the boxed carrier: the
+    // constructed reference destination (`evaluatedArguments`) first, then
+    // the argument's own construction place (`argumentPlaces`, as used by
+    // the `new`-expression family), falling back to a null-address `Place`
+    // when neither is available so the caller reads the carrier instead.
+    private const(imported!"quickbite.backends.interpreter.place".Place)
+        synthesizedReferenceSource(
+            size_t index,
+            in EvaluatedReferenceArgument[] evaluatedArguments,
+            in imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
+        ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (
+            index < evaluatedArguments.length &&
+            evaluatedArguments[index].valuePlace.address !is null
+        )
+            return evaluatedArguments[index].valuePlace;
+        if (
+            index < argumentPlaces.length &&
+            argumentPlaces[index].address !is null
+        )
+            return argumentPlaces[index];
+        return Place.init;
     }
 
     // A synthesized call has no source lvalue to borrow. Give its reference
@@ -14024,10 +14048,14 @@ unsupportedExpression:
                     ));
                     runExpression(argument, argumentDestination);
                     argumentPlaces[index] = argumentDestination.place;
-                    arguments.values[index] = readStoredValue(argumentDestination.place);
                 }
 
             if (isThrowableConstructor(new_.member)) {
+                // The Throwable constructor path still reads carrier
+                // elements; box them on demand from the places until it
+                // flips.
+                foreach (index; 0 .. argumentPlaces.length)
+                    arguments.values[index] = readStoredValue(argumentPlaces[index]);
                 nativeClassOwners[body] = applyThrowableConstructor(
                     objectValue,
                     arguments.values,
@@ -14104,7 +14132,6 @@ unsupportedExpression:
                         ));
                         runExpression(argument, argumentDestination);
                         argumentPlaces[index] = argumentDestination.place;
-                        arguments.values[index] = readStoredValue(argumentDestination.place);
                     }
 
                 Walker child;
@@ -14301,7 +14328,6 @@ unsupportedExpression:
                     ));
                     runExpression(argument, argumentDestination);
                     argumentPlaces[index] = argumentDestination.place;
-                    arguments[index] = readStoredValue(argumentDestination.place);
                 }
 
             Walker child;
@@ -14465,7 +14491,6 @@ unsupportedExpression:
                 ));
                 runExpression(argument, argumentDestination);
                 argumentPlaces[index] = argumentDestination.place;
-                arguments[index] = readStoredValue(argumentDestination.place);
             }
 
         auto object = AggregateValue.allocateClass(allocationType);
@@ -14475,8 +14500,13 @@ unsupportedExpression:
         if (new_.member is null)
             return objectValue;
 
-        if (isThrowableConstructor(new_.member))
+        if (isThrowableConstructor(new_.member)) {
+            // The Throwable constructor path still reads carrier elements;
+            // box them on demand from the places until it flips.
+            foreach (index; 0 .. argumentPlaces.length)
+                arguments[index] = readStoredValue(argumentPlaces[index]);
             return applyThrowableConstructor(objectValue, arguments);
+        }
 
         // A non-root-module constructor (e.g. a private phobos class) may
         // still be a raw parse tree; resolve its body before walking it.
