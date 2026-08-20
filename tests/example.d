@@ -1106,3 +1106,129 @@ unittest {
     assert(fibonacci(6) == 8);
     assert(fibonacci(20) == 6765);
 }
+
+float scaleFloat(float lower, float upper, float factor) {
+    return (upper - lower) * factor;
+}
+
+double scaleDouble(double lower, double upper, double factor) {
+    return (upper - lower) * factor;
+}
+
+unittest {
+    float factor = 3.0f;
+    double doubleFactor = 3.0;
+
+    assert(scaleFloat(1.0f, 3.0f, factor) == 6.0f);
+    assert(scaleDouble(1.0, 3.0, doubleFactor) == 6.0);
+}
+
+unittest {
+    ulong value = 0;
+    assert(~value > 0);
+    assert(~value == 0xffffffffffffffffUL);
+}
+
+unittest {
+    int[3][2] a;
+    a[0] = [bucket(1), bucket(2), bucket(3)];
+    a[1] = [bucket(4), bucket(5), bucket(6)];
+
+    int[3][2] b;
+    b[0] = [bucket(1), bucket(2), bucket(3)];
+    b[1] = [bucket(4), bucket(5), bucket(6)];
+
+    assert(a == b);
+    assert(!(a != b));
+
+    b[1][2] = bucket(99);
+    assert(a != b);
+    assert(!(a == b));
+}
+
+unittest {
+    int first = bucket(2);
+    int second = bucket(first + 1);
+    int[] a = [first, second];
+    int[] b = [first + 10, second + 20];
+
+    int[] product = [0, 0];
+    product[] = a[] * b[];
+
+    int[] difference = [0, 0];
+    difference[] = b[] - a[];
+
+    int[] compoundArray = [first, second];
+    compoundArray[] += b[];
+
+    assert(product[0] == first * (first + 10));
+    assert(product[1] == second * (second + 20));
+    assert(difference[0] == 10);
+    assert(difference[1] == 20);
+    assert(compoundArray[0] == first + (first + 10));
+    assert(compoundArray[1] == second + (second + 20));
+}
+
+struct ArrayKey {
+    int[] xs;
+}
+
+unittest {
+    int[ArrayKey] counts;
+    counts[ArrayKey([1, 2])] = 1;
+
+    assert((ArrayKey([1, 2]) in counts) !is null);
+    assert(counts[ArrayKey([1, 2])] == 1);
+}
+
+struct LabelledField {
+    string name;
+    int index;
+}
+
+unittest {
+    auto field = LabelledField("foo", 5);
+    auto map = [field: 105];
+    assert(map[field] == 105);
+}
+
+dchar pick(dchar value) {
+    return value;
+}
+
+unittest {
+    char[] ascii;
+    ascii ~= pick('A');
+    assert(ascii.length == 1);
+    assert(ascii[0] == 'A');
+
+    char[] twoByte;
+    twoByte ~= pick('α');
+    assert(twoByte.length == 2);
+    assert(cast(ubyte) twoByte[0] == 0xCE);
+    assert(cast(ubyte) twoByte[1] == 0xB1);
+}
+
+void callThroughNested(alias Func)() {
+    void inner() {
+        Func();
+    }
+    inner;
+}
+
+void checkCaptured() {
+    uint captured = 42u;
+    callThroughNested!({
+        if (captured != 42u)
+            throw new Exception("bad value");
+    });
+}
+
+unittest {
+    checkCaptured;
+}
+
+unittest {
+    uint function(uint) fn = &factorial;
+    assert(fn(5) == 120);
+}
