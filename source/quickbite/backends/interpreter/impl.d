@@ -6388,6 +6388,7 @@ unsupportedExpression:
                 argumentExpressions,
                 evaluatedArguments,
                 constructionDestination,
+                argumentPlaces,
             );
 
         auto function_ = calleeSlot.functionPointerId in functionPointers;
@@ -6774,6 +6775,7 @@ unsupportedExpression:
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         ConstructionDestination* constructionDestination = null,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         auto runtime = callee.functionPointerId in _executionState.delegates;
         if (runtime is null)
@@ -6785,11 +6787,14 @@ unsupportedExpression:
                 if (
                     index < argumentExpressions.length &&
                     parameter.type.toBasetype.isTypeClass !is null
-                )
+                ) {
                     rootedArguments[index] = rootedNativeClassValue(
                         argumentExpressions[index],
                         rootedArguments[index],
                     );
+                    if (index < argumentPlaces.length)
+                        writeStoredValue(argumentPlaces[index], rootedArguments[index]);
+                }
 
         if (runtime.hasReceiver)
             return runMemberFunction(
@@ -6801,6 +6806,7 @@ unsupportedExpression:
                 evaluatedArguments,
                 null,
                 constructionDestination,
+                argumentPlaces,
             );
 
         return runFunction(
@@ -6811,6 +6817,7 @@ unsupportedExpression:
             evaluatedArguments,
             runtime.capturedAddresses,
             constructionDestination,
+            argumentPlaces,
         );
     }
 
