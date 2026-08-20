@@ -5530,25 +5530,89 @@ unsupportedExpression:
     ) {
         import dmd.tokens: EXP;
 
+        const same = identityOperands(identity);
+        if (identity.op == EXP.notIdentity)
+            return ExpressionResult(!same);
+
+        return ExpressionResult(same);
+    }
+
+    // `is`/`!is` never rewrites for operator overloading the way `==` does
+    // (`opover.d` has no `opOverloadIdentity`), so every static operand
+    // shape -- scalar, pointer, associative-array handle, class reference,
+    // struct, array, delegate, `typeid`/`.classinfo` -- can reach here
+    // directly, unlike `equalOperands`'s narrower set. Dispatch the two
+    // shapes with an unambiguous native-layout read straight to that read,
+    // on the STATIC type rather than a runtime tag off an
+    // already-evaluated carrier value: a scalar pair (`hasScalarEqualityOperands`,
+    // shared with `runEqualExpression`'s own scalar fast path) loads its
+    // host value directly, and a pointer or associative-array handle
+    // (`pointerLikeIdentityType`) is its own storage slot's stored address
+    // (`Place.deref`). Everything else keeps evaluating through the
+    // carrier, in `carrierIdentity`.
+    private bool identityOperands(imported!"dmd.expression".IdentityExp identity) {
+        if (hasScalarEqualityOperands(identity))
+            return scalarEquality(identity);
+
+        if (
+            pointerLikeIdentityType(identity.e1.type) &&
+            pointerLikeIdentityType(identity.e2.type)
+        )
+            return pointerOperandPlace(identity.e1).deref.address ==
+                pointerOperandPlace(identity.e2).deref.address;
+
+        return carrierIdentity(identity);
+    }
+
+    // A pointer or associative-array handle is never `TypeName`-tagged --
+    // that carrier representation exists only for a `typeid`/`.classinfo`
+    // result, which is always class-typed -- so its identity is always its
+    // own storage slot's stored address. A class reference is excluded even
+    // though `Place.deref` reads it the same way, because a `typeid`/
+    // `.classinfo` result IS class-typed and has no native-layout place at
+    // all. A function pointer (`Tpointer` to `Tfunction`) is excluded too:
+    // it has no native binding address in this interpreter yet
+    // (`expressions.d`'s
+    // `nonCapturingLambdaReturningLambdaIsAFunctionPointer` divergence).
+    private bool pointerLikeIdentityType(imported!"dmd.mtype".Type type) {
+        import dmd.astenums: TY;
+
+        // `auto`: `nextOf` is a mutable-only `dmd.mtype.Type` method, so
+        // `base` cannot be `const`.
+        auto base = type.toBasetype;
+        if (base.ty == TY.Taarray)
+            return true;
+        if (base.ty != TY.Tpointer)
+            return false;
+
+        return base.nextOf.toBasetype.ty != TY.Tfunction;
+    }
+
+    // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
+    // `is` expression (`IdentityExp`), since memberwise equality and
+    // bitwise identity coincide for such structs. Route that case through
+    // `equalValues` (the same field-recursive, numeric-scalar-coercing
+    // comparison a direct `==` uses) instead of a raw `ExpressionResult` compare: a
+    // struct field written by anything other than an enum-typed literal
+    // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
+    // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpressionValue`
+    // tags a literal `Enum.Member` reference with, so a raw compare of
+    // two otherwise-identical structs falsely disagrees whenever one
+    // side's enum field took a different path to the same value. A native
+    // class aggregate and a pointer-valued class reference both normalize to
+    // their shared object-body address. Array-pointer snapshots can
+    // contain different element copies while still naming the same
+    // allocation and offset; those two fields are their identity. A
+    // function pointer or delegate compares its raw carrier representation
+    // (the same `FunctionPointer` id `functionPointerValue` caches per
+    // `FuncDeclaration`, or mints per closure literal): unlike `==`'s
+    // `equalDelegateValues`, `is` needs no `capturedAddresses` fallback,
+    // since two references to the very same closure activation always share
+    // one id.
+    private bool carrierIdentity(imported!"dmd.expression".IdentityExp identity) {
         const left = runExpressionValue(identity.e1);
         const right = runExpressionValue(identity.e2);
-        // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
-        // `is` expression (`IdentityExp`), since memberwise equality and
-        // bitwise identity coincide for such structs. Route that case through
-        // `equalValues` (the same field-recursive, numeric-scalar-coercing
-        // comparison a direct `==` uses) instead of a raw `ExpressionResult` compare: a
-        // struct field written by anything other than an enum-typed literal
-        // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
-        // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpressionValue`
-        // tags a literal `Enum.Member` reference with, so a raw compare of
-        // two otherwise-identical structs falsely disagrees whenever one
-        // side's enum field took a different path to the same value. Other
-        // `is` comparisons (pointers, class references, floats) keep their
-        // existing raw-value identity semantics, except that a native class
-        // aggregate and a pointer-valued class reference both normalize to
-        // their shared object-body address. Array-pointer snapshots can
-        // contain different element copies while still naming the same
-        // allocation and offset; those two fields are their identity.
+
         const aggregateValues =
             AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
             AggregateValue.isArray(left) && AggregateValue.isArray(right);
@@ -5557,7 +5621,7 @@ unsupportedExpression:
                 right == ExpressionResult.null_ ||
             right.isPointer && right.pointerAddress is null &&
                 left == ExpressionResult.null_;
-        const same =
+        return
             left.isTypeName || right.isTypeName
             ? left == right
             : identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
@@ -5568,10 +5632,6 @@ unsupportedExpression:
             : nullPointerIdentity
             ? true
             : left == right;
-        if (identity.op == EXP.notIdentity)
-            return ExpressionResult(!same);
-
-        return ExpressionResult(same);
     }
 
     private void* classIdentityAddress(in ExpressionResult value) {
@@ -8080,17 +8140,53 @@ unsupportedExpression:
     private ExpressionResult runEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
 
-        if (hasScalarEqualityOperands(equal)) {
-            const same = scalarEquality(equal);
-            return ExpressionResult(equal.op == EXP.notEqual ? !same : same);
-        }
-
-        const left = runExpressionValue(equal.e1);
-        const right = runExpressionValue(equal.e2);
-        const same = equalValues(left, right);
+        const same = hasScalarEqualityOperands(equal)
+            ? scalarEquality(equal)
+            : equalOperands(equal);
         if (equal.op == EXP.notEqual)
             return ExpressionResult(!same);
         return ExpressionResult(same);
+    }
+
+    // DMD has already reconciled `==`'s non-scalar operand shapes by the
+    // time this walks the AST (`dcast.d`'s `typeCombine`), and its own
+    // operator-overload rewriting (`opover.d`'s `opOverloadEqual`) means a
+    // pointer or a non-null class pair never reaches a real `EqualExp` node
+    // at all: a pointer `==` is rewritten to `is`, and a class `==` (other
+    // than against a `typeof(null)`-typed operand, which `opOverloadEqual`
+    // deliberately leaves alone) to an `opEquals` `CallExp`. So only an
+    // array, a delegate, or a still-untyped numeric pair (imaginary/complex,
+    // or that one `class == typeof(null)` survivor) can land here. Dispatch
+    // the first two on their STATIC type straight to the mechanism that
+    // answers them, rather than reading a runtime tag off an
+    // already-evaluated carrier value.
+    private bool equalOperands(imported!"dmd.expression".EqualExp equal) {
+        import dmd.astenums: TY;
+
+        const ty = equal.e1.type.toBasetype.ty;
+
+        if (ty == TY.Tsarray || ty == TY.Tarray) {
+            const left = runExpressionValue(equal.e1);
+            const right = runExpressionValue(equal.e2);
+            return equalArrayValues(left, right);
+        }
+
+        if (ty == TY.Tdelegate) {
+            // A delegate's identity depends on the runtime closure registry
+            // (`_executionState.delegates`, keyed by a per-evaluation id),
+            // not a native-layout slot read; see `equalDelegateValues`.
+            const left = runExpressionValue(equal.e1);
+            const right = runExpressionValue(equal.e2);
+            return equalDelegateValues(left, right);
+        }
+
+        // Imaginary/complex operands, and the obscure `class == typeof(
+        // null)` pair `opOverloadEqual` leaves untyped: `equalValues`'s own
+        // numeric-widening comparison (and, for the latter, its raw
+        // fallback) still answers these directly off the carrier.
+        const left = runExpressionValue(equal.e1);
+        const right = runExpressionValue(equal.e2);
+        return equalValues(left, right);
     }
 
     private bool equalValues(in ExpressionResult left, in ExpressionResult right) {
@@ -15036,12 +15132,19 @@ destinationFallback:
         }
     }
 
+    // `EqualExp` and `IdentityExp` both stamp their operands with a
+    // reconciled comparison type (`dcast.d`'s `typeCombine`), so a scalar
+    // pair's static type -- read off the shared `BinExp` base -- is what
+    // decides both whether a fast typed compare applies and, in
+    // `scalarEquality`, which host type to load it at. `is` never rewrites
+    // for operator overloading the way `==` does, so this same check and
+    // load serve `runIdentityExpression` too.
     private bool hasScalarEqualityOperands(
-        imported!"dmd.expression".EqualExp equal,
+        imported!"dmd.expression".BinExp binary,
     ) {
         import dmd.astenums: TY;
 
-        switch (equal.e1.type.toBasetype.ty) with (TY) {
+        switch (binary.e1.type.toBasetype.ty) with (TY) {
             case Tbool:
             case Tint8:
             case Tuns8:
@@ -15063,31 +15166,31 @@ destinationFallback:
         }
     }
 
-    private bool scalarEquality(imported!"dmd.expression".EqualExp equal) {
+    private bool scalarEquality(imported!"dmd.expression".BinExp binary) {
         import dmd.astenums: TY;
 
         // DMD stamps the operands with the common comparison type. Construct
         // each one in its own typed place so this comparison does not use the
         // migration carrier to recover its scalar representation.
-        switch (equal.e1.type.toBasetype.ty) with (TY) {
-            case Tbool: return equalScalars!bool(equal);
-            case Tint8: return equalScalars!byte(equal);
-            case Tuns8, Tchar: return equalScalars!ubyte(equal);
-            case Tint16: return equalScalars!short(equal);
-            case Tuns16, Twchar: return equalScalars!ushort(equal);
-            case Tint32: return equalScalars!int(equal);
-            case Tuns32, Tdchar: return equalScalars!uint(equal);
-            case Tint64: return equalScalars!long(equal);
-            case Tuns64: return equalScalars!ulong(equal);
-            case Tfloat32: return equalScalars!float(equal);
-            case Tfloat64: return equalScalars!double(equal);
-            case Tfloat80: return equalScalars!real(equal);
+        switch (binary.e1.type.toBasetype.ty) with (TY) {
+            case Tbool: return equalScalars!bool(binary);
+            case Tint8: return equalScalars!byte(binary);
+            case Tuns8, Tchar: return equalScalars!ubyte(binary);
+            case Tint16: return equalScalars!short(binary);
+            case Tuns16, Twchar: return equalScalars!ushort(binary);
+            case Tint32: return equalScalars!int(binary);
+            case Tuns32, Tdchar: return equalScalars!uint(binary);
+            case Tint64: return equalScalars!long(binary);
+            case Tuns64: return equalScalars!ulong(binary);
+            case Tfloat32: return equalScalars!float(binary);
+            case Tfloat64: return equalScalars!double(binary);
+            case Tfloat80: return equalScalars!real(binary);
             default: assert(0, "equality expression has a non-scalar operand");
         }
     }
 
-    private bool equalScalars(T)(imported!"dmd.expression".EqualExp equal) {
-        return scalarOperand!T(equal.e1) == scalarOperand!T(equal.e2);
+    private bool equalScalars(T)(imported!"dmd.expression".BinExp binary) {
+        return scalarOperand!T(binary.e1) == scalarOperand!T(binary.e2);
     }
 
     private bool compareScalars(T)(imported!"dmd.expression".CmpExp comparison) {
