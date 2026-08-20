@@ -8436,6 +8436,8 @@ private struct Compiler {
 
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.divFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.divDouble, lhs, rhs, ScalarType.double_);
         if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_)

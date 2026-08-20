@@ -1324,6 +1324,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case divFloat:
+                const ubyte[float.sizeof] quotient = floatBytes(
+                    floatValue!float(stack, base + instruction.b) /
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = quotient;
+                ++ip;
+                break;
+
             case divDouble:
                 const ubyte[double.sizeof] quotient = floatBytes(
                     floatValue!double(stack, base + instruction.b) /

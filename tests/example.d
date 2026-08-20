@@ -1123,6 +1123,22 @@ unittest {
     assert(scaleDouble(1.0, 3.0, doubleFactor) == 6.0);
 }
 
+float divideFloat(float numerator, float denominator) {
+    return numerator / denominator;
+}
+
+double divideDouble(double numerator, double denominator) {
+    return numerator / denominator;
+}
+
+unittest {
+    float floatDenominator = 3.0f;
+    double doubleDenominator = 3.0;
+
+    assert(divideFloat(6.0f, floatDenominator) == 2.0f);
+    assert(divideDouble(6.0, doubleDenominator) == 2.0);
+}
+
 unittest {
     ulong value = 0;
     assert(~value > 0);

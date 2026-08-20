@@ -791,6 +791,30 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("floating.divisionUsesRuntimeOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float divideFloat(float numerator, float denominator) {
+                return numerator / denominator;
+            }
+
+            double divideDouble(double numerator, double denominator) {
+                return numerator / denominator;
+            }
+
+            unittest {
+                float floatDenominator = 3.0f;
+                double doubleDenominator = 3.0;
+
+                assert(divideFloat(6.0f, floatDenominator) == 2.0f);
+                assert(divideDouble(6.0, doubleDenominator) == 2.0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

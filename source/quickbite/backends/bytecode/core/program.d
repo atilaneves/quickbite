@@ -538,6 +538,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subDouble, // a: destination frame offset, b: lhs, c: rhs
     mulFloat, // a: destination frame offset, b: lhs, c: rhs
     mulDouble, // a: destination frame offset, b: lhs, c: rhs
+    divFloat, // a: destination frame offset, b: lhs, c: rhs
     divDouble, // a: destination frame offset, b: lhs, c: rhs
     negateFloat, // a: destination frame offset, b: source
     negateDouble, // a: destination frame offset, b: source
