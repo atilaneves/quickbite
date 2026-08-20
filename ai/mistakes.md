@@ -626,7 +626,11 @@
   (`compileDynamicArrayInto`'s destination-directed `CondExp` arm: branch,
   then recurse into the same destination offset for each arm), structs
   never got the analogue. Fixed by adding the same destination-directed
-  `CondExp` arm to `compileStructDeclaration`, plus a recursive
-  `compileStructValueInto` helper so each arm (an lvalue, a struct literal,
-  `S.init`, or a nested ternary) block-copies into the declared slot
-  directly instead of going through `Place`.
+  `CondExp` arm to `compileStructDeclaration`, plus a `compileStructValueInto`
+  helper that block-copies one arm's value (an lvalue/call, a struct literal,
+  or `S.init`) into the declared slot directly instead of going through
+  `Place`. A fixture with a literal `true`/`false` condition does not
+  exercise this: DMD's own constant folding replaces `true ? a : b` with `a`
+  before bytecode core ever sees a `CondExp` node, so an exposing test needs
+  a non-constant condition (a `bool` local, as the existing lvalue-ternary
+  fixture already used).

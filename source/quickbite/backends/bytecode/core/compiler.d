@@ -5861,8 +5861,9 @@ private struct Compiler {
     // arm above): block-copy `source`'s value into `offset` directly, rather
     // than resolving it through Place first, since an arm need not be a Place
     // on its own (a string-literal arm in the dynamic-array analogue is the
-    // same shape). Recurses on a nested `CondExp` so `a ? b : c ? d : e`
-    // works.
+    // same shape). `structValueOffsetOrNull` already unwraps a CommaExp
+    // source itself, so only the struct-literal and default-init shapes need
+    // their own arm here.
     private void compileStructValueInto(
         in ushort offset, Type type, Expression source,
     ) {
@@ -5870,25 +5871,8 @@ private struct Compiler {
 
         source = initializerExpression(source);
 
-        if (auto comma = source.isCommaExp) {
-            compileExpression(comma.e1);
-            compileStructValueInto(offset, type, comma.e2);
-            return;
-        }
-
         if (auto literal = source.isStructLiteralExp) {
             compileStructLiteralInto(offset, literal);
-            return;
-        }
-
-        if (auto conditional = source.isCondExp) {
-            const condition = compileBoolCondition(conditional.econd);
-            const falseJump = emitJumpIfFalse(condition);
-            compileStructValueInto(offset, type, conditional.e1);
-            const endJump = emitJump;
-            patchJump(falseJump);
-            compileStructValueInto(offset, type, conditional.e2);
-            patchJump(endJump);
             return;
         }
 

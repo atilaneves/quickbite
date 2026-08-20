@@ -4677,3 +4677,30 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// One arm of the ternary may be `S.init` rather than an lvalue (the exact
+// shape cerealed's `grain` uses: `KeyType!T k = keys.length ? keys[i] :
+// KeyType!T.init;`), exercised on both branches. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!()) {
+    @("structTernaryInit.lvalueAndInit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int i;
+            }
+
+            unittest {
+                Pair a = Pair(1);
+                bool cond = true;
+                Pair whenTrue = cond ? a : Pair.init;
+                cond = false;
+                Pair whenFalse = cond ? a : Pair.init;
+                assert(whenTrue.i == 1);
+                assert(whenFalse.i == 0);
+            }
+        });
+    }
+}
