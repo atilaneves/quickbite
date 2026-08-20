@@ -6312,7 +6312,13 @@ unsupportedExpression:
             return runLazyArgument(variable, constructionDestination);
 
         const callee = runExpressionValue(call.e1);
-        if (callee.isNativeDelegate)
+        if (!callee.isNativeDelegate && !callee.isFunctionPointer)
+            throw new Exception("Unsupported eval call.");
+
+        // Both callable shapes share one slot representation; dispatch off
+        // it instead of the two separate carrier-tag checks it replaces.
+        const calleeSlot = delegateSlotValue(callee);
+        if (calleeSlot.isNative)
             return runNativeDelegateCall(
                 callee,
                 call,
@@ -6320,10 +6326,7 @@ unsupportedExpression:
                 argumentExpressions,
             );
 
-        if (
-            callee.isFunctionPointer &&
-            callee.functionPointerId in _executionState.delegates
-        )
+        if (calleeSlot.functionPointerId in _executionState.delegates)
             return runDelegateCall(
                 callee,
                 arguments,
@@ -6332,23 +6335,19 @@ unsupportedExpression:
                 constructionDestination,
             );
 
-        if (callee.isFunctionPointer) {
-            auto function_ = callee.functionPointerId in functionPointers;
-            if (function_ is null)
-                throw new Exception("Unsupported eval call.");
-            return runFunction(
-                *function_,
-                arguments,
-                argumentExpressions,
-                false,
-                evaluatedArguments,
-                null,
-                constructionDestination,
-                argumentPlaces,
-            );
-        }
-
-        throw new Exception("Unsupported eval call.");
+        auto function_ = calleeSlot.functionPointerId in functionPointers;
+        if (function_ is null)
+            throw new Exception("Unsupported eval call.");
+        return runFunction(
+            *function_,
+            arguments,
+            argumentExpressions,
+            false,
+            evaluatedArguments,
+            null,
+            constructionDestination,
+            argumentPlaces,
+        );
     }
 
     // DMD lowers a user-constructor receiver to `((S __t = <placeholder>;) ,
@@ -8381,15 +8380,27 @@ unsupportedExpression:
     // sides (nothing captured) falls back to the `contextPointer`
     // comparison unchanged. A `functionPointerId` with no registered
     // runtime (a plain function pointer, never registered in `delegates`)
-    // falls back to the raw comparison unchanged.
+    // falls back to comparing the two ids directly. A delegate backed by
+    // native code has no `functionPointerId` at all -- its `{context,
+    // funcptr}` pair from `nativeDelegateSlots` already IS the runtime
+    // identity D's builtin equality compares, with no registry indirection
+    // to resolve.
     private bool equalDelegateValues(in ExpressionResult left, in ExpressionResult right) {
-        if (!left.isFunctionPointer || !right.isFunctionPointer)
+        if (!left.isFunctionPointer && !left.isNativeDelegate ||
+            !right.isFunctionPointer && !right.isNativeDelegate)
             return left == right;
 
-        auto leftRuntime = left.functionPointerId in _executionState.delegates;
-        auto rightRuntime = right.functionPointerId in _executionState.delegates;
+        const leftSlot = delegateSlotValue(left);
+        const rightSlot = delegateSlotValue(right);
+        if (leftSlot.isNative || rightSlot.isNative)
+            return leftSlot.isNative == rightSlot.isNative &&
+                leftSlot.context is rightSlot.context &&
+                leftSlot.funcptr is rightSlot.funcptr;
+
+        auto leftRuntime = leftSlot.functionPointerId in _executionState.delegates;
+        auto rightRuntime = rightSlot.functionPointerId in _executionState.delegates;
         if (leftRuntime is null || rightRuntime is null)
-            return left == right;
+            return leftSlot.functionPointerId == rightSlot.functionPointerId;
 
         if (leftRuntime.function_ !is rightRuntime.function_)
             return false;
@@ -9036,7 +9047,8 @@ unsupportedExpression:
         in ExpressionResult receiver,
         scope const(char)[] name,
     ) {
-        auto runtime = receiver.functionPointerId in _executionState.delegates;
+        const slot = delegateSlotValue(receiver);
+        auto runtime = slot.functionPointerId in _executionState.delegates;
         if (runtime is null)
             throw new Exception("Unsupported interpreter field read.");
 
@@ -14779,6 +14791,24 @@ unsupportedExpression:
             }
             return true;
         }
+
+        // A delegate literal and a bare `&function` mint interpreter-only
+        // callable identity with no native ABI address of their own.
+        // Construct straight into the destination's `nativeDelegateSlots`/
+        // `nativeFunctionPointerSlots` entry via `writeStoredValue` instead
+        // of falling through to the general carrier-returning walk.
+        if (auto delegate_ = rvalue.isDelegateExp) {
+            writeStoredValue(place, runDelegateExpression(delegate_));
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto symbol = rvalue.isSymOffExp)
+            if (auto function_ = symbol.var.isFuncDeclaration) {
+                writeStoredValue(place, functionPointerValue(function_));
+                destination.markConstructed;
+                return true;
+            }
 
         if (auto literal = rvalue.isStructLiteralExp) {
             // The literal's own fields must BE the destination's fields: a
