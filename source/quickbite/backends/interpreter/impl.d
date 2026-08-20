@@ -2092,16 +2092,19 @@ private struct Walker {
     private bool storeSliceBinding(VarDeclaration variable, in ExpressionResult value) {
         import quickbite.backends.interpreter.native_array: NativeArray;
 
-        if (!AggregateValue.isArray(value))
+        if (!value.isNativeAggregate)
+            return false;
+        auto aggregate = AggregateValue.native(value);
+        if (!AggregateValue.isArray(aggregate))
             return false;
 
-        const nativeAddress = AggregateValue.nativeArrayAddress(value);
-        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
+        const nativeAddress = AggregateValue.nativeArrayAddress(aggregate);
+        if (nativeAddress is null && AggregateValue.elementCount(aggregate) != 0)
             return false;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
+            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(aggregate));
 
         array.writeSliceHeader(bindingAddress(variable));
         return true;
@@ -2223,11 +2226,11 @@ private struct Walker {
         auto metadata = ExpressionResult.nativeAggregateValue(metadataOwner);
         if (nativeObjectPointer !is null)
             hydrateNativeExceptionMetadata(
-                metadata,
+                metadataOwner,
                 class_,
                 cast(void*) nativeObjectPointer,
             );
-        if (AggregateValue.hasClassFieldNamed(metadata, "msg")) {
+        if (AggregateValue.hasClassFieldNamed(metadataOwner, "msg")) {
             import quickbite.backends.interpreter.layout: classFields, fieldName;
 
             imported!"dmd.mtype".Type messageType;
@@ -2246,7 +2249,7 @@ private struct Walker {
         }
 
         if (nativeObjectPointer is null) {
-            const address = AggregateValue.nativeClassBodyAddress(metadata);
+            const address = AggregateValue.nativeClassBodyAddress(metadataOwner);
             nativeClassTypes[address] = class_.type;
             nativeClassOwners[address] = metadata.nativeAggregate;
             return metadata.nativeAggregate;
@@ -2259,7 +2262,7 @@ private struct Walker {
     }
 
     private void hydrateNativeExceptionMetadata(
-        ref ExpressionResult metadata,
+        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate metadata,
         imported!"dmd.dclass".ClassDeclaration class_,
         void* nativeObjectPointer,
     ) {
@@ -4660,13 +4663,13 @@ unsupportedExpression:
             // compose its element address from the returned typed slice.
             if (auto call = array.isCallExp) {
                 const arrayValue = constructedExpressionValue(call);
-                if (AggregateValue.isArray(arrayValue))
-                    return ExpressionResult.pointerValue(
-                        AggregateValue.elementAddress(
-                            arrayValue,
-                            cast(size_t) offset,
-                        ),
-                    );
+                if (arrayValue.isNativeAggregate) {
+                    auto aggregate = AggregateValue.native(arrayValue);
+                    if (AggregateValue.isArray(aggregate))
+                        return ExpressionResult.pointerValue(
+                            AggregateValue.elementAddress(aggregate, cast(size_t) offset),
+                        );
+                }
             }
 
             if (auto index = array.isIndexExp) {
@@ -7293,10 +7296,11 @@ unsupportedExpression:
         if (resultType is null)
             throw new Exception("Struct-array `.dup` needs a dynamic-array result.");
 
-        const length = AggregateValue.length(AggregateValue.native(source));
+        auto sourceAggregate = AggregateValue.native(source);
+        const length = AggregateValue.length(sourceAggregate);
         auto destination = NativeArray.allocate(resultType.next, length);
         const byteLength = length * typeByteSize(resultType.next);
-        auto sourceAddress = cast(void*) AggregateValue.nativeArrayAddress(source);
+        auto sourceAddress = cast(void*) AggregateValue.nativeArrayAddress(sourceAggregate);
         copyBytes(destination.block.address, sourceAddress, byteLength);
         copyStoredMetadataRange(
             sourceAddress,
@@ -7348,7 +7352,7 @@ unsupportedExpression:
         auto aggregate = AggregateValue.native(array);
         auto elementType = aggregate.type.toBasetype.nextOf;
         if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
-            if (auto delegate_ = AggregateValue.elementAddress(array, index) in nativeDelegateSlots)
+            if (auto delegate_ = AggregateValue.elementAddress(aggregate, index) in nativeDelegateSlots)
                 return delegateSlotResult(*delegate_);
         return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
     }
@@ -8816,11 +8820,11 @@ unsupportedExpression:
                             const elementValue = runIndexExpression(index, elementIndex);
                             const current = readBindingValue(variable);
                             if (current.isNativeAggregate) {
-                                    auto elementType =
-                                        AggregateValue.native(current).type.toBasetype.nextOf;
+                                    auto currentAggregate = AggregateValue.native(current);
+                                    auto elementType = currentAggregate.type.toBasetype.nextOf;
                                     if (elementType !is null) {
                                         auto fieldPlace = Place(
-                                            AggregateValue.elementAddress(current, elementIndex),
+                                            AggregateValue.elementAddress(currentAggregate, elementIndex),
                                             elementType,
                                         ).field(field);
                                         if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
@@ -8891,12 +8895,11 @@ unsupportedExpression:
         // `TypeAArray.dotExp` (typesem.d) always lowers `aa.length` to a
         // call to `object._d_aaLen!(K, V)(aa)` at semantic time, so an
         // associative-array receiver never reaches this property lookup.
-        if (
-            receiver.isNativeAggregate &&
-            AggregateValue.isArray(receiver) &&
-            declarationName(dot.var) == "length"
-        )
-            return ExpressionResult(AggregateValue.length(AggregateValue.native(receiver)));
+        if (receiver.isNativeAggregate && declarationName(dot.var) == "length") {
+            auto receiverAggregate = AggregateValue.native(receiver);
+            if (AggregateValue.isArray(receiverAggregate))
+                return ExpressionResult(AggregateValue.length(receiverAggregate));
+        }
 
         if (dot.var.isVarDeclaration !is null) {
             const target = receiver.isNativeAggregate && dot.e1.type.toBasetype.isTypeClass !is null
@@ -9635,22 +9638,21 @@ unsupportedExpression:
             // The expression carrier remains an array because those are the
             // bytes' actual guest meaning; update its descriptor rather than
             // reconstructing a field-by-field struct snapshot.
-            if (
-                receiver.isNativeAggregate &&
-                AggregateValue.isArray(receiver) &&
-                declarationName(dot.var) == "length"
-            ) {
-                writeLocation(
-                    dot.e1,
-                    ExpressionResult.nativeAggregateValue(
-                        AggregateValue.borrowArrayOwner(
-                            dot.e1.type,
-                            cast(size_t) value.asLong,
-                            AggregateValue.nativeArrayAddress(receiver),
+            if (receiver.isNativeAggregate && declarationName(dot.var) == "length") {
+                auto receiverAggregate = AggregateValue.native(receiver);
+                if (AggregateValue.isArray(receiverAggregate)) {
+                    writeLocation(
+                        dot.e1,
+                        ExpressionResult.nativeAggregateValue(
+                            AggregateValue.borrowArrayOwner(
+                                dot.e1.type,
+                                cast(size_t) value.asLong,
+                                AggregateValue.nativeArrayAddress(receiverAggregate),
+                            ),
                         ),
-                    ),
-                );
-                return;
+                    );
+                    return;
+                }
             }
 
             // Whatever remains here has no addressable place this activation
@@ -10007,10 +10009,11 @@ unsupportedExpression:
         const source = current == ExpressionResult.null_
             ? reconstructStoredArray(type, noElements)
             : current;
-        const oldLength = AggregateValue.length(AggregateValue.native(source));
-        const previousData = AggregateValue.nativeArrayAddress(source);
+        auto sourceAggregate = AggregateValue.native(source);
+        const oldLength = AggregateValue.length(sourceAggregate);
+        const previousData = AggregateValue.nativeArrayAddress(sourceAggregate);
         const resized = ExpressionResult.nativeAggregateValue(
-            AggregateValue.withArrayLength(AggregateValue.native(source), newLength),
+            AggregateValue.withArrayLength(sourceAggregate, newLength),
         );
         auto elementType = arrayElementType(type);
         relocatePriorAppendedElementSlots(
@@ -10631,11 +10634,13 @@ unsupportedExpression:
                 auto siblingCurrent = readStoredValue(
                     AggregateValue.fieldAt(AggregateValue.native(updated), siblingIndex),
                 );
-                if (!AggregateValue.isArray(siblingCurrent))
+                if (!siblingCurrent.isNativeAggregate)
+                    continue;
+                auto siblingAggregate = AggregateValue.native(siblingCurrent);
+                if (!AggregateValue.isArray(siblingAggregate))
                     continue;
 
                 auto siblingArrayCell = cell.arrayField(siblingIndex);
-                auto siblingAggregate = AggregateValue.native(siblingCurrent);
                 foreach (elementIndex; 0 .. AggregateValue.length(siblingAggregate))
                     siblingAggregate = AggregateValue.withArrayElement(siblingAggregate, elementIndex,
                         readScalarLeaf(Place(
@@ -11051,12 +11056,14 @@ unsupportedExpression:
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeScalarLeaf;
 
-        if (!AggregateValue.isArray(arrayValue))
+        if (!arrayValue.isNativeAggregate)
+            return;
+        auto aggregate = AggregateValue.native(arrayValue);
+        if (!AggregateValue.isArray(aggregate))
             return;
 
-        auto aggregate = AggregateValue.native(arrayValue);
         foreach (index; 0 .. cell.length) {
-            if (index >= AggregateValue.elementCount(arrayValue))
+            if (index >= AggregateValue.elementCount(aggregate))
                 continue;
 
             if (cell.elementType.isTypeSArray) {
@@ -11499,7 +11506,7 @@ unsupportedExpression:
         // already records for the pointer form of the same write.
         if (lower == 0)
             recordCopiedClassIdentity(
-                cast(void*) AggregateValue.nativeArrayAddress(current),
+                cast(void*) AggregateValue.nativeArrayAddress(currentAggregate),
                 value,
             );
 
@@ -11886,7 +11893,7 @@ unsupportedExpression:
         // already records for the pointer form of the same write.
         if (lower == 0)
             recordCopiedClassIdentity(
-                cast(void*) AggregateValue.nativeArrayAddress(current),
+                cast(void*) AggregateValue.nativeArrayAddress(currentAggregate),
                 value,
             );
 
@@ -12325,17 +12332,20 @@ unsupportedExpression:
             // single evaluation as the carrier read, routed through
             // `readStoredValue` instead.
             const value = constructedExpressionValue(cast_.e1);
-            if (AggregateValue.isArray(value) &&
-                AggregateValue.nativeArrayAddress(value) !is null)
-                return ExpressionResult.nativeAggregateValue(
-                    AggregateValue.borrowArrayOwner(
-                        cast_.to,
-                        AggregateValue.length(AggregateValue.native(value)) * typeByteSize(
-                            cast_.e1.type.toBasetype.nextOf,
+            if (value.isNativeAggregate) {
+                auto aggregate = AggregateValue.native(value);
+                if (AggregateValue.isArray(aggregate) &&
+                    AggregateValue.nativeArrayAddress(aggregate) !is null)
+                    return ExpressionResult.nativeAggregateValue(
+                        AggregateValue.borrowArrayOwner(
+                            cast_.to,
+                            AggregateValue.length(aggregate) * typeByteSize(
+                                cast_.e1.type.toBasetype.nextOf,
+                            ),
+                            AggregateValue.nativeArrayAddress(aggregate),
                         ),
-                        AggregateValue.nativeArrayAddress(value),
-                    ),
-                );
+                    );
+            }
             return value;
         }
 
@@ -12442,11 +12452,12 @@ unsupportedExpression:
         // evaluation as the carrier read, routed through `readStoredValue`
         // instead.
         const source = constructedExpressionValue(cast_.e1);
+        auto sourceAggregate = AggregateValue.native(source);
         result = ExpressionResult.nativeAggregateValue(
             AggregateValue.borrowArrayOwner(
                 cast_.to,
-                AggregateValue.length(AggregateValue.native(source)),
-                AggregateValue.nativeArrayAddress(source),
+                AggregateValue.length(sourceAggregate),
+                AggregateValue.nativeArrayAddress(sourceAggregate),
             ),
         );
         return true;
@@ -12627,7 +12638,7 @@ unsupportedExpression:
                 // `arrayPointer` index route below.
                 auto aggregate = AggregateValue.native(value);
                 if (aggregate.type.toBasetype.isTypeDArray !is null) {
-                    const address = AggregateValue.nativeArrayAddress(value);
+                    const address = AggregateValue.nativeArrayAddress(aggregate);
                     return address is null
                         ? ExpressionResult.null_
                         : ExpressionResult.pointerValue(cast(void*) address);
@@ -13648,7 +13659,8 @@ unsupportedExpression:
             return loadNativePointerElement(index.e1.type, source, arrayIndex);
         }
 
-        const sourceLength = AggregateValue.length(AggregateValue.native(source));
+        auto sourceAggregate = AggregateValue.native(source);
+        const sourceLength = AggregateValue.length(sourceAggregate);
         if (index.lengthVar !is null)
             setLocal(index.lengthVar, sourceLength);
 
@@ -13660,7 +13672,7 @@ unsupportedExpression:
             (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                 arrayIndex;
 
-        if (AggregateValue.isArray(source) && arrayIndex >= sourceLength) {
+        if (AggregateValue.isArray(sourceAggregate) && arrayIndex >= sourceLength) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
 
             throwRangeError(indexOutOfBoundsMessage(
@@ -16161,12 +16173,14 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.expression_res
     if (value.isPointer)
         return true;
 
-    if (AggregateValue.isArray(value)) {
-        // DMD's `toBasetype` is mutable.
+    if (value.isNativeAggregate) {
         auto aggregate = AggregateValue.native(value);
-        if (aggregate.type.toBasetype.ty == TY.Tarray)
-            return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
-        return AggregateValue.length(aggregate) != 0;
+        if (AggregateValue.isArray(aggregate)) {
+            // DMD's `toBasetype` is mutable.
+            if (aggregate.type.toBasetype.ty == TY.Tarray)
+                return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
+            return AggregateValue.length(aggregate) != 0;
+        }
     }
 
     if (value == ExpressionResult(false))

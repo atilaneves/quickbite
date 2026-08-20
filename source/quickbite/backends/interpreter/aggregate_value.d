@@ -309,13 +309,15 @@ public struct AggregateValue {
             baseTypeOf(native(value).type).isTypeStruct !is null;
     }
 
+    public static bool isArray(NativeAggregate aggregate) @safe {
+        auto type = baseTypeOf(aggregate.type);
+        return type.isTypeSArray !is null || type.isTypeDArray !is null;
+    }
+
     public static bool isArray(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     ) @safe {
-        if (!value.isNativeAggregate)
-            return false;
-        auto type = baseTypeOf(native(value).type);
-        return type.isTypeSArray !is null || type.isTypeDArray !is null;
+        return value.isNativeAggregate && isArray(native(value));
     }
 
     // Aggregate reads stay behind this boundary and use native-layout handles
@@ -416,16 +418,19 @@ public struct AggregateValue {
     // dynamic-array header whose data pointer Place.index follows. This is
     // the one address-of route for aggregate elements; it does not create a
     // detached element snapshot.
+    public static void* elementAddress(NativeAggregate aggregate, in size_t index) @safe {
+        import quickbite.backends.interpreter.place: Place;
+
+        return Place(aggregate.address, aggregate.type).index(index).address;
+    }
+
     public static void* elementAddress(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
         in size_t index,
     ) @safe {
-        import quickbite.backends.interpreter.place: Place;
-
         if (!value.isNativeAggregate)
             throw new Exception("AggregateValue.elementAddress needs a native aggregate.");
-        auto aggregate = native(value);
-        return Place(aggregate.address, aggregate.type).index(index).address;
+        return elementAddress(native(value), index);
     }
 
     public static void* nativeClassBodyAddress(NativeAggregate aggregate) @safe {
@@ -444,19 +449,21 @@ public struct AggregateValue {
         return nativeClassBodyAddress(native(value));
     }
 
-    public static bool hasClassFieldNamed(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-        in string name,
-    ) @safe {
+    public static bool hasClassFieldNamed(NativeAggregate aggregate, in string name) @safe {
         import quickbite.backends.interpreter.layout: classFields, fieldName;
 
-        if (!value.isNativeAggregate)
-            return false;
-        auto classType = baseTypeOf(native(value).type).isTypeClass;
+        auto classType = baseTypeOf(aggregate.type).isTypeClass;
         foreach (field; classFields(classType.sym))
             if (fieldName(field) == name)
                 return true;
         return false;
+    }
+
+    public static bool hasClassFieldNamed(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        in string name,
+    ) @safe {
+        return value.isNativeAggregate && hasClassFieldNamed(native(value), name);
     }
 
     public static imported!"quickbite.backends.interpreter.place".Place classFieldNamed(
@@ -582,19 +589,20 @@ public struct AggregateValue {
         return aggregate;
     }
 
-    public static const(void)* nativeArrayAddress(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    ) @safe {
+    public static const(void)* nativeArrayAddress(NativeAggregate aggregate) @safe {
         import quickbite.backends.interpreter.native_array: NativeArray, readSliceHeaderBytes;
 
-        if (!value.isNativeAggregate)
-            return null;
-        auto aggregate = native(value);
         if (baseTypeOf(aggregate.type).isTypeDArray is null)
             return null;
         return readSliceHeaderBytes(
             aggregate.storage.bytes[0 .. NativeArray.sliceHeaderByteLength],
         ).ptr;
+    }
+
+    public static const(void)* nativeArrayAddress(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    ) @safe {
+        return value.isNativeAggregate ? nativeArrayAddress(native(value)) : null;
     }
 }
 
