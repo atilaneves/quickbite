@@ -6697,7 +6697,7 @@ unsupportedExpression:
         scope(exit)
             _evaluatedReferenceArgumentIndices = previous;
 
-        return runExpressionValue(argument);
+        return constructedExpressionValue(argument);
     }
 
     // Run an interpreted delegate that native code called back into through the
@@ -6939,7 +6939,7 @@ unsupportedExpression:
 
         foreach (value; stringForeachApplyElements(
             function_.ident.toString,
-            runExpressionValue((*call.arguments)[0]),
+            constructedExpressionValue((*call.arguments)[0]),
         )) {
             auto destination = ConstructionDestination(Place(resultBlock.address, resultType));
             runFunction(body, [value], [null], false, null, null, &destination);
@@ -7190,10 +7190,20 @@ unsupportedExpression:
         if (target is null)
             throw new Exception("Unsupported eval call.");
 
-        const left = runExpressionValue((*call.arguments)[1]);
-        const right = runExpressionValue((*call.arguments)[2]);
-        auto leftAggregate = AggregateValue.native(left);
-        auto rightAggregate = AggregateValue.native(right);
+        import quickbite.backends.interpreter.place: Place;
+
+        auto leftTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress((*call.arguments)[1]),
+            (*call.arguments)[1].type,
+        ));
+        runExpression((*call.arguments)[1], leftTemporary);
+        auto rightTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress((*call.arguments)[2]),
+            (*call.arguments)[2].type,
+        ));
+        runExpression((*call.arguments)[2], rightTemporary);
+        auto leftAggregate = borrowedAggregate(leftTemporary.place);
+        auto rightAggregate = borrowedAggregate(rightTemporary.place);
         if (AggregateValue.length(leftAggregate) != AggregateValue.length(rightAggregate))
             throw new Exception("Unsupported eval call.");
 
@@ -7335,7 +7345,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.native_block: NativeBlock;
 
         requireArgumentCount(call, 1);
-        const source = runExpressionValue((*call.arguments)[0]);
+        const source = constructedExpressionValue((*call.arguments)[0]);
         if (source == ExpressionResult.null_)
             return source;
 
