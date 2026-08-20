@@ -3347,7 +3347,11 @@ bitXorExpression:
 commaExpression:
         if (auto comma = expression.isCommaExp) {
             executeForEffect(comma.e1);
-            return runExpressionValue(comma.e2);
+            if (comma.type.toBasetype.ty == TY.Tvoid) {
+                executeForEffect(comma.e2);
+                return ExpressionResult.void_;
+            }
+            return constructedExpressionValue(comma.e2);
         }
 
 tupleExpression:
@@ -3527,7 +3531,7 @@ variableExpression:
 
             if (isManifestVariable(variable)) {
                 if (auto initializer = variable._init.isExpInitializer)
-                    return runExpressionValue(initializer.exp);
+                    return constructedExpressionValue(initializer.exp);
                 return defaultValueResult(variable.type);
             }
 
@@ -3876,7 +3880,7 @@ unsupportedExpression:
             // temporary, exactly as a by-value call result bound by
             // reference does.
             if (isSymbolicClassInfoProjection(dot))
-                return addressOfTemporaryValue(dot, runExpressionValue(dot));
+                return addressOfTemporaryValue(dot, constructedExpressionValue(dot));
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
@@ -5598,9 +5602,11 @@ unsupportedExpression:
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
-        return conditionTruthy(conditional.econd) ?
-            runExpressionValue(conditional.e1) :
-            runExpressionValue(conditional.e2);
+        if (conditionTruthy(conditional.econd))
+            executeForEffect(conditional.e1);
+        else
+            executeForEffect(conditional.e2);
+        return ExpressionResult.void_;
     }
 
     private ExpressionResult runIdentityExpression(
@@ -12035,11 +12041,17 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isDynamicArrayType;
         import std.conv: text;
+        import dmd.astenums: TY;
 
         auto arrayLength = assign.e1.isArrayLengthExp;
         if (arrayLength is null) {
-            if (assign.lowering !is null)
-                return runExpressionValue(assign.lowering);
+            if (assign.lowering !is null) {
+                if (assign.lowering.type.toBasetype.ty == TY.Tvoid) {
+                    executeForEffect(assign.lowering);
+                    return ExpressionResult.void_;
+                }
+                return constructedExpressionValue(assign.lowering);
+            }
 
             throw new Exception(text("Unsupported eval expression: ", assign.op));
         }
