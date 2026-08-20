@@ -31,8 +31,7 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout:
-        staticArrayLength, enumMemberQualifiedName, typeByteSize;
+    import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
@@ -41,17 +40,18 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     if (isNullType(type))
         return ExpressionResult.null_;
 
-    // An enum-typed place must come back tagged (`ExpressionResult.enumValue`), not as
-    // the plain integral `ExpressionResult` a typed scalar read returns for it
-    // (the read dispatches on the resolved base type, so an enum's own tagging is
-    // invisible to that codec) -- checked before the `isNativeScalarType`
-    // arm below, which would otherwise catch every enum type first since an
-    // enum's base type is itself a native scalar. `readScalarLeaf` reads
-    // the underlying bits through that same codec; `layout.
-    // enumMemberQualifiedName` is DMD's own answer for which member (if
-    // any) owns those bits, qualified per `value.md`'s Display format spec
-    // rule 5 ("E.b"); a value matching no member renders that same spec's
-    // non-member form (`cast(E)N`) instead.
+    // An enum-typed place reads back as its plain base-type scalar, exactly
+    // like an ordinary native-scalar place (`ai/plans/value.md` decision 11:
+    // a scalar rvalue is a typed host local, not a separately-tagged
+    // value) -- there is no dedicated enum `ExpressionResult` shape to
+    // build. This still has to run before the `isNativeScalarType` arm
+    // below, but only to route a floating-base enum (`enum E : real`,
+    // `enum E : idouble`, ...) through this module's own real/imaginary
+    // codec; a non-floating enum falls straight to `readScalarLeaf`, the
+    // same call the `isNativeScalarType` arm below would make for it
+    // anyway. Any qualified member name a display surface needs is derived
+    // separately, on demand, from the type and these same bits (`layout.
+    // enumMemberQualifiedName`) -- never carried in the value itself.
     auto enumType = type.isTypeEnum;
     if (enumType !is null) {
         if (isFloatingBaseEnum(type)) {
@@ -70,12 +70,7 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
             return readScalarLeaf(Place(place.address, baseType));
         }
 
-        const bits = readScalarLeaf(place).asLong;
-        const qualifiedName = enumMemberQualifiedName(enumType, bits);
-        return ExpressionResult.enumValue(
-            qualifiedName.length != 0 ? qualifiedName : nonMemberEnumName(enumType, bits),
-            bits,
-        );
+        return readScalarLeaf(place);
     }
 
     if (isNativeScalarType(type))
@@ -156,16 +151,16 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
 
 // The scalar leaf `readValue`'s own native-scalar arm shares with
-// `impl.d`'s struct/array cell field reconstruction: reads the bytes at
-// `place`'s own static type through the typed `Place.loadNativeScalar!T`,
-// boxing the result only once that typed read has completed. Deliberately
-// narrower than `readValue`: an enum-typed place reads back here as its
-// plain base-type bits, not the tagged `ExpressionResult.enumValue`
-// `readValue`'s own enum arm produces -- exactly what a struct or array
-// cell's native scalar field storage needs, since that storage has no
-// enum-tag slot of its own. Only a native scalar type
-// (`native_scalar.isNativeScalarType`) is legal here; every call site
-// already gates on that before calling.
+// `impl.d`'s struct/array cell field reconstruction, and with `readValue`'s
+// own (non-floating) enum arm: reads the bytes at `place`'s own static type
+// through the typed `Place.loadNativeScalar!T`, boxing the result only once
+// that typed read has completed. An enum-typed place reads back here as its
+// plain base-type bits -- exactly what a struct or array cell's native
+// scalar field storage needs too, since that storage has no enum-tag slot
+// of its own. Only a native scalar type (`native_scalar.isNativeScalarType`)
+// is legal here; every call site already gates on that before calling, an
+// enum resolving to its base type for that purpose the same way
+// `isNativeScalarType` itself does.
 public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalarLeaf(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
@@ -878,43 +873,4 @@ private imported!"dmd.mtype".Type baseTypeOf(
     import dmd.typesem: mutableOf;
 
     return mutableOf(type.toBasetype);
-}
-
-
-// Reinterpreting a raw address as a byte range is not `@safe`; this is the
-// `structType`'s own declared name (`StructDeclaration.ident`), verbatim --
-// the same derivation `quickbite.frontend.dmd.values`'s struct default-value
-// builder already uses to name a struct `ExpressionResult` built straight from a
-// `TypeStruct`, with no existing `ExpressionResult` to borrow a type name from.
-// The non-member enum rendering `value.md`'s Display format spec rule 5
-// gives for a `value` that matches no member of `enumType`: `cast(E)N`.
-// `readValue`'s enum arm falls back to this once `layout.
-// enumMemberQualifiedName` answers empty.
-private string nonMemberEnumName(
-    imported!"dmd.mtype".TypeEnum enumType,
-    in long value,
-) @safe {
-    import std.conv: text;
-
-    return text("cast(", enumTypeName(enumType), ")", value);
-}
-
-
-// `enumType`'s own bare name (`EnumDeclaration.ident`), verbatim -- the
-// same derivation `structTypeName` above uses for a struct's own name,
-// needed here only to build the `cast(E)N` non-member form (the member
-// case gets its own "E" prefix from `layout.enumMemberQualifiedName`).
-private string enumTypeName(
-    imported!"dmd.mtype".TypeEnum enumType,
-) @safe {
-    return enumTypeNameImpl(enumType);
-}
-
-// `EnumDeclaration.ident` is a plain field read, but `EnumDeclaration` (an
-// `extern (C++)` class) is not itself `@safe`-annotated; this is the
-// `@trusted` boundary for reading it, mirroring `structTypeNameImpl` above.
-private string enumTypeNameImpl(
-    imported!"dmd.mtype".TypeEnum enumType,
-) @trusted {
-    return enumType.sym.ident is null ? "" : enumType.sym.ident.toString.idup;
 }

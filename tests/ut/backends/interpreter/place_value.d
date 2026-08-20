@@ -18,10 +18,12 @@ import dmd.typesem: sarrayOf, pointerTo;
 private:
 
 
-// An enum-typed place must read back as an `ExpressionResult.enumValue`
-// qualified with the member's own name (`Colour.green`), not the plain integral
-// `ExpressionResult` that `native_scalar.readNativeScalar` alone would give.
-@("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
+// An enum-typed place reads back as its plain base-type scalar
+// (`ai/plans/value.md` decision 11: a scalar rvalue is a typed host local,
+// not a separately-tagged value), even when the stored bits match a
+// declared member (`Colour.green`) -- the same `ExpressionResult`
+// `native_scalar.readNativeScalar` alone would give.
+@("place_value.readValue.enumMemberValueReadsBackAsItsUnderlyingScalar")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
@@ -29,14 +31,13 @@ unittest {
 
     writeNativeScalar(type, block.bytes, 1);
 
-    readValue(root).should == ExpressionResult.enumValue("Colour.green", 1);
+    readValue(root).should == ExpressionResult(1);
 }
 
 
-// A value with no owning member reads back in the non-member `cast(E)N`
-// form `value.md`'s Display format spec rule 5 gives, rather than a
-// qualified member name that doesn't exist.
-@("place_value.readValue.nonMemberEnumValueReadsBackInCastForm")
+// A value with no owning member reads back exactly the same way -- there is
+// no member-matching special case to diverge from.
+@("place_value.readValue.nonMemberEnumValueReadsBackAsItsUnderlyingScalar")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
@@ -44,21 +45,21 @@ unittest {
 
     writeNativeScalar(type, block.bytes, 5);
 
-    readValue(root).should == ExpressionResult.enumValue("cast(Colour)5", 5);
+    readValue(root).should == ExpressionResult(5);
 }
 
 
 // `writeValue` already stores an enum's underlying bits correctly (its
 // `isNativeScalarType` arm goes through `Place.storeNativeScalar` ->
 // `native_scalar.writeNativeScalar`); this pins the full round trip
-// through the now enum-aware `readValue`.
+// through `readValue`'s own (untagged) enum arm.
 @("place_value.writeValue.readValue.enumValueRoundTrips")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    auto written = ExpressionResult.enumValue("Colour.blue", 2);
+    auto written = ExpressionResult(2);
 
     writeValue(root, written);
 
@@ -491,8 +492,8 @@ unittest {
 
 // Floating-base enums use their underlying floating scalar as the execution
 // carrier. Typed native storage retains the enum type, so reads and writes
-// still preserve the complete guest representation without forcing the
-// integral-only `ExpressionResult.enumValue` tag.
+// still preserve the complete guest representation without forcing it
+// through the integral-only native-scalar codec.
 @("place_value.isPlaceComposable.trueForRealBasedEnum")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");

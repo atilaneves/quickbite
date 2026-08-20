@@ -3036,11 +3036,6 @@ private struct Walker {
 
 integerExpression:
         if (auto integer = expression.isIntegerExp) {
-            if (integer.type !is null && integer.type.ty == TY.Tenum)
-                return ExpressionResult.enumValue(
-                    expressionChars(integer),
-                    cast(long) integer.getInteger,
-                );
             import quickbite.backends.interpreter.place: Place;
             import quickbite.backends.interpreter.runtime_values: integerValue;
 
@@ -5625,15 +5620,10 @@ unsupportedExpression:
     // `is` expression (`IdentityExp`), since memberwise equality and
     // bitwise identity coincide for such structs. Route that case through
     // `equalValues` (the same field-recursive, numeric-scalar-coercing
-    // comparison a direct `==` uses) instead of a raw `ExpressionResult` compare: a
-    // struct field written by anything other than an enum-typed literal
-    // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
-    // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpressionValue`
-    // tags a literal `Enum.Member` reference with, so a raw compare of
-    // two otherwise-identical structs falsely disagrees whenever one
-    // side's enum field took a different path to the same value. A native
-    // class aggregate and a pointer-valued class reference both normalize to
-    // their shared object-body address. Array-pointer snapshots can
+    // comparison a direct `==` uses) instead of a raw `ExpressionResult`
+    // compare: a native class aggregate and a pointer-valued class
+    // reference both normalize to their shared object-body address.
+    // Array-pointer snapshots can
     // contain different element copies while still naming the same
     // allocation and offset; those two fields are their identity. A
     // function pointer or delegate compares its raw carrier representation
@@ -8453,15 +8443,11 @@ unsupportedExpression:
         );
     }
 
-    // A struct field written by anything other than an enum-typed literal
-    // `IntegerExp` (default-init, arithmetic, a cast/pointer write-back, ...)
-    // keeps its plain scalar `ExpressionResult` kind instead of `runExpressionValue`'s
-    // `ExpressionResult.enumValue` tagging, so a raw `ExpressionResult == ExpressionResult` compare (the
-    // `left == right` fallback above) never considers it equal to a
-    // same-valued `EnumValue`-tagged field, even though real D's memberwise
-    // struct equality does. Recurse field-by-field through `equalValues`
-    // (mirroring `equalArrayValues`) so each field gets the same
-    // numeric-scalar coercion a top-level `==` already applies.
+    // Recurse field-by-field through `equalValues` (mirroring
+    // `equalArrayValues`) instead of a raw `ExpressionResult ==
+    // ExpressionResult` compare (the `left == right` fallback above), so
+    // each field gets the same numeric-scalar coercion a top-level `==`
+    // already applies.
     private bool equalStructValues(in ExpressionResult left, in ExpressionResult right) {
         const count = AggregateValue.fieldCount(left);
         if (count != AggregateValue.fieldCount(right))
@@ -16773,15 +16759,6 @@ private void clearBytes(void* address, in size_t byteLength) pure nothrow @trust
     (cast(ubyte*) address)[0 .. byteLength] = 0;
 }
 
-
-// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
-// string owned by the AST node, which we copy with `idup` before returning,
-// so no unsafe pointer escapes.
-private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
-    import std.string: fromStringz;
-
-    return expression.toChars.fromStringz.idup;
-}
 
 // @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
 // string owned by the AST node, which we copy with `idup` before returning,
