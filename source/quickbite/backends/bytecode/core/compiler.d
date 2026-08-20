@@ -8278,6 +8278,8 @@ private struct Compiler {
             return emitBinary(Op.addFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.addDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.real_ && rhs.type == ScalarType.real_)
+            return emitBinary(Op.addReal, lhs, rhs, ScalarType.real_);
 
         // 8-byte integer addition (e.g. `size_t`): same operand and result
         // type on both sides, kept at the full width.
@@ -8423,6 +8425,8 @@ private struct Compiler {
             return emitBinary(Op.mulFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.mulDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.real_ && rhs.type == ScalarType.real_)
+            return emitBinary(Op.mulReal, lhs, rhs, ScalarType.real_);
 
         if (isEightByteInteger(lhs.type) &&
             isEightByteInteger(rhs.type))
@@ -8449,8 +8453,12 @@ private struct Compiler {
 
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.divFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.divDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.real_ && rhs.type == ScalarType.real_)
+            return emitBinary(Op.divReal, lhs, rhs, ScalarType.real_);
         if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_)
             return emitBinary(
                 Op.divUnsignedInt8, lhs, rhs, ScalarType.ulong_,
@@ -8475,6 +8483,12 @@ private struct Compiler {
     private Operand compileModuloExpression(BinExp modulo) {
         const lhs = compileExpression(modulo.e1);
         const rhs = compileExpression(modulo.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.modFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.modDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.real_ && rhs.type == ScalarType.real_)
+            return emitBinary(Op.modReal, lhs, rhs, ScalarType.real_);
         if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_)
             return emitBinary(
                 Op.modUnsignedInt8, lhs, rhs, ScalarType.ulong_,
@@ -8919,6 +8933,8 @@ private struct Compiler {
             return emitBinary(Op.subFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.real_ && rhs.type == ScalarType.real_)
+            return emitBinary(Op.subReal, lhs, rhs, ScalarType.real_);
 
         // 8-byte integer subtraction (e.g. `size_t`): same operand and result
         // type on both sides, kept at the full width.
