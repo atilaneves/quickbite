@@ -815,6 +815,72 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("floating.moduloUsesRuntimeOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float moduloFloat(float numerator, float denominator) {
+                return numerator % denominator;
+            }
+
+            double moduloDouble(double numerator, double denominator) {
+                return numerator % denominator;
+            }
+
+            unittest {
+                float floatDenominator = 4.0f;
+                double doubleDenominator = 4.0;
+
+                assert(moduloFloat(6.0f, floatDenominator) == 2.0f);
+                assert(moduloDouble(-6.0, doubleDenominator) == -2.0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("floating.realArithmeticUsesRuntimeOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            real addReal(real lhs, real rhs) {
+                return lhs + rhs;
+            }
+
+            real subtractReal(real lhs, real rhs) {
+                return lhs - rhs;
+            }
+
+            real multiplyReal(real lhs, real rhs) {
+                return lhs * rhs;
+            }
+
+            real divideReal(real lhs, real rhs) {
+                return lhs / rhs;
+            }
+
+            real moduloReal(real lhs, real rhs) {
+                return lhs % rhs;
+            }
+
+            unittest {
+                real lhs = 6.0L;
+                real rhs = 4.0L;
+
+                assert(addReal(lhs, rhs) == 10.0L);
+                assert(subtractReal(lhs, rhs) == 2.0L);
+                assert(multiplyReal(lhs, rhs) == 24.0L);
+                assert(divideReal(lhs, rhs) == 1.5L);
+                assert(moduloReal(lhs, rhs) == 2.0L);
+
+                real negativeLhs = -6.0L;
+                assert(moduloReal(negativeLhs, rhs) == -2.0L);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
