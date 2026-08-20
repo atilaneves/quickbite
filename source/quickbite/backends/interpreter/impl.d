@@ -12204,21 +12204,21 @@ unsupportedExpression:
         if (
             (baseType.isTypeSArray !is null ||
                 baseType.isTypeDArray !is null) &&
-            hasDirectWriteProjectionPlace(slice.e1) &&
             hasArrayProjectionPlace(slice.e1)
         )
             return runAddressableSliceExpression(slice, lower);
 
-        const source = runExpressionValue(slice.e1);
-        if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, ExpressionResult(
-                AggregateValue.length(AggregateValue.native(source)),
-            ));
-        lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-
-        if (source.isPointer) {
+        // Pointer slicing forms a native view; it does not read the
+        // pointed-to elements. Reads happen only when that view is later
+        // indexed, just as they do for compiled D. Detect a pointer source
+        // from the static operand type, not a runtime carrier tag:
+        // `pointerOperandPlace` reads the operand's real address (null
+        // included) the same way every other pointer-typed operand in this
+        // file does, rather than depending on a value carrier read tagging
+        // the result as `Pointer` -- a tag druntime's array-growth hooks'
+        // `(auto p = cast(void*) arr.ptr; p[0 .. n])` idiom does not
+        // reliably get once that read is routed through construction.
+        if (baseType.isTypePointer !is null) {
             if (slice.upr is null) {
                 import std.conv: text;
                 throw new Exception(
@@ -12226,6 +12226,9 @@ unsupportedExpression:
                 );
             }
 
+            lower = slice.lwr is null
+                ? 0
+                : scalarOperand!size_t(slice.lwr);
             const upper = scalarOperand!size_t(slice.upr);
             if (lower > upper) {
                 import std.conv: text;
@@ -12239,13 +12242,11 @@ unsupportedExpression:
                 ));
             }
 
-            // Pointer slicing forms a native view; it does not read the
-            // pointed-to elements. Reads happen only when that view is later
-            // indexed, just as they do for compiled D.
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            const address = cast(const(ubyte)*) source.pointerAddress + lower *
-                typeByteSize(slice.e1.type.toBasetype.nextOf);
+            const pointerAddress = pointerOperandPlace(slice.e1).deref.address;
+            const address = cast(const(ubyte)*) pointerAddress + lower *
+                typeByteSize(baseType.nextOf);
             return ExpressionResult.nativeAggregateValue(
                 AggregateValue.borrowArrayOwner(
                     slice.type,
@@ -12254,6 +12255,22 @@ unsupportedExpression:
                 ),
             );
         }
+
+        // What remains is an array-typed source with no place this
+        // activation can compose (a struct member function's implicit
+        // `this.field`, a call result, a literal, ...). A call result or a
+        // literal is a genuine rvalue with no backing to preserve; nothing
+        // appends through it in place. `this.field` does have live backing,
+        // but composing a place for an implicit `this` receiver is not yet
+        // supported by the projection-place machinery above.
+        const source = runExpressionValue(slice.e1);
+        if (slice.lengthVar !is null)
+            setLocal(slice.lengthVar, ExpressionResult(
+                AggregateValue.length(AggregateValue.native(source)),
+            ));
+        lower = slice.lwr is null
+            ? 0
+            : scalarOperand!size_t(slice.lwr);
 
         const upper = slice.upr is null
             ? AggregateValue.length(AggregateValue.native(source))
@@ -12266,13 +12283,11 @@ unsupportedExpression:
             throwRangeError("Range violation");
 
         auto nativeAddress = AggregateValue.nativeArrayAddress(source);
-        if (auto var = slice.e1.isVarExp)
-            if (auto variable = var.var.isVarDeclaration)
-                if (
-                    variable.type.toBasetype.isTypeSArray !is null &&
-                    hasBindingPlace(variable)
-                )
-                    nativeAddress = cast(const(ubyte)*) bindingAddress(variable);
+        // A class receiver's field has no projection place above (unlike a
+        // struct receiver, already routed through `runAddressableSliceExpression`):
+        // dereferencing the class reference also performs dynamic-object
+        // metadata handling the projection-place machinery does not
+        // replace, so it stays hand-composed here.
         if (auto dot = slice.e1.isDotVarExp)
             if (auto receiver = dot.e1.isVarExp)
                 if (auto variable = receiver.var.isVarDeclaration)
@@ -12285,15 +12300,6 @@ unsupportedExpression:
                             ? cast(const(ubyte)*) place.sliceDataPointer
                             : cast(const(ubyte)*) place.address;
                     }
-        if (nativeAddress is null)
-            if (auto var = slice.e1.isVarExp)
-                if (auto variable = var.var.isVarDeclaration) {
-                    if (
-                        variable.type.toBasetype.isTypeSArray !is null &&
-                        hasBindingPlace(variable)
-                    )
-                        nativeAddress = cast(const(ubyte)*) bindingAddress(variable);
-                }
         if (nativeAddress !is null) {
             import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -12352,8 +12358,15 @@ unsupportedExpression:
         import quickbite.backends.interpreter.layout: typeByteSize;
 
         materializeProjectionRoot(slice.e1);
-        // Mutable because a slice exposes a writable view of this place.
-        auto source = directWriteProjectionPlace(slice.e1);
+        // Mutable because a slice exposes a writable view of this place. A
+        // pointer-dereferencing receiver (druntime's `(*p).field[..]`
+        // growth-hook idiom) has no direct-write projection place -- that
+        // path declines pointer dereferences for its own null/provenance
+        // diagnostics, irrelevant to a plain read here -- so fall back to
+        // the general lvalue composer, which does resolve it.
+        auto source = hasDirectWriteProjectionPlace(slice.e1)
+            ? directWriteProjectionPlace(slice.e1)
+            : projectionPlace(slice.e1);
         const sourceLength = source.arrayLength;
         if (slice.lengthVar !is null)
             setLocal(slice.lengthVar, ExpressionResult(sourceLength));
