@@ -5210,6 +5210,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.layout: fieldByteOffset;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
@@ -5217,10 +5218,12 @@ unsupportedExpression:
             auto fieldType = cell.fieldDeclaration(index).type;
 
             if (isNativeScalarType(fieldType)) {
-                Place(cell.field(index).ptr, fieldType)
-                    .storeScalar(readStoredValue(
+                writeScalarLeaf(
+                    Place(cell.field(index).ptr, fieldType),
+                    readStoredValue(
                         AggregateValue.fieldAt(AggregateValue.native(structValue), index),
-                    ));
+                    ),
+                );
                 continue;
             }
 
@@ -7606,6 +7609,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readScalarLeaf;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
@@ -7616,7 +7620,7 @@ unsupportedExpression:
             if (isNativeScalarType(fieldType)) {
                 value = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
                     AggregateValue.native(value), index,
-                    Place(cell.field(index).ptr, fieldType).loadScalar,
+                    readScalarLeaf(Place(cell.field(index).ptr, fieldType)),
                 ));
                 continue;
             }
@@ -7648,10 +7652,10 @@ unsupportedExpression:
                             elementCell,
                         );
                     } else
-                        elementValue = Place(
+                        elementValue = readScalarLeaf(Place(
                             arrayCell.element(elementIndex).ptr,
                             elementType,
-                        ).loadScalar;
+                        ));
                     fieldValue = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
                         AggregateValue.native(fieldValue),
                         elementIndex,
@@ -9919,9 +9923,10 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
 
         auto raw = new ubyte[](typeByteSize(type));
-        Place(raw.ptr, type).storeScalar(value);
+        writeScalarLeaf(Place(raw.ptr, type), value);
 
         ExpressionResult[] bytes;
         foreach (byte_; raw)
@@ -9945,20 +9950,21 @@ unsupportedExpression:
         return scalarFromBytes(type, bytes);
     }
 
-    // The inverse of `scalarBytes` above. `Place.loadScalar` keeps this
-    // transitional ExpressionResult boundary outside `native_scalar` while
-    // preserving the codec's `float`/`double` behaviour.
+    // The inverse of `scalarBytes` above. `place_value.readScalarLeaf` keeps
+    // this transitional ExpressionResult boundary outside `native_scalar`
+    // while preserving the codec's `float`/`double` behaviour.
     private ExpressionResult scalarFromBytes(
         imported!"dmd.mtype".Type type,
         in ExpressionResult[] bytes,
     ) {
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readScalarLeaf;
 
         auto raw = new ubyte[](bytes.length);
         foreach (index, byte_; bytes)
             raw[index] = cast(ubyte) byte_.asLong;
 
-        return Place(raw.ptr, type).loadScalar;
+        return readScalarLeaf(Place(raw.ptr, type));
     }
 
     private void writeIndexLocation(
@@ -10161,6 +10167,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readScalarLeaf, writeScalarLeaf;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto fields = structFields(unionType);
@@ -10217,7 +10224,7 @@ unsupportedExpression:
         writeStructCellScalarFields(cell, receiver);
 
         if (writtenScalar) {
-            Place(cell.field(fieldIndex).ptr, writtenType).storeScalar(value);
+            writeScalarLeaf(Place(cell.field(fieldIndex).ptr, writtenType), value);
         } else if (writtenStruct) {
             auto writtenCell = cell.structField(fieldIndex);
             writeStructCellScalarFields(writtenCell, value);
@@ -10226,10 +10233,12 @@ unsupportedExpression:
             auto writtenArrayCell = cell.arrayField(fieldIndex);
             auto valueAggregate = AggregateValue.native(value);
             foreach (elementIndex; 0 .. AggregateValue.length(valueAggregate))
-                Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType)
-                    .storeScalar(readStoredValue(
+                writeScalarLeaf(
+                    Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType),
+                    readStoredValue(
                         AggregateValue.elementAt(valueAggregate, elementIndex),
-                    ));
+                    ),
+                );
         }
 
         foreach (siblingIndex, sibling; fields) {
@@ -10239,7 +10248,7 @@ unsupportedExpression:
             if (isNativeScalarType(sibling.type)) {
                 updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
                     AggregateValue.native(updated), siblingIndex,
-                    Place(cell.field(siblingIndex).ptr, sibling.type).loadScalar,
+                    readScalarLeaf(Place(cell.field(siblingIndex).ptr, sibling.type)),
                 ));
                 continue;
             }
@@ -10259,10 +10268,10 @@ unsupportedExpression:
                 auto siblingAggregate = AggregateValue.native(siblingCurrent);
                 foreach (elementIndex; 0 .. AggregateValue.length(siblingAggregate))
                     siblingAggregate = AggregateValue.withArrayElement(siblingAggregate, elementIndex,
-                        Place(
+                        readScalarLeaf(Place(
                             siblingArrayCell.element(elementIndex).ptr,
                             siblingElementType,
-                        ).loadScalar);
+                        )));
                 updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
                     AggregateValue.native(updated), siblingIndex,
                     ExpressionResult.nativeAggregateValue(siblingAggregate),
@@ -10583,8 +10592,9 @@ unsupportedExpression:
         }
 
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
 
-        Place(cell.element(index).ptr, cell.elementType).storeScalar(value);
+        writeScalarLeaf(Place(cell.element(index).ptr, cell.elementType), value);
     }
 
     // Writes `arrayValue`'s scalar leaves into `cell`'s bytes (the
@@ -10603,6 +10613,7 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
 
         if (!AggregateValue.isArray(arrayValue))
             return;
@@ -10620,8 +10631,10 @@ unsupportedExpression:
                     readStoredValue(AggregateValue.elementAt(aggregate, index)),
                 );
             } else {
-                Place(cell.element(index).ptr, cell.elementType)
-                    .storeScalar(readStoredValue(AggregateValue.elementAt(aggregate, index)));
+                writeScalarLeaf(
+                    Place(cell.element(index).ptr, cell.elementType),
+                    readStoredValue(AggregateValue.elementAt(aggregate, index)),
+                );
             }
         }
     }

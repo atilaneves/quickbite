@@ -8,7 +8,6 @@ import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
 import quickbite.backends.interpreter.layout:
     classFields, classInstanceByteSize, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import quickbite.backends.interpreter.expression_result: ExpressionResult;
 import dmd.expression: Expression, AssignExp;
 import dmd.statement: Statement;
 import dmd.declaration: VarDeclaration;
@@ -162,11 +161,11 @@ unittest {
     (cast(size_t) place.address).should
         == cast(size_t) block.address + fieldByteOffset(xField);
 
-    // Runtime-computed, not a bare literal passed straight to `ExpressionResult`.
+    // Runtime-computed, not a bare literal passed straight to `storeNativeScalar`.
     int written = 4;
     written = written * 3 + 1;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -188,8 +187,8 @@ unittest {
 
     int written = 6;
     written = written * 5 + 2;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -220,8 +219,8 @@ unittest {
 
     int written = 8;
     written = written * 9 + 5;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -237,11 +236,11 @@ unittest {
 
     (cast(size_t) place.address).should == cast(size_t) block.address + 2 * int.sizeof;
 
-    // Runtime-computed, not a bare literal passed straight to `ExpressionResult`.
+    // Runtime-computed, not a bare literal passed straight to `storeNativeScalar`.
     int written = 3;
     written = written * 7 + 1;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -262,8 +261,8 @@ unittest {
 
     int written = 5;
     written = written * 4 + 3;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -288,8 +287,8 @@ unittest {
 
     int written = 9;
     written = written * 2 + 6;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -313,8 +312,8 @@ unittest {
 
     int written = 7;
     written = written * 8 + 2;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 // The centrepiece for a struct `ThisExp`: the hidden `this` resolves to
@@ -361,8 +360,8 @@ unittest {
 
     int written = 11;
     written = written * 6 + 3;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -386,8 +385,8 @@ unittest {
 
     int written = 13;
     written = written * 2 + 9;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -437,8 +436,8 @@ unittest {
 
     int written = 17;
     written = written * 5 + 6;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 
@@ -461,8 +460,8 @@ unittest {
 
     int written = 19;
     written = written * 4 + 7;
-    place.storeScalar(ExpressionResult(written));
-    place.loadScalar.asLong.should == written;
+    place.storeNativeScalar(written);
+    place.loadNativeScalar!int.should == written;
 }
 
 

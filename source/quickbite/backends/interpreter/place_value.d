@@ -46,7 +46,7 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     // (the read dispatches on the resolved base type, so an enum's own tagging is
     // invisible to that codec) -- checked before the `isNativeScalarType`
     // arm below, which would otherwise catch every enum type first since an
-    // enum's base type is itself a native scalar. `place.loadScalar` reads
+    // enum's base type is itself a native scalar. `readScalarLeaf` reads
     // the underlying bits through that same codec; `layout.
     // enumMemberQualifiedName` is DMD's own answer for which member (if
     // any) owns those bits, qualified per `value.md`'s Display format spec
@@ -62,15 +62,15 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
             if (auto componentType = imaginaryComponentType(baseType)) {
                 import quickbite.backends.interpreter.place: Place;
                 return ExpressionResult.imaginaryValue(
-                    Place(place.address, componentType).loadScalar.asReal,
+                    readScalarLeaf(Place(place.address, componentType)).asReal,
                 );
             }
 
             import quickbite.backends.interpreter.place: Place;
-            return Place(place.address, baseType).loadScalar;
+            return readScalarLeaf(Place(place.address, baseType));
         }
 
-        const bits = place.loadScalar.asLong;
+        const bits = readScalarLeaf(place).asLong;
         const qualifiedName = enumMemberQualifiedName(enumType, bits);
         return ExpressionResult.enumValue(
             qualifiedName.length != 0 ? qualifiedName : nonMemberEnumName(enumType, bits),
@@ -79,7 +79,7 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     }
 
     if (isNativeScalarType(type))
-        return place.loadScalar;
+        return readScalarLeaf(place);
 
     if (isRealType(type))
         return ExpressionResult(readRealBits(place.address, typeByteSize(type)));
@@ -152,6 +152,83 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
     );
+}
+
+
+// The scalar leaf `readValue`'s own native-scalar arm shares with
+// `impl.d`'s struct/array cell field reconstruction: reads the bytes at
+// `place`'s own static type through the typed `Place.loadNativeScalar!T`,
+// boxing the result only once that typed read has completed. Deliberately
+// narrower than `readValue`: an enum-typed place reads back here as its
+// plain base-type bits, not the tagged `ExpressionResult.enumValue`
+// `readValue`'s own enum arm produces -- exactly what a struct or array
+// cell's native scalar field storage needs, since that storage has no
+// enum-tag slot of its own. Only a native scalar type
+// (`native_scalar.isNativeScalarType`) is legal here; every call site
+// already gates on that before calling.
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalarLeaf(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+    switch (nativeScalarKindOf(place.type)) with (TY) {
+        case Tbool: return ExpressionResult(place.loadNativeScalar!bool);
+        case Tchar: return ExpressionResult(place.loadNativeScalar!char);
+        case Twchar: return ExpressionResult(place.loadNativeScalar!wchar);
+        case Tdchar: return ExpressionResult(place.loadNativeScalar!dchar);
+        case Tint8: return ExpressionResult(place.loadNativeScalar!byte);
+        case Tuns8: return ExpressionResult(place.loadNativeScalar!ubyte);
+        case Tint16: return ExpressionResult(place.loadNativeScalar!short);
+        case Tuns16: return ExpressionResult(place.loadNativeScalar!ushort);
+        case Tint32: return ExpressionResult(place.loadNativeScalar!int);
+        case Tuns32: return ExpressionResult(place.loadNativeScalar!uint);
+        case Tint64: return ExpressionResult(place.loadNativeScalar!long);
+        case Tuns64: return ExpressionResult(place.loadNativeScalar!ulong);
+        case Tfloat32: return ExpressionResult(place.loadNativeScalar!float);
+        case Tfloat64: return ExpressionResult(place.loadNativeScalar!double);
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.readScalarLeaf: "
+                ~ "unsupported native scalar type",
+            );
+    }
+}
+
+
+// The inverse of `readScalarLeaf`: casts `value` to `place`'s static type,
+// then writes it through the typed native scalar operation
+// (`Place.storeNativeScalar`). Refuses the same way `readScalarLeaf` does
+// for a non-scalar place.
+public void writeScalarLeaf(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+) @safe {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+    switch (nativeScalarKindOf(place.type)) with (TY) {
+        case Tbool: place.storeNativeScalar(value.castTo!bool.asLong != 0); return;
+        case Tint8: place.storeNativeScalar(cast(byte) value.castTo!byte.asLong); return;
+        case Tuns8: place.storeNativeScalar(cast(ubyte) value.castTo!ubyte.asLong); return;
+        case Tchar: place.storeNativeScalar(cast(char) value.castTo!char.asLong); return;
+        case Tint16: place.storeNativeScalar(cast(short) value.castTo!short.asLong); return;
+        case Tuns16: place.storeNativeScalar(cast(ushort) value.castTo!ushort.asLong); return;
+        case Twchar: place.storeNativeScalar(cast(wchar) value.castTo!wchar.asLong); return;
+        case Tint32: place.storeNativeScalar(cast(int) value.castTo!int.asLong); return;
+        case Tuns32: place.storeNativeScalar(cast(uint) value.castTo!uint.asLong); return;
+        case Tdchar: place.storeNativeScalar(cast(dchar) value.castTo!dchar.asLong); return;
+        case Tint64: place.storeNativeScalar(value.castTo!long.asLong); return;
+        case Tuns64: place.storeNativeScalar(cast(ulong) value.castTo!ulong.asLong); return;
+        case Tfloat32: place.storeNativeScalar(cast(float) value.castTo!float.asReal); return;
+        case Tfloat64: place.storeNativeScalar(cast(double) value.castTo!double.asReal); return;
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeScalarLeaf: "
+                ~ "unsupported native scalar type",
+            );
+    }
 }
 
 
@@ -396,12 +473,12 @@ public void writeValue(
                 ExpressionResult(value.imaginaryPart),
             );
         else
-            place.storeScalar(value);
+            writeScalarLeaf(place, value);
         return;
     }
 
     if (isNativeScalarType(type)) {
-        place.storeScalar(value);
+        writeScalarLeaf(place, value);
         return;
     }
 
