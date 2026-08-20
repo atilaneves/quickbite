@@ -576,6 +576,39 @@ private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggrega
     );
 }
 
+// The `Place`-native twin of the `ExpressionResult` overload above, for a
+// caller that already holds the value in an activation temporary rather
+// than a carrier: a struct-typed place already IS the aggregate's own
+// storage (borrowed, not copied), while a class-typed place holds only the
+// object body's own address (`Place.deref`, the same stored-reference read
+// `place_value.readValue`'s class arm performs), which this borrows a
+// `classInstanceByteSize`-sized view of -- the identical address-only
+// representation the `ExpressionResult` overload's own address arm builds.
+private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    nativeAggregateFrom(imported!"quickbite.backends.interpreter.place".Place place)
+{
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.layout: classInstanceByteSize;
+
+    if (place.type.toBasetype.isTypeClass !is null)
+        return NativeAggregate(
+            place.type,
+            NativeBlock.borrow(
+                place.deref.address,
+                classInstanceByteSize(place.type.toBasetype.isTypeClass.sym),
+            ),
+        );
+
+    return NativeAggregate(
+        place.type,
+        NativeBlock.borrow(
+            place.address,
+            imported!"quickbite.backends.interpreter.layout".typeByteSize(place.type),
+        ),
+    );
+}
+
 // The inverse: re-boxes a class-identity/receiver `NativeAggregate` back to
 // `ExpressionResult` for the generic field-read/write code that both
 // exception handling and delegate dispatch share. Dispatches on the
@@ -5379,7 +5412,14 @@ unsupportedExpression:
             if (delegate_.e1 is null)
                 throw new Exception("Unsupported eval expression: delegate_");
 
-            runtime.receiver = nativeAggregateFrom(runExpressionValue(delegate_.e1), delegate_.e1.type);
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(delegate_.e1),
+                delegate_.e1.type,
+            ));
+            runExpression(delegate_.e1, receiverTemporary);
+            runtime.receiver = nativeAggregateFrom(receiverTemporary.place);
             runtime.hasReceiver = true;
         }
 
@@ -6829,13 +6869,17 @@ unsupportedExpression:
     private ExpressionResult runDelegatePointerExpression(
         imported!"dmd.expression".DelegatePtrExp expression,
     ) {
-        return delegateProperty(runExpressionValue(expression.e1), "ptr");
+        return delegateProperty(
+            delegateSlotValue(constructedExpressionValue(expression.e1)), "ptr",
+        );
     }
 
     private ExpressionResult runDelegateFunctionPointerExpression(
         imported!"dmd.expression".DelegateFuncptrExp expression,
     ) {
-        return delegateProperty(runExpressionValue(expression.e1), "funcptr");
+        return delegateProperty(
+            delegateSlotValue(constructedExpressionValue(expression.e1)), "funcptr",
+        );
     }
 
     private bool isStringForeachApplyCall(FuncDeclaration function_) const {
@@ -8889,7 +8933,7 @@ unsupportedExpression:
             receiver.isFunctionPointer &&
             receiver.functionPointerId in _executionState.delegates
         )
-            return delegateProperty(receiver, declarationName(dot.var));
+            return delegateProperty(delegateSlotValue(receiver), declarationName(dot.var));
 
         if (receiver.isTypeName && declarationName(dot.var) == "name")
             return characterArrayValue(this, dot.type, receiver.asTypeNameString);
@@ -9015,7 +9059,7 @@ unsupportedExpression:
         imported!"dmd.expression".DotVarExp classInfo,
     ) {
         if (classInfo.e1.isTypeExp is null) {
-            const receiver = runExpressionValue(classInfo.e1);
+            const receiver = constructedExpressionValue(classInfo.e1);
             if (dynamicClass(receiver) !is null)
                 return ExpressionResult.typeName(dynamicClassName(receiver));
         }
@@ -9031,7 +9075,7 @@ unsupportedExpression:
         imported!"dmd.mtype".Type resultType,
     ) {
         auto owner = classInfoNameOwnerExpression(ownerExpression);
-        const receiver = runExpressionValue(owner);
+        const receiver = constructedExpressionValue(owner);
         if (dynamicClass(receiver) !is null)
             return characterArrayValue(this, resultType, dynamicClassName(receiver));
 
@@ -9068,10 +9112,9 @@ unsupportedExpression:
     }
 
     private ExpressionResult delegateProperty(
-        in ExpressionResult receiver,
+        in DelegateSlot slot,
         scope const(char)[] name,
     ) {
-        const slot = delegateSlotValue(receiver);
         auto runtime = slot.functionPointerId in _executionState.delegates;
         if (runtime is null)
             throw new Exception("Unsupported interpreter field read.");
@@ -9102,7 +9145,7 @@ unsupportedExpression:
             return typeidValue(typeid_, type, typeInfoName(type));
         }
 
-        auto value = runExpressionValue(expression);
+        auto value = constructedExpressionValue(expression);
         if (isClassExpression(expression))
             value = rootedNativeClassValue(expression, value);
         if (value == ExpressionResult.null_ || (isClassExpression(expression) &&
