@@ -639,3 +639,14 @@
   same kind of value; check every path that loads a pointer-typed value
   routes through it. `asPointerValue` (`compiler.d`) promoted `*p`/`p[i]`
   loads to `isPointer`, but a `ref T` parameter's own read never used it.
+
+- Don't trust a removed branch's "untested, not required by the reported
+  shape" comment when reusing the same helper from a new call site later.
+  `compileStructValueInto` (`compiler.d`) had its `CondExp` arm dropped as
+  untested; routing `compileStructLiteralInto`'s struct-typed field
+  initializers through it (issue #510's field-initializer-constructor fix)
+  made a ternary field initializer (`Outer(2, flag ? Inner(a) : Inner(b))`)
+  reach that same helper and need the arm back. A helper's removed branch is
+  scoped to the call sites that existed when it was removed, not to the
+  helper itself; re-add it (rather than special-case the new call site) as
+  soon as another caller needs the same expression shape.

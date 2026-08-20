@@ -5817,18 +5817,10 @@ private struct Compiler {
 
         // `S dest = cond ? a : b`: neither arm need be a Place on its own (a
         // struct-typed ternary is not itself an lvalue merely because both
-        // arms are), so branch here and block-copy each arm's own value into
-        // the declared slot directly -- the same destination-directed shape
-        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
-        // arrays.
-        if (auto conditional = source.isCondExp) {
-            const condition = compileBoolCondition(conditional.econd);
-            const falseJump = emitJumpIfFalse(condition);
-            compileStructValueInto(offset, variable.type, conditional.e1);
-            const endJump = emitJump;
-            patchJump(falseJump);
-            compileStructValueInto(offset, variable.type, conditional.e2);
-            patchJump(endJump);
+        // arms are), so let `compileStructValueInto`'s own CondExp arm branch
+        // and block-copy each arm's value into the declared slot directly.
+        if (source.isCondExp !is null) {
+            compileStructValueInto(offset, variable.type, source);
             return;
         }
 
@@ -5870,19 +5862,36 @@ private struct Compiler {
         ));
     }
 
-    // One arm of a struct-typed ternary (`compileStructDeclaration`'s CondExp
-    // arm above): block-copy `source`'s value into `offset` directly, rather
-    // than resolving it through Place first, since an arm need not be a Place
-    // on its own (a string-literal arm in the dynamic-array analogue is the
-    // same shape). `structValueOffsetOrNull` already unwraps a CommaExp
-    // source itself, so only the struct-literal and default-init shapes need
-    // their own arm here.
+    // Compile a struct-typed value directly into `offset`, whatever
+    // expression shape it comes in: a caller with a destination slot already
+    // in hand (a declared local, a ternary arm, or a nested literal's field)
+    // does not need `source` to resolve through Place on its own -- a
+    // struct-typed ternary is not itself an lvalue merely because both arms
+    // are, and a field-initializer argument built by a constructor call is
+    // not a `StructLiteralExp` at all. `structValueOffsetOrNull` already
+    // unwraps a CommaExp source itself, so only the ternary, struct-literal,
+    // and default-init shapes need their own arm here.
     private void compileStructValueInto(
         in ushort offset, Type type, Expression source,
     ) {
         import std.conv: text;
 
         source = initializerExpression(source);
+
+        // `cond ? a : b`: block-copy each arm's own value into `offset`
+        // directly -- the same destination-directed shape
+        // `compileDynamicArrayInto`'s CondExp arm already uses for dynamic
+        // arrays.
+        if (auto conditional = source.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const falseJump = emitJumpIfFalse(condition);
+            compileStructValueInto(offset, type, conditional.e1);
+            const endJump = emitJump;
+            patchJump(falseJump);
+            compileStructValueInto(offset, type, conditional.e2);
+            patchJump(endJump);
+            return;
+        }
 
         if (auto literal = source.isStructLiteralExp) {
             compileStructLiteralInto(offset, literal);

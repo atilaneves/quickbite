@@ -362,6 +362,227 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct field initialised by a constructor call that sets the
+// constructed struct's own fields (not a module-scope variable): the
+// finished outer value's field must show what the constructor set, not the
+// field's zeroed default. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.constructedFieldValueIsVisibleAfterFieldInitializerCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Inner(payload));
+
+                assert(o.b == 2);
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// The same field-initializer constructor call, but for the outer struct's
+// first field (offset 0) rather than a later one.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerConstructorCallAtFieldOffsetZero." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                Inner input;
+                ubyte b;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(Inner(payload), 2);
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+                assert(o.b == 2);
+            }
+        });
+    }
+}
+
+// The field-initializer constructor call nested two structs deep: the
+// middle struct's own field-initializer argument is itself a constructor
+// call, one level inside the outer struct's own field-initializer
+// argument.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerConstructorCallNestedTwoStructsDeep." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Mid {
+                Inner input;
+            }
+
+            struct Outer {
+                ubyte b;
+                Mid mid;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Mid(Inner(payload)));
+
+                assert(o.mid.input.count == 3);
+                assert(o.mid.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from a plain function call that returns a struct by
+// value, rather than a constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromFunctionReturningStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            Inner makeInner(ubyte[] bytes) {
+                return Inner(bytes);
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, makeInner(payload));
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from an already-constructed struct variable rather
+// than a fresh constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromExistingStructVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto existing = Inner(payload);
+                auto o = Outer(2, existing);
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from a ternary between two struct values, each built
+// by its own constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromTernaryBetweenStructValues." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] longer = [9, 7, 6];
+                ubyte[] shorter = [1, 2];
+                bool pickLonger = longer.length > shorter.length;
+                auto o = Outer(2, pickLonger ? Inner(longer) : Inner(shorter));
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
