@@ -7258,7 +7258,7 @@ unsupportedExpression:
                     : -operand.asLong;
                 writeTarget(
                     target,
-                    storageValue(
+                    castScalarToType(
                         destinationExpression.type.toBasetype.nextOf,
                         ExpressionResult(previous.asLong + delta),
                     ),
@@ -8542,7 +8542,7 @@ unsupportedExpression:
             const value = compoundAssignedValue(assign, left, right);
             writeStoredValue(
                 destination,
-                storageValue(assign.e1.type, value),
+                castScalarToType(assign.e1.type, value),
             );
             clearProjectionRootUninitialized(assign.e1);
             return readStoredValue(destination);
@@ -10048,9 +10048,6 @@ unsupportedExpression:
         imported!"dmd.mtype".Type type,
         in ExpressionResult value,
     ) {
-        import quickbite.backends.interpreter.runtime_casts:
-            CastTarget,
-            tryCastTarget;
         import quickbite.frontend.dmd.types: isCharacterArrayType;
 
         if (type is null)
@@ -10085,6 +10082,27 @@ unsupportedExpression:
                     ),
                 );
         }
+
+        return castScalarToType(type, value);
+    }
+
+    // `storageValue`'s scalar-cast fallback, factored out for callers whose
+    // value is already known -- by construction, not by this type's runtime
+    // tag -- to be a plain scalar or pointer: a compound-assignment or
+    // increment/decrement result never carries a type-name or
+    // native-aggregate tag (`compoundAssignedValue`/`incrementedValue` only
+    // ever answer a numeric, complex, or pointer variant, or throw), so
+    // those callers skip the two tag checks above and land here directly.
+    private ExpressionResult castScalarToType(
+        imported!"dmd.mtype".Type type,
+        in ExpressionResult value,
+    ) {
+        import quickbite.backends.interpreter.runtime_casts:
+            CastTarget,
+            tryCastTarget;
+
+        if (type is null)
+            return value;
 
         CastTarget target;
         if (!tryCastTarget(type, target))
@@ -16042,7 +16060,7 @@ destinationFallback:
                 const oldValue = readStoredValue(destination);
                 writeStoredValue(
                     destination,
-                    storageValue(
+                    castScalarToType(
                         post.e1.type,
                         incrementedValue(oldValue, post.e1.type, delta),
                     ),
@@ -16062,7 +16080,7 @@ destinationFallback:
                 const oldValue = readStoredValue(destination);
                 writeStoredValue(
                     destination,
-                    storageValue(
+                    castScalarToType(
                         post.e1.type,
                         incrementedValue(oldValue, post.e1.type, delta),
                     ),
