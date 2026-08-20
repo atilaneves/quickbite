@@ -9528,7 +9528,19 @@ unsupportedExpression:
                     }
                 }
 
-            const receiver = runExpressionValue(dot.e1);
+            // The receiver has no live place at this fallback (a plain
+            // call/literal result, a captured variable, or a `VarExp`-rooted
+            // whole-struct target) -- construct it into an activation
+            // temporary rather than a live alias, matching every other
+            // caller-owned-storage construction in this walker.
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(dot.e1),
+                dot.e1.type,
+            ));
+            runExpression(dot.e1, receiverTemporary);
+            const receiver = readStoredValue(receiverTemporary.place);
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -10347,7 +10359,14 @@ unsupportedExpression:
             // predicates, so a plain local receiver keeps the snapshot
             // rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpressionValue(dot.e1);
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(dot.e1),
+                dot.e1.type,
+            ));
+            runExpression(dot.e1, receiverTemporary);
+            const receiver = readStoredValue(receiverTemporary.place);
             const fieldValue = readStoredValue(
                 AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
             );
@@ -10466,7 +10485,14 @@ unsupportedExpression:
             // rather than through the direct-write predicates, so a plain
             // local receiver keeps the snapshot rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpressionValue(dot.e1);
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(dot.e1),
+                dot.e1.type,
+            ));
+            runExpression(dot.e1, receiverTemporary);
+            const receiver = readStoredValue(receiverTemporary.place);
             const fieldValue = readStoredValue(
                 AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
             );
@@ -10902,7 +10928,14 @@ unsupportedExpression:
             // (`isDirectIndexAssignmentTarget`), so a struct receiver
             // reaching here has no projection place of its own to derive.
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpressionValue(dot.e1);
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(dot.e1),
+                dot.e1.type,
+            ));
+            runExpression(dot.e1, receiverTemporary);
+            const receiver = readStoredValue(receiverTemporary.place);
             const source = readStoredValue(
                 AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
             );
@@ -10910,7 +10943,12 @@ unsupportedExpression:
                 setLocal(index.lengthVar,
                     AggregateValue.length(AggregateValue.native(source)));
             const arrayIndex = scalarOperand!size_t(index.e2);
-            const value = runExpressionValue(rhs);
+            auto rhsTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(rhs),
+                rhs.type,
+            ));
+            runExpression(rhs, rhsTemporary);
+            const value = readStoredValue(rhsTemporary.place);
             const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
                 AggregateValue.native(source), arrayIndex, value,
             ));
@@ -11278,7 +11316,14 @@ unsupportedExpression:
             // through the direct-write predicates, so a plain local
             // receiver keeps the snapshot rebuild it always used.
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpressionValue(dot.e1);
+            import quickbite.backends.interpreter.place: Place;
+
+            auto receiverTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(dot.e1),
+                dot.e1.type,
+            ));
+            runExpression(dot.e1, receiverTemporary);
+            const receiver = readStoredValue(receiverTemporary.place);
             const fieldValue = readStoredValue(
                 AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
             );
@@ -11289,7 +11334,12 @@ unsupportedExpression:
             );
             const innerIndex = scalarOperand!size_t(inner.e2);
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
-            const value = runExpressionValue(rhs);
+            auto rhsTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(rhs),
+                rhs.type,
+            ));
+            runExpression(rhs, rhsTemporary);
+            const value = readStoredValue(rhsTemporary.place);
             const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
                 AggregateValue.native(fieldValue),
                 outerIndex,
