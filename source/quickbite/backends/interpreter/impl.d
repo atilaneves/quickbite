@@ -1639,6 +1639,15 @@ private struct Walker {
         return Place(bindingAddress(variable), declaredType(variable));
     }
 
+    // `variable`'s own runtime kind (`Dsymbol.isThisDeclaration`) identifies
+    // the hidden `this`/`super` parameter distinctly from every other
+    // binding a `placeOfLvalue` walk can hand `resolveBase` -- `VarDeclaration`
+    // (an `extern (C++)` class) is not itself `@safe`-annotated, so this is
+    // the `@trusted` boundary for reading it.
+    private bool isThisVariable(VarDeclaration variable) @trusted {
+        return variable.isThisDeclaration !is null;
+    }
+
     // Conservatively recognizes only lvalue
     // trees which `lvalue_place.placeOfLvalue` can compose from storage this
     // activation can actually resolve. Deciding before evaluation matters:
@@ -1656,6 +1665,16 @@ private struct Walker {
             auto variable = variableExpression.var.isVarDeclaration;
             return variable !is null && hasBindingPlace(variable);
         }
+
+        // A struct method's `this`/`super` is bound onto `thisValue` for the
+        // duration of this activation exactly like `bindingPlace` composes a
+        // true local's own storage -- the same authority `bindThisReferenceAddress`
+        // keeps `thisAddress` synchronised with. Class receivers keep the
+        // existing path (see this function's own header comment).
+        if (expression.isThisExp !is null || expression.isSuperExp !is null)
+            return hasThis &&
+                thisValue.type !is null &&
+                thisValue.type.toBasetype.isTypeStruct !is null;
 
         if (auto index = expression.isIndexExp) {
             auto baseType = index.e1.type is null
@@ -1854,7 +1873,18 @@ private struct Walker {
         try {
             return placeOfLvalue(
                 expression,
-                (variable) @safe => addressableBindingBase(variable),
+                // `placeOfLvalue`'s own `ThisExp` arm composes
+                // `Place(resolveBase(variable), declaredType(variable))` for
+                // the hidden `this`/`super` variable -- `addressableBindingBase`
+                // cannot resolve it (DMD keeps `vthis` out of both the frame
+                // and dataseg storage this activation's own bindings occupy),
+                // so hand back the address `thisValue`/`thisAddress` already
+                // name for this activation's receiver instead, the same
+                // address `bindThisReferenceAddress` keeps them synchronised
+                // with.
+                (variable) @safe => isThisVariable(variable)
+                    ? thisValue.address
+                    : addressableBindingBase(variable),
                 (indexExpression) @system {
                     size_t value;
                     bool alreadyEvaluated;
