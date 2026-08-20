@@ -2676,7 +2676,12 @@ private struct Walker {
     // per-arm dispatch is used only as a bridge for expression kinds
     // `constructInto`/`constructScalarExpressionInto` do not yet construct
     // directly; each bridged arm retires once its own construction arm
-    // lands.
+    // lands. The bridged value is adapted to the destination's own type
+    // before it is written -- `storageValue`'s existing byte-reinterpreting
+    // view for a `void[]` destination (e.g. `__traits(initSymbol, T)`, whose
+    // evaluated value is `T`-shaped even though the expression's static type
+    // is `void[]`) and its scalar-cast fallback both apply here exactly as
+    // they do at every other caller-owned-storage site.
     private void runExpression(
         imported!"dmd.expression".Expression expression,
         ref ConstructionDestination destination,
@@ -2689,7 +2694,10 @@ private struct Walker {
                 destination.markConstructed;
                 return;
             }
-            const value = runExpressionImpl(expression);
+            const value = storageValue(
+                destination.place.type,
+                runExpressionImpl(expression),
+            );
             writeStoredValue(destination.place, value);
             destination.markConstructed;
         }
@@ -13756,21 +13764,75 @@ unsupportedExpression:
         }
 
         // `auto copy = original;` for a struct with a postblit lowers to
-        // `(copy = original).__postblit()` as the initializer: the blit inside
-        // the call writes the variable, and the call's own value is the
-        // postblit's return, not the struct — do not overwrite with it.
+        // `(copy = original).__postblit()` as the initializer
+        // (`expressionsem.d`'s `ConstructExp` handling): a `DotVarExp` call
+        // whose receiver is a `BlitExp` blitting the source into the
+        // variable's own storage, then calling the postblit on those
+        // now-placed bytes for its effect alone. Construct the source
+        // directly into the binding place -- the same bytes the blit would
+        // have produced -- then run the postblit for effect on that place,
+        // mirroring the element-postblit call in the `_d_arrayctor`
+        // interception above.
         if (auto postblitCall = initializer.isCallExp)
             if (
                 postblitCall.f !is null &&
                 postblitCall.f.isPostBlitDeclaration !is null
             ) {
-                // An interpreted postblit returns void (its walker's
-                // incidental result must not overwrite the variable); a
-                // body-less native postblit's FFI bridge returns the mutated
-                // receiver, which is the value to keep.
-                const result = runExpressionValue(initializer);
-                if (AggregateValue.isStruct(result))
-                    setLocal(variable, result);
+                import quickbite.frontend.dmd.functions:
+                    hasNoInterpretableSource, noAvailableSourceMessage;
+                import quickbite.backends.interpreter.layout: typeByteSize;
+                import quickbite.backends.interpreter.native_aggregate:
+                    NativeAggregate;
+                import quickbite.backends.interpreter.native_block: NativeBlock;
+                import quickbite.backends.interpreter.native_call_adapter:
+                    NativeCallException, NativeCallResult;
+
+                auto receiverBlit = postblitCall.e1.isDotVarExp.e1.isBlitExp;
+                auto place = bindingPlace(variable);
+                auto destination = ConstructionDestination(place);
+                runExpression(receiverBlit.e2, destination);
+                clearUninitializedBindingAddress(place.address);
+
+                if (hasNoInterpretableSource(postblitCall.f)) {
+                    // A body-less native postblit's FFI bridge runs against
+                    // the receiver storage at `place.address`; it hands back
+                    // its mutated receiver as the call's own result rather
+                    // than always writing through that address in place (the
+                    // ABI may return a small struct in registers instead), so
+                    // a result reported at a different address still needs
+                    // copying into the binding.
+                    try {
+                        NativeCallResult nativeResult;
+                        if (!invokeNativeDeclaration(
+                            postblitCall.f,
+                            ExpressionResult.void_,
+                            place.type,
+                            receiverBlit.e1,
+                            [],
+                            [],
+                            null,
+                            true,
+                            nativeResult,
+                            place.address,
+                            place.address,
+                        ))
+                            throw new Exception(
+                                noAvailableSourceMessage(postblitCall.f),
+                            );
+                        if (nativeResult.value.address != place.address)
+                            writeStoredValue(place, nativeCallValue(nativeResult.value));
+                    } catch (NativeCallException exception) {
+                        throwNativeException(exception);
+                    }
+                    return;
+                }
+
+                const receiver = ExpressionResult.nativeAggregateValue(
+                    NativeAggregate(
+                        place.type,
+                        NativeBlock.borrow(place.address, typeByteSize(place.type)),
+                    ));
+                runMemberFunction(postblitCall.f, null, receiver, [], []);
                 return;
             }
 
@@ -13863,25 +13925,12 @@ unsupportedExpression:
             return;
         }
 
-        // The initializer constructs the variable's own storage, so a family
-        // with a destination arm writes its bytes there directly instead of
-        // building them elsewhere and copying them in.
+        // The initializer constructs the variable's own storage: a fresh
+        // binding has no aliases, so its initializer may construct directly
+        // into it, typed by the binding itself (decision 7's permitted
+        // direct construction, not decision 9's assignment-temporary rule).
         auto destination = ConstructionDestination(bindingPlace(variable));
-        if (constructInto(initializer, destination)) {
-            clearUninitializedBindingAddress(bindingPlace(variable).address);
-            return;
-        }
-
-        auto literal = initializer.isFuncExp;
-        auto value = storageValue(
-            variable.type,
-            literal !is null
-                ? runFunctionLiteralDeclaration(literal)
-                : runExpressionValue(initializer),
-        );
-        if (variable.type.toBasetype.isTypeClass !is null)
-            value = rootedNativeClassValue(initializer, value);
-        setLocal(variable, value);
+        runExpression(initializer, destination);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
     }
 
