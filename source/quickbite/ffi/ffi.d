@@ -65,11 +65,13 @@ public void registerClosureAbi(
 ) {
     _closureAbis[address] = compilerAbi;
     _resolvedCallables = null;
+    _ffiCallPlans = null;
 }
 
 public void unregisterClosureAbi(in void* address) {
     _closureAbis.remove(address);
     _resolvedCallables = null;
+    _ffiCallPlans = null;
 }
 
 public CompilerAbi compilerAbiFor(in void* symbol) {
@@ -208,6 +210,7 @@ private void loadDependencyImage(
     if (!registerDependencyImageSegments(dependencyImage, compilerAbi))
         _dependencyImageNeedsPathLookup = true;
     _resolvedCallables = null;
+    _ffiCallPlans = null;
 }
 
 // Record the load segments once, while the image path is already part of image
@@ -427,6 +430,13 @@ private struct PhysicalCall {
     private PhysicalReturn returnPolicy;
     private size_t cFixedArgumentCount;
     private bool cVariadic;
+    // Set whenever the physical argument count can differ between calls to
+    // the same declaration: a C/K&R variadic tail, or a D `...` variadic
+    // tail (its trailing arguments are passed as ordinary physical
+    // arguments, and different call sites pass different counts of them).
+    // A prepared `ffi_cif` is only valid for the one argument count it was
+    // built for, so `call` must not reuse a cached plan across these.
+    private bool hasVariableArity;
     private size_t receiverArgumentIndex = size_t.max;
     private size_t _argumentCount;
     private size_t _pointerCellCount;
@@ -581,6 +591,109 @@ private struct PhysicalCall {
 }
 
 
+// Non-variadic native calls have a call-invariant libffi shape: the same
+// declaration and `CompilerAbi` always produce the same result/argument
+// `ffi_type` descriptors and the same prepared `ffi_cif`. Deriving that
+// shape allocates a descriptor tree (walking aggregate field lists for
+// struct/static-array/128-bit/memory-class shapes) and `ffi_prep_cif`
+// re-runs SysV classification; both are wasted once a callee's cif has
+// already been prepared once. `_ffiCallPlans` caches the whole prepared
+// shape per callee, so a repeat call skips straight to filling argument
+// addresses and invoking `ffi_call`.
+//
+// Keyed like `_resolvedCallables`: the shape depends on both the
+// declaration and the `CompilerAbi`, since DMD reverses D argument order
+// relative to LDC and a virtual overrider can resolve into a
+// different-ABI image than its base declaration. `cif.arg_types`/
+// `cif.rtype` point into `argumentTypes`/`resultMetadata`/
+// `argumentMetadata` below; keeping a plan reachable from the cache keeps
+// every descriptor `ffi_call` reads alive and, per libffi's contract,
+// unmodified for as long as the cif is reused.
+private struct FfiCallPlanKey {
+    private imported!"dmd.func".FuncDeclaration declaration;
+    private CompilerAbi compilerAbi;
+}
+
+private struct FfiCallPlan {
+    private imported!"quickbite.ffi.libffi".ffi_cif cif;
+    private FfiType resultMetadata;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] argumentTypes;
+    private FfiType[] argumentMetadata;
+}
+
+private FfiCallPlan*[FfiCallPlanKey] _ffiCallPlans;
+
+
+// Derives `plan`'s result/argument descriptors from `physical`'s
+// already-validated shape and prepares its cif, restoring the descriptors'
+// native layout once preparation is done. Returns `false` on the same
+// unsupported-type or cif-preparation failures `call` previously returned
+// `false` for.
+//
+// `plan.argumentTypes`/`plan.argumentMetadata` must already be sized to
+// `physical.arguments.length` by the caller: a plan bound for the cache is
+// backed by fresh GC arrays that outlive the call, while a plan for a
+// variadic (or declaration-less) call reuses `physical`'s pooled per-call
+// storage, since it is built fresh on every call anyway.
+private bool buildFfiCallPlan(
+    Callable callable,
+    ref PhysicalCall physical,
+    ref FfiCallPlan plan,
+) {
+    import quickbite.ffi.libffi:
+        ffi_prep_cif, ffi_prep_cif_var, ffi_status, ffi_type_pointer,
+        ffi_type_void, FFI_DEFAULT_ABI;
+
+    plan.resultMetadata = physical.returnPolicy == PhysicalReturn.cppConstructor
+        ? FfiType(&ffi_type_void)
+        : physical.returnPolicy == PhysicalReturn.reference
+        ? FfiType(&ffi_type_pointer)
+        : physical.returnPolicy == PhysicalReturn.cppNonPod
+            ? cppNonPodReturnFfiType(physical.returnType)
+            : ffiTypeFor(physical.returnType, true);
+    if (plan.resultMetadata.type is null)
+        return false;
+
+    const numAbiArguments = physical.arguments.length;
+    foreach (index, argument; physical.arguments) {
+        plan.argumentMetadata[index] = argument.pointer
+            ? FfiType(&ffi_type_pointer)
+            : ffiTypeFor(argument.type);
+        plan.argumentTypes[index] = plan.argumentMetadata[index].type;
+        if (plan.argumentTypes[index] is null)
+            return false;
+    }
+
+    const prepStatus = physical.cVariadic
+        ? ffi_prep_cif_var(
+            &plan.cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) physical.cFixedArgumentCount,
+            cast(uint) numAbiArguments,
+            plan.resultMetadata.type,
+            plan.argumentTypes.ptr,
+        )
+        : ffi_prep_cif(
+            &plan.cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) numAbiArguments,
+            plan.resultMetadata.type,
+            plan.argumentTypes.ptr,
+        );
+    if (prepStatus != ffi_status.FFI_OK)
+        return false;
+    plan.resultMetadata.restoreNativeLayout;
+    if (physical.returnPolicy == PhysicalReturn.value &&
+        !layoutMatches(physical.returnType, plan.resultMetadata))
+        return false;
+    foreach (index, argument; physical.arguments)
+        if (!argument.pointer && argument.sourceIndex != size_t.max &&
+            !layoutMatches(argument.type, plan.argumentMetadata[index]))
+            return false;
+    return true;
+}
+
+
 public bool call(
     Callable callable,
     TypedAddress[] arguments,
@@ -588,10 +701,7 @@ public bool call(
     TypedAddress* receiver = null,
     DVariadicMetadata* variadicMetadata = null,
 ) {
-    import quickbite.ffi.libffi:
-        ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_prep_cif_var,
-        ffi_status, ffi_type, ffi_type_pointer, ffi_type_void,
-        FFI_DEFAULT_ABI;
+    import quickbite.ffi.libffi: ffi_arg, ffi_call, ffi_type;
     import dmd.astenums: TY;
 
     PhysicalCall physical;
@@ -609,62 +719,46 @@ public bool call(
     if (requiresSysVTransport(callable, physical))
         return callSysV(callable, physical, result);
 
-    auto resultMetadata = physical.returnPolicy == PhysicalReturn.cppConstructor
-        ? FfiType(&ffi_type_void)
-        : physical.returnPolicy == PhysicalReturn.reference
-        ? FfiType(&ffi_type_pointer)
-        : physical.returnPolicy == PhysicalReturn.cppNonPod
-            ? cppNonPodReturnFfiType(physical.returnType)
-            : ffiTypeFor(physical.returnType, true);
-    if (resultMetadata.type is null)
-        return false;
-
     const resultTy = semanticStorageType(physical.returnType).ty;
     const returnsVoid =
         physical.returnPolicy == PhysicalReturn.cppConstructor ||
         resultTy == TY.Tvoid ||
         resultTy == TY.Tnoreturn;
     const numAbiArguments = physical.arguments.length;
-    auto argumentTypes = physical.argumentTypes;
     auto argumentAddresses = physical.argumentAddresses;
-    auto argumentMetadata = physical.argumentMetadata;
-    foreach (index, argument; physical.arguments) {
-        argumentMetadata[index] = argument.pointer
-            ? FfiType(&ffi_type_pointer)
-            : ffiTypeFor(argument.type);
-        argumentTypes[index] = argumentMetadata[index].type;
-        if (argumentTypes[index] is null)
-            return false;
-        argumentAddresses[index] = argument.address;
-    }
-
-    ffi_cif cif;
-    const prepStatus = physical.cVariadic
-        ? ffi_prep_cif_var(
-            &cif,
-            FFI_DEFAULT_ABI,
-            cast(uint) physical.cFixedArgumentCount,
-            cast(uint) numAbiArguments,
-            resultMetadata.type,
-            argumentTypes.ptr,
-        )
-        : ffi_prep_cif(
-            &cif,
-            FFI_DEFAULT_ABI,
-            cast(uint) numAbiArguments,
-            resultMetadata.type,
-            argumentTypes.ptr,
-        );
-    if (prepStatus != ffi_status.FFI_OK)
-        return false;
-    resultMetadata.restoreNativeLayout;
-    if (physical.returnPolicy == PhysicalReturn.value &&
-        !layoutMatches(physical.returnType, resultMetadata))
-        return false;
     foreach (index, argument; physical.arguments)
-        if (!argument.pointer && argument.sourceIndex != size_t.max &&
-            !layoutMatches(argument.type, argumentMetadata[index]))
+        argumentAddresses[index] = argument.address;
+
+    // A cacheable plan is heap-allocated and rooted by `_ffiCallPlans` so it
+    // outlives this call; an uncached one lives on this call's stack and
+    // borrows `physical`'s pooled storage, matching the per-call cost this
+    // replaces.
+    FfiCallPlan* plan;
+    FfiCallPlan uncachedPlan;
+    const canCachePlan = callable.declaration !is null &&
+        !physical.hasVariableArity;
+    if (canCachePlan) {
+        auto planKey =
+            FfiCallPlanKey(callable.declaration, callable.compilerAbi);
+        if (auto cached = planKey in _ffiCallPlans)
+            plan = *cached;
+        else {
+            auto newPlan = new FfiCallPlan;
+            newPlan.argumentTypes = new ffi_type*[](numAbiArguments);
+            newPlan.argumentMetadata = new FfiType[](numAbiArguments);
+            if (!buildFfiCallPlan(callable, physical, *newPlan))
+                return false;
+            _ffiCallPlans[planKey] = newPlan;
+            plan = newPlan;
+        }
+    } else {
+        uncachedPlan.argumentTypes = physical.argumentTypes;
+        uncachedPlan.argumentMetadata = physical.argumentMetadata;
+        if (!buildFfiCallPlan(callable, physical, uncachedPlan))
             return false;
+        plan = &uncachedPlan;
+    }
+    assert(plan.argumentTypes.length == numAbiArguments);
 
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
@@ -679,7 +773,7 @@ public bool call(
             : &resultScratch;
     alias CFunction = extern(C) void function();
     ffi_call(
-        &cif,
+        &plan.cif,
         cast(CFunction) callable.address,
         resultAddress,
         argumentAddresses.ptr,
@@ -906,6 +1000,7 @@ private bool preparePhysicalCall(
         );
     }
     physical.cVariadic = hasCVariadicTail;
+    physical.hasVariableArity = hasArgumentTail;
     physical.cFixedArgumentCount = isCKRVariadic
         ? hasReceiver
         : numPassedFixedArguments + hasReceiver;
