@@ -12,7 +12,8 @@ import dmd.typesem: arrayOf, constOf, merge, sarrayOf;
 import quickbite.ffi.ffi:
     Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call,
     resolveCallable;
-import std.process: execute;
+import std.file: thisExePath;
+import std.path: buildPath, dirName;
 import std.string: toStringz;
 import unit_threaded;
 
@@ -2264,38 +2265,22 @@ unittest {
         extern(C) int ffiResolveCacheLateLoadFixture();
     }, "ffiResolveCacheLateLoadFixture");
 
-    const sandbox = immutable Sandbox();
-    with (sandbox) {
-        const sourcePath = "ffi_resolve_cache_late_load_fixture.d";
-        writeFile(sourcePath, q{
-            extern(C) int ffiResolveCacheLateLoadFixture() {
-                return 42;
-            }
-        });
-        const imagePath =
-            inSandboxPath("libffi_resolve_cache_late_load_fixture.so");
-        const build = execute([
-            "dmd",
-            "-shared",
-            "-fPIC",
-            "-defaultlib=libphobos2.so",
-            "-of=" ~ imagePath,
-            inSandboxPath(sourcePath),
-        ]);
-        build.status.should == 0;
+    const imagePath = buildPath(
+        thisExePath.dirName,
+        "ffi-resolve-cache-late-load-fixture.so",
+    );
 
-        // The symbol is not present in the process yet, so resolution fails.
-        (resolveCallable(declaration, false).address is null).should == true;
+    // The symbol is not present in the process yet, so resolution fails.
+    (resolveCallable(declaration, false).address is null).should == true;
 
-        // Load the image the way any ordinary native call could: a bare
-        // dlopen, with no special registration step involved.
-        const loaded = dlopen(imagePath.toStringz, RTLD_NOW | RTLD_GLOBAL);
-        (loaded is null).should == false;
+    // Load the image the way any ordinary native call could: a bare dlopen,
+    // with no special registration step involved.
+    const loaded = dlopen(imagePath.toStringz, RTLD_NOW | RTLD_GLOBAL);
+    (loaded is null).should == false;
 
-        // Resolving the same declaration again must retry the lookup rather
-        // than remember the earlier failure, and now find the symbol.
-        (resolveCallable(declaration, false).address is null).should == false;
-    }
+    // Resolving the same declaration again must retry the lookup rather than
+    // remember the earlier failure, and now find the symbol.
+    (resolveCallable(declaration, false).address is null).should == false;
 }
 
 

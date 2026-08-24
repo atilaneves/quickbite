@@ -412,6 +412,14 @@ private size_t _physicalCallStorageDepth;
 // `argumentMetadata` are each filled index by index up to their exact
 // lengths before any of them is read. So, unlike the `GC.calloc` this
 // replaces, reused (or newly grown) storage does not need zeroing.
+//
+// Safety: `GC.malloc` returns a GC-owned allocation with alignment suitable
+// for all D types. The slot retains that allocation between calls, and strict
+// LIFO nesting gives every live call a separate slot; thus a growth can free
+// only a released call's buffer. `storageByteLength` includes each aligned
+// typed range, while the accessors use the same offsets and exact lengths, so
+// their casts, pointer arithmetic, and slices stay within the allocation.
+// `preparePhysicalCall` initializes every handed-out element before a read.
 private void* acquirePhysicalCallStorage(in size_t byteLength) @trusted {
     import core.memory: GC;
 
