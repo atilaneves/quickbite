@@ -38,6 +38,7 @@ int main(string[] args) {
         "ut.backends.runner.lang.integrals",
         "ut.backends.runner.lang.math",
         "ut.backends.runner.lang.structs",
+        "ut.backends.runner.lang.module_state",
         "ut.backends.runner.lang.cerealed",
         "ut.backends.runner.lang.pollution",
         "ut.backends.runner.lang.imports",
