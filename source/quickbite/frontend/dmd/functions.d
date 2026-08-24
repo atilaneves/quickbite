@@ -172,7 +172,9 @@ private void snapshotStatement(
     if (auto asm_ = statement.isCompoundAsmStatement) {
         InlineAsmToken[][] instructions;
         foreach (child; *asm_.statements) {
+            // `const` would qualify the AST node and its mutable token list.
             auto inline_ = child is null ? null : child.isInlineAsmStatement;
+            // `const` tokens cannot bind to inlineAsmToken's mutable ref input.
             auto tokens = inline_ is null ? null : inline_.tokens;
             if (tokens is null)
                 continue;

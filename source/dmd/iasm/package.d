@@ -4,25 +4,23 @@ module dmd.iasm;
 private:
 
 
-import dmd.dscope: Scope;
-import dmd.dsymbol: CAsmDeclaration;
-import dmd.expression: AssertExp, Expression, IntegerExp, StringExp;
-import dmd.func: FuncDeclaration;
-import dmd.mtype: Type;
-import dmd.statement:
-    AsmStatement, ErrorStatement, ExpStatement, InlineAsmStatement, Statement;
-import dmd.statementsem: statementSemantic;
-import dmd.target: target;
-import dmd.tokens: TOK;
-
 version (MARS) {
     import dmd.iasm.dmdaarch64: inlineAsmAArch64Semantic;
     import dmd.iasm.dmdx86: inlineAsmSemantic;
 }
 
-public Statement asmSemantic(AsmStatement statement, Scope* scope_) {
-    FuncDeclaration function_ = scope_.parent.isFuncDeclaration;
-    assert(function_ !is null);
+public imported!"dmd.statement".Statement asmSemantic(
+    imported!"dmd.statement".AsmStatement statement,
+    imported!"dmd.dscope".Scope* scope_,
+) {
+    import dmd.expression: AssertExp, IntegerExp, StringExp;
+    import dmd.mtype: Type;
+    import dmd.statement: ErrorStatement, ExpStatement, InlineAsmStatement;
+    import dmd.statementsem: statementSemantic;
+    import dmd.target: target;
+    import dmd.tokens: TOK;
+
+    assert(scope_.parent.isFuncDeclaration !is null);
 
     if (statement.tokens is null)
         return null;
@@ -46,6 +44,7 @@ public Statement asmSemantic(AsmStatement statement, Scope* scope_) {
             );
         }
 
+        // `const` would prevent setting caseSensitive before semantic analysis.
         auto inline_ = new InlineAsmStatement(statement.loc, statement.tokens);
         inline_.caseSensitive = statement.caseSensitive;
         return target.isAArch64
@@ -59,7 +58,10 @@ public Statement asmSemantic(AsmStatement statement, Scope* scope_) {
     }
 }
 
-public void asmSemantic(CAsmDeclaration declaration, Scope* scope_) {
+public void asmSemantic(
+    imported!"dmd.dsymbol".CAsmDeclaration declaration,
+    imported!"dmd.dscope".Scope* scope_,
+) {
     version (MARS) {
         import dmd.errors: error;
 
