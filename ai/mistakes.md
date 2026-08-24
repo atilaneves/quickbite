@@ -693,11 +693,14 @@
   requires. The precise fix: make every caller that pattern-matches a
   specific expression shape unwrap the same inlining wrapper first.
 
-- For a large allocation regression, bracket whole phases with
-  `GC.allocatedInCurrentThread` before changing candidate storage sites. An
-  unchanged total after a candidate change is evidence against the
-  hypothesis, not evidence that more similar sites need the same change.
-  Issue #525's Cerealed repro attributed 5.0 of 7.4 GB to
-  `FrameBlock.temporaryAddress`: returned interpreter activations discarded
-  their expression-keyed temporary blocks, then rebuilt them on the next
-  call. Reusing eligible returned frames removed that cross-cutting churn.
+- A total-divided-by-calls average is not attribution: 26 GB of benchmark
+  garbage "per native call" turned out to be whole-array reallocation in
+  the VM's own call loop, with the FFI path a bystander. Bracket each
+  candidate phase with `GC.allocatedInCurrentThread` (O(1), collection-
+  immune) and compare against a compiled-D ground-truth run before
+  patching any site. An unchanged total is evidence against the hypothesis,
+  not a reason to patch more similar sites. Never sample `GC.stats.usedSize`
+  in a hot path -- it walks GC pools and gets slower as the heap grows. Issue
+  #525's equivalent interpreter probe attributed 5.0 of 7.4 GB to returned
+  activations discarding and rebuilding their expression-keyed temporary
+  blocks; reusing eligible frames removed that churn.

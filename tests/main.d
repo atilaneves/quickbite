@@ -26,6 +26,7 @@ int main(string[] args) {
         "ut.backends.interpreter.native_array",
         "ut.backends.interpreter.native_struct",
         "ut.backends.interpreter.native_scalar",
+        "ut.backends.bytecode.allocation",
         "quickbite.backends.native.llvm_jit",
         "ut.backends.runner.results",
         "ut.backends.runner.lang.expressions",
