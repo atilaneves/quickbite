@@ -36,36 +36,49 @@ only those places. Member and delegate receivers are places too. Reverse FFI
 callbacks borrow the typed libffi buffers directly, and callable metadata is
 keyed by the delegate place address.
 
+Stored bindings, module variables, and class field defaults remain typed
+places. A value copy snapshots address-keyed delegate, function-pointer,
+symbolic `TypeInfo`, and nested-context metadata by byte offset before it
+clears the destination range. A consuming copy clears the source metadata only
+when the source and destination do not overlap. Callable and symbolic
+`TypeInfo` reads and writes use their typed metadata operations; the native
+bytes remain the only ordinary value storage.
+
+Exception transport uses a class-specific identity: the DMD class type and
+the object-body address. Local class owners and borrowed native-exception
+field images stay in separate address-keyed `NativeAggregate` tables. Catch
+binding stores only the class reference, and exception chaining stores the
+next object address in both the typed class field and the runtime-owned link
+table. Do not turn this identity into a general value wrapper.
+
 Finish deletion in this order. Each family keeps a typed `Place`, native
 scalar, pointer, or `NativeAggregate` contract across its caller boundary.
 Later families can use earlier contracts, but no family introduces a new
 general value wrapper.
 
-1. Replace the stored-value and metadata boundary: `readStoredValue`,
-   `writeStoredValue`, `storageValue`, and the class, exception, callable, and
-   `TypeInfo` metadata helpers. This supplies the typed storage operations the
-   remaining expression families depend on.
-2. Replace address, pointer, variable, and member-result adapters, including
+1. Replace address, pointer, variable, and member-result adapters, including
    `constructedExpressionValue`, reference-return addresses, `runVariable*`,
    `runAddress*`, `runPointer*`, `runDotVar*`, delegate properties, and
-   `typeid`. This depends on the storage and metadata contracts from step 1.
-3. Replace call and interception results: `runCall*`, `runFunction`,
+   `typeid`. Remove their calls to `readStoredValue`, `writeStoredValue`, and
+   `storageValue`; the typed storage and metadata contracts above replace
+   those adapters.
+2. Replace call and interception results: `runCall*`, `runFunction`,
    `runMemberFunction`, delegate and native calls, atomic hooks, string
-   `foreach`, duplication, and lazy arguments. Calls depend on step 2 for
+   `foreach`, duplication, and lazy arguments. Calls depend on step 1 for
    callable and receiver places and write non-void results into caller-owned
    destinations.
-4. Replace scalar operations, equality, and casts. These depend on typed call
+3. Replace scalar operations, equality, and casts. These depend on typed call
    results for operator overloads and use the scalar reads on `Place` plus the
    existing `runtime_casts` destination operations.
-5. Replace the aggregate, slice, index, allocation, and literal fallbacks.
+4. Replace the aggregate, slice, index, allocation, and literal fallbacks.
    This depends on the typed scalar, call, and projection contracts and
    removes the remaining `NativeAggregate` conversions to and from
    `ExpressionResult`.
-6. Delete the residue: `readValue`, `writeValue`, `readScalarLeaf`, and
-   `writeScalarLeaf`; the boxed overloads in `aggregate_value.d`;
-   `expression_result.d`; and the implementation-detail tests
-   `tests/ut/backends/interpreter/place_value.d` and
-   `tests/ut/backends/interpreter/native_array.d`. Update the test module
+5. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
+   `readValue`, `writeValue`, `readScalarLeaf`, and `writeScalarLeaf`; the
+   boxed overloads in `aggregate_value.d`; `expression_result.d`; and the
+   implementation-detail tests `tests/ut/backends/interpreter/place_value.d`
+   and `tests/ut/backends/interpreter/native_array.d`. Update the test module
    aggregation. Inventory real corpus crossings that need an interpreted
    callable or `TypeInfo` to escape to native code. The standing refusal
    holds: no trampoline or proxy until a real crossing exists.

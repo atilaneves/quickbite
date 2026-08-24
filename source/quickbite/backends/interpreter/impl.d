@@ -536,12 +536,26 @@ private struct DelegateSlot {
     public size_t functionPointerId;
 }
 
+// One guest class identity. A class value is its object-body address; its
+// DMD type supplies the field layout. Owning storage stays in the existing
+// address-keyed owner tables, so aliases share one identity without a value
+// wrapper.
+private struct ClassObject {
+    public imported!"dmd.mtype".Type type;
+    public void* address;
+}
+
 private DelegateSlot delegateSlotValue(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     return value.isNativeDelegate
         ? DelegateSlot(true, value.nativeDelegateContext, value.nativeDelegateFuncptr, 0)
         : DelegateSlot(false, null, null, value.functionPointerId);
+}
+
+private DelegateSlot interpretedDelegateSlot(in size_t functionPointerId)
+@safe @nogc nothrow pure {
+    return DelegateSlot(false, null, null, functionPointerId);
 }
 
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
@@ -554,19 +568,10 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
         : ExpressionResult.functionPointerValue(slot.functionPointerId);
 }
 
-// A thrown/chained exception's own class identity and a member-function
-// delegate's receiver are both, at the native layer, either an owned
-// `NativeAggregate` (a locally constructed exception; a struct receiver's
-// own storage) or a bare class body address with no aggregate of its own
-// (a host-owned exception object's identity; a class receiver, whose place
-// address already IS its body address). `nativeAggregateFrom` builds the
-// single `NativeAggregate` representation both shapes settle into: the
-// owned case keeps its storage unchanged, and the address-only case borrows
-// a view sized from `type`'s own layout, so the block's `NativeBlock.
-// Ownership` -- not a separate flag -- records that it may not be
-// reallocated. Retention is unaffected either way: the owned arm keeps
-// exactly the block it already held reachable, and a borrowed block owns
-// nothing to retain.
+// A member-function delegate receiver is either an owned struct aggregate or
+// a bare class body address. Build the aggregate view that callable dispatch
+// still consumes. The block's ownership records whether the view may be
+// reallocated.
 private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
     nativeAggregateFrom(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
@@ -623,24 +628,6 @@ private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggrega
     );
 }
 
-// The inverse: re-boxes a class-identity/receiver `NativeAggregate` back to
-// `ExpressionResult` for the generic field-read/write code that both
-// exception handling and delegate dispatch share. Dispatches on the
-// aggregate's own type, not a flag: a class body has no separate carrier of
-// its own, so it re-boxes as its bare address; a struct keeps its full
-// native aggregate.
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
-    expressionResultFrom(
-        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate,
-    )
-{
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    return aggregate.type.toBasetype.isTypeClass !is null
-        ? ExpressionResult.pointerValue(cast(void*) aggregate.storage.address)
-        : ExpressionResult.nativeAggregateValue(aggregate);
-}
-
 // One root evaluation owns this context, and every nested call borrows it.
 // Callable identities are monotonic, but address-keyed slot metadata follows
 // storage lifetime: writes replace it and copies, moves, and clears relocate or
@@ -660,8 +647,7 @@ private struct InterpreterExecutionState {
     // Captured host Throwables and their interpreter-visible chain links are
     // created by the native exception bridge and read by later member calls.
     public Throwable[const(void)*] nativeThrowableRoots;
-    public imported!"quickbite.backends.interpreter.native_aggregate".
-        NativeAggregate[void*] nativeThrowableNext;
+    public ClassObject[void*] nativeThrowableNext;
 
     // Writes to guest ABI slots register symbolic interpreted callables and
     // TypeInfos; any later activation that reads the same address must see
@@ -702,10 +688,10 @@ private struct InterpreterExecutionState {
 }
 
 private class InterpretedException: Exception {
-    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate object;
+    public ClassObject object;
 
     public this(
-        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate object,
+        ClassObject object,
         in string message,
     ) {
         super(message);
@@ -715,19 +701,11 @@ private class InterpretedException: Exception {
 
 
 private string exceptionMessage(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    // `readScalarLeaf`, not the generic `readValue`: this reads an
-    // exception's `msg` field, always `string` (`char[]`, this function's
-    // sole caller's own field name), so each element place is already known
-    // to be a native character scalar.
-    import quickbite.backends.interpreter.place_value: readScalarLeaf;
-
-    auto aggregate = AggregateValue.native(value);
     char[] result;
-    foreach (index; 0 .. AggregateValue.length(aggregate))
-        result ~= readScalarLeaf(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
+    foreach (index; 0 .. value.arrayLength)
+        result ~= value.index(index).loadNativeScalar!char;
     return result.idup;
 }
 
@@ -780,8 +758,7 @@ private struct Walker {
         return _executionState.nativeThrowableRoots;
     }
 
-    private @property ref imported!"quickbite.backends.interpreter.native_aggregate".
-        NativeAggregate[void*] nativeThrowableNext() {
+    private @property ref ClassObject[void*] nativeThrowableNext() {
         return _executionState.nativeThrowableNext;
     }
 
@@ -889,8 +866,7 @@ private struct Walker {
     private Place thisValue;
     private void* thisAddress;
     private bool hasThis;
-    private imported!"quickbite.backends.interpreter.native_aggregate".
-        NativeAggregate pendingFinallyBodyException;
+    private ClassObject pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
 
     private bool returned;
@@ -997,12 +973,10 @@ private struct Walker {
                 if (finalException is null)
                     throw exception;
                 if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
-                    auto bodyType = bodyInterpreted.object.type;
-                    const chained = chainExceptionObject(
-                        expressionResultFrom(bodyInterpreted.object),
+                    bodyInterpreted.object = chainExceptionObject(
+                        bodyInterpreted.object,
                         finalException.object,
                     );
-                    bodyInterpreted.object = nativeAggregateFrom(chained, bodyType);
                     throw bodyInterpreted;
                 }
                 throw finalException;
@@ -1173,19 +1147,18 @@ private struct Walker {
             if (interpreted is null)
                 throw exception;
 
-            const objectValue = expressionResultFrom(interpreted.object);
-            auto catch_ = matchingCatch(tryCatch, objectValue);
+            auto catch_ = matchingCatch(tryCatch, interpreted.object);
             if (catch_ is null)
                 throw exception;
 
-            bindCatchVariable(catch_, objectValue);
+            bindCatchVariable(catch_, interpreted.object);
             runStatement(catch_.handler);
         }
     }
 
     private imported!"dmd.statement".Catch matchingCatch(
         imported!"dmd.statement".TryCatchStatement tryCatch,
-        in ExpressionResult object,
+        ClassObject object,
     ) {
         if (tryCatch.catches is null || tryCatch.catches.length == 0)
             return null;
@@ -1199,7 +1172,7 @@ private struct Walker {
 
     private bool catchMatches(
         imported!"dmd.statement".Catch catch_,
-        in ExpressionResult object,
+        ClassObject object,
     ) {
         if (catch_.type is null)
             return true;
@@ -1211,65 +1184,25 @@ private struct Walker {
         return classHasType(object, className(classType.sym));
     }
 
-    // Single write path for a binding. Native bytes and address-keyed
-    // callable/symbolic metadata are the entire stored value.
-    private void setLocal(VarDeclaration variable, ExpressionResult value) {
+    // An index/slice `$`-length binding is always a native `size_t` and has
+    // no address-keyed metadata.
+    private void setLocal(VarDeclaration variable, in size_t value) {
         import std.conv: text;
 
         if (
             !hasBindingPlace(variable) &&
             declarationName(variable) == "__dollar"
         ) {
-            _syntheticDollarValues[cast(const(void)*) variable] =
-                cast(size_t) value.asLong;
+            _syntheticDollarValues[cast(const(void)*) variable] = value;
             return;
         }
-
         if (!hasBindingPlace(variable))
             throw new Exception(text(
                 "Interpreter binding `",
                 declarationName(variable),
-                "` has no native place in `",
-                currentFunction is null ? "<root>" : declarationName(currentFunction),
-                "`.",
+                "` has no native place.",
             ));
-
-        // A delegate, function-pointer, or symbolic-classinfo value is never
-        // `isNativeAggregate`, so `writeStoredValue`'s aggregate-metadata
-        // `consumeMetadata` argument is never read on this write; the
-        // general call below (with `consumeMetadata = true`) is already
-        // identical for these three value kinds, so they need no dedicated
-        // branch here.
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            value == ExpressionResult.null_
-        ) {
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            value.isPointer
-        ) {
-            // A by-value class parameter owns a reference slot, not a copy of
-            // the object body. Keep that slot authoritative so taking the
-            // parameter by `ref` forwards the same live reference rather than
-            // the frame's initial null bytes.
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
-
-        writeStoredValue(bindingPlace(variable), value, true);
-    }
-
-    // An index/slice `$`-length binding is always a native `size_t`
-    // already, never a carrier or metadata-bearing value -- this overload
-    // lets that call site hand it over directly instead of boxing it into
-    // an `ExpressionResult` only to satisfy the general overload above.
-    private void setLocal(VarDeclaration variable, in size_t value) {
-        setLocal(variable, ExpressionResult(value));
+        bindingPlace(variable).storeNativeScalar(value);
     }
 
     // Out-of-band callable and symbolic-reference entries are part of the
@@ -1459,6 +1392,48 @@ private struct Walker {
             secondStart < firstStart + firstLength;
     }
 
+    private void storeDelegateSlot(Place place, in DelegateSlot slot) {
+        import quickbite.backends.interpreter.place_value: clearPlace;
+
+        clearStoredMetadata(place.type, place.address);
+        nativeDelegateSlots[place.address] = slot;
+        clearPlace(place);
+    }
+
+    private DelegateSlot loadDelegateSlot(Place place) {
+        import quickbite.backends.interpreter.native_call_adapter:
+            NativeOperand, nativeDelegateMetadata;
+
+        if (auto slot = place.address in nativeDelegateSlots)
+            return *slot;
+        const native = nativeDelegateMetadata(
+            NativeOperand(place.type, place.address),
+        );
+        return DelegateSlot(true, native.context, native.funcptr, 0);
+    }
+
+    private void storeFunctionPointerId(Place place, in size_t id) {
+        clearStoredMetadata(place.type, place.address);
+        nativeFunctionPointerSlots[place.address] = id;
+        place.storeReference(null);
+    }
+
+    private size_t* loadFunctionPointerId(Place place) {
+        return cast(const(void)*) place.address in nativeFunctionPointerSlots;
+    }
+
+    private void storeTypeInfoName(Place place, in string name) {
+        import quickbite.backends.interpreter.place_value: clearPlace;
+
+        clearStoredMetadata(place.type, place.address);
+        nativeTypeInfoSlots[place.address] = name;
+        clearPlace(place);
+    }
+
+    private string* loadTypeInfoName(Place place) {
+        return place.address in nativeTypeInfoSlots;
+    }
+
     // Writes one typed place and keeps its out-of-band symbolic TypeInfo
     // identity under the same value-copy rules as the place's native bytes.
     private void writeStoredValue(
@@ -1476,9 +1451,7 @@ private struct Walker {
         // resolvable host `TypeInfo_Class` symbol, and that result reaches
         // this write through the ordinary assignment/construction paths.
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
-            clearStoredMetadata(place.type, place.address);
-            nativeTypeInfoSlots[place.address] = value.asTypeNameString;
-            clearPlace(place);
+            storeTypeInfoName(place, value.asTypeNameString);
             return;
         }
 
@@ -1486,9 +1459,7 @@ private struct Walker {
         // `runDelegateExpression`'s result straight here to land in
         // `nativeDelegateSlots`.
         if (place.type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
-            clearStoredMetadata(place.type, place.address);
-            nativeDelegateSlots[place.address] = delegateSlotValue(value);
-            clearPlace(place);
+            storeDelegateSlot(place, delegateSlotValue(value));
             return;
         }
 
@@ -1501,9 +1472,7 @@ private struct Walker {
             pointerType.nextOf.toBasetype.isTypeFunction !is null &&
             value.isFunctionPointer
         ) {
-            clearStoredMetadata(place.type, place.address);
-            nativeFunctionPointerSlots[place.address] = value.functionPointerId;
-            place.storeReference(null);
+            storeFunctionPointerId(place, value.functionPointerId);
             return;
         }
 
@@ -1526,8 +1495,6 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_call_adapter:
-            NativeOperand, nativeDelegateMetadata;
         import quickbite.backends.interpreter.place_value: readValue;
 
         import dmd.astenums: TY;
@@ -1538,19 +1505,12 @@ private struct Walker {
         // expression, which bottoms out here for a plain variable or field
         // read.
         if (place.type.toBasetype.ty == TY.Tdelegate) {
-            if (auto delegate_ = place.address in nativeDelegateSlots) {
-                return delegateSlotResult(*delegate_);
-            } else {
-                const delegate_ = nativeDelegateMetadata(
-                    NativeOperand(place.type, place.address),
-                );
-                return delegate_.isNull
+            const slot = loadDelegateSlot(place);
+            if (slot.isNative)
+                return slot.funcptr is null
                     ? ExpressionResult.null_
-                    : ExpressionResult.nativeDelegateValue(
-                        delegate_.context,
-                        delegate_.funcptr,
-                    );
-            }
+                    : delegateSlotResult(slot);
+            return delegateSlotResult(slot);
         }
         auto pointerType = place.type.toBasetype.isTypePointer;
         // Still reached: the general "read a function-pointer-typed place"
@@ -1559,17 +1519,14 @@ private struct Walker {
             pointerType !is null &&
             pointerType.nextOf.toBasetype.isTypeFunction !is null
         )
-            if (
-                auto function_ = cast(const(void)*) place.address
-                    in nativeFunctionPointerSlots
-            )
+            if (auto function_ = loadFunctionPointerId(place))
                 return ExpressionResult.functionPointerValue(*function_);
         // Still reached: `.name`/`m_flags` field reads, `equalOperands`'s
         // symbolic-identity compare, and `classCastValue`'s `TypeInfo_Class`
         // narrowing all read a class-typed place generically and rely on
         // this reconstructing the registered display name.
         if (place.type.toBasetype.isTypeClass !is null)
-            if (auto typeInfo = place.address in nativeTypeInfoSlots)
+            if (auto typeInfo = loadTypeInfoName(place))
                 return ExpressionResult.typeName(*typeInfo);
 
         const value = readValue(place);
@@ -1656,11 +1613,6 @@ private struct Walker {
             "temporary destructor queued outside its expression scope",
         );
         _pendingTemporaryDestructors ~= destructor;
-    }
-
-    private void storeBinding(VarDeclaration variable, in ExpressionResult value) {
-        setLocal(variable, value);
-        clearUninitializedBindingAddress(bindingPlace(variable).address);
     }
 
     private void markUninitializedBinding(VarDeclaration variable) {
@@ -2167,13 +2119,15 @@ private struct Walker {
 
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
-        in ExpressionResult object,
+        ClassObject object,
     ) {
         if (catch_.var is null)
             return;
 
-        setLocal(catch_.var, object);
-        clearUninitializedBindingAddress(bindingPlace(catch_.var).address);
+        auto destination = bindingPlace(catch_.var);
+        clearStoredMetadata(destination.type, destination.address);
+        destination.storeReference(object.address);
+        clearUninitializedBindingAddress(destination.address);
     }
 
 
@@ -2182,25 +2136,68 @@ private struct Walker {
         return (cast(ubyte*) address)[0 .. length];
     }
 
+    private ClassObject classObjectFromReferencePlace(Place place) {
+        auto address = place.deref.address;
+        auto type = place.type;
+        if (auto dynamicType = address in nativeClassTypes)
+            type = *dynamicType;
+        return ClassObject(type, address);
+    }
+
+    private ClassObject classObjectFromReceiverPlace(Place place) {
+        auto type = place.type;
+        if (auto dynamicType = place.address in nativeClassTypes)
+            type = *dynamicType;
+        return ClassObject(type, place.address);
+    }
+
+    private void writeCharacterArray(Place destination, in string characters) {
+        import dmd.astenums: TY;
+
+        auto owner = AggregateValue.allocateArray(
+            destination.type,
+            characters.length,
+        );
+        auto source = Place(owner.address, owner.type);
+        foreach (index, character; characters) {
+            auto element = source.index(index);
+            switch (element.type.toBasetype.ty) with (TY) {
+            case Tchar:
+                element.storeNativeScalar(character);
+                break;
+            case Twchar:
+                element.storeNativeScalar(cast(wchar) character);
+                break;
+            case Tdchar:
+                element.storeNativeScalar(cast(dchar) character);
+                break;
+            default:
+                throw new Exception("Character array has a non-character element type.");
+            }
+        }
+        copyPlaceValue(source, destination);
+    }
+
     private void throwInterpretedException(
         imported!"dmd.expression".Expression expression,
     ) {
-        const object = constructedExpressionValue(expression);
+        auto object = classObjectFromReferencePlace(
+            constructedExpressionPlace(expression),
+        );
         if (dynamicClass(object) is null)
             throw new Exception("Unsupported throw expression.");
-        auto objectAggregate = nativeAggregateFrom(object, expression.type);
         if (hasPendingFinallyBodyException) {
-            const chained = chainExceptionObject(
-                expressionResultFrom(pendingFinallyBodyException),
-                objectAggregate,
+            auto chained = chainExceptionObject(
+                pendingFinallyBodyException,
+                object,
             );
             throw new InterpretedException(
-                nativeAggregateFrom(chained, pendingFinallyBodyException.type),
+                chained,
                 exceptionObjectMessage(chained),
             );
         }
 
-        throw new InterpretedException(objectAggregate, exceptionObjectMessage(object));
+        throw new InterpretedException(object, exceptionObjectMessage(object));
     }
 
     private void throwNativeException(
@@ -2243,7 +2240,7 @@ private struct Walker {
     // identity. Interpreter-visible fields live in a native aggregate keyed
     // by that address, while `.next` stays address-keyed because the host link
     // is runtime-owned storage rather than a guest-layout object body.
-    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    private ClassObject
     nativeExceptionObject(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
@@ -2254,13 +2251,13 @@ private struct Walker {
         );
         if (exception.chainedNext !is null) {
             auto next = nativeExceptionObject(exception.chainedNext);
-            nativeThrowableNext[classIdentityAddress(expressionResultFrom(object))] = next;
+            nativeThrowableNext[object.address] = next;
         }
 
         return object;
     }
 
-    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    private ClassObject
     nativeExceptionBaseObject(
         in string message,
         in string className,
@@ -2278,42 +2275,30 @@ private struct Walker {
 
         auto metadataOwner = AggregateValue.allocateClass(class_.type);
         initializeNativeClassBody(this, class_.type, metadataOwner);
-        auto metadata = ExpressionResult.nativeAggregateValue(metadataOwner);
         if (nativeObjectPointer !is null)
             hydrateNativeExceptionMetadata(
                 metadataOwner,
                 class_,
                 cast(void*) nativeObjectPointer,
-            );
+        );
         if (AggregateValue.hasClassFieldNamed(metadataOwner, "msg")) {
-            import quickbite.backends.interpreter.layout: classFields, fieldName;
-
-            imported!"dmd.mtype".Type messageType;
-            foreach (field; classFields(class_))
-                if (fieldName(field) == "msg") {
-                    messageType = field.type;
-                    break;
-                }
-            metadata = ExpressionResult.nativeAggregateValue(
-                AggregateValue.withClassFieldNamed(
-                    AggregateValue.native(metadata),
-                    "msg",
-                    characterArrayValue(this, messageType, message),
-                ),
+            writeCharacterArray(
+                AggregateValue.classFieldNamed(metadataOwner, "msg"),
+                message,
             );
         }
 
         if (nativeObjectPointer is null) {
             const address = AggregateValue.nativeClassBodyAddress(metadataOwner);
             nativeClassTypes[address] = class_.type;
-            nativeClassOwners[address] = metadata.nativeAggregate;
-            return metadata.nativeAggregate;
+            nativeClassOwners[address] = metadataOwner;
+            return ClassObject(class_.type, cast(void*) address);
         }
 
         auto address = cast(void*) nativeObjectPointer;
         nativeClassTypes[address] = class_.type;
-        nativeExceptionMetadata[address] = metadata.nativeAggregate;
-        return nativeAggregateFrom(ExpressionResult.pointerValue(address), class_.type);
+        nativeExceptionMetadata[address] = metadataOwner;
+        return ClassObject(class_.type, address);
     }
 
     private void hydrateNativeExceptionMetadata(
@@ -2344,8 +2329,15 @@ private struct Walker {
         }
     }
 
-    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate*
-    classMetadata(in ExpressionResult object) {
+    private NativeAggregate* classMetadata(ClassObject object) {
+        if (object.address is null)
+            return null;
+        if (auto metadata = object.address in nativeExceptionMetadata)
+            return metadata;
+        return object.address in nativeClassOwners;
+    }
+
+    private NativeAggregate* classMetadata(in ExpressionResult object) {
         if (object.isNativeAggregate)
             return null;
         const address = classIdentityAddress(object);
@@ -2356,61 +2348,36 @@ private struct Walker {
         return address in nativeClassOwners;
     }
 
-    private bool classHasFieldNamed(in ExpressionResult object, in string name) {
-        if (object.isNativeAggregate)
-            return AggregateValue.hasClassFieldNamed(object, name);
+    private bool classHasFieldNamed(ClassObject object, in string name) {
         if (auto metadata = classMetadata(object))
-            return AggregateValue.hasClassFieldNamed(
-                ExpressionResult.nativeAggregateValue(*metadata),
-                name,
-            );
+            return AggregateValue.hasClassFieldNamed(*metadata, name);
         return false;
     }
 
-    private ExpressionResult classFieldNamed(in ExpressionResult object, in string name) {
-        if (object.isNativeAggregate)
-            return readStoredValue(
-                AggregateValue.classFieldNamed(AggregateValue.native(object), name),
-            );
+    private Place classFieldNamed(ClassObject object, in string name) {
         if (auto metadata = classMetadata(object))
-            return readStoredValue(
-                AggregateValue.classFieldNamed(*metadata, name),
-            );
+            return AggregateValue.classFieldNamed(*metadata, name);
         throw new Exception("Class field metadata is unavailable.");
     }
 
-    private ExpressionResult withClassFieldNamed(
-        in ExpressionResult object,
-        in string name,
-        in ExpressionResult field,
-    ) {
-        if (object.isNativeAggregate)
-            return ExpressionResult.nativeAggregateValue(
-                AggregateValue.withClassFieldNamed(AggregateValue.native(object), name, field),
-            );
-        if (auto metadata = classMetadata(object)) {
-            *metadata = AggregateValue.withClassFieldNamed(*metadata, name, field);
-            return object;
-        }
-        throw new Exception("Class field metadata is unavailable.");
-    }
-
-    private string exceptionObjectMessage(in ExpressionResult object) {
+    private string exceptionObjectMessage(ClassObject object) {
         return classHasFieldNamed(object, "msg")
             ? exceptionMessage(classFieldNamed(object, "msg"))
             : "";
     }
 
-    private ExpressionResult chainExceptionObject(
-        in ExpressionResult thrown,
-        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate next,
+    private ClassObject chainExceptionObject(
+        ClassObject thrown,
+        ClassObject next,
     ) {
         if (!classHasFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
-        const chained = withClassFieldNamed(thrown, "_nextInChainPtr", expressionResultFrom(next));
-        nativeThrowableNext[classIdentityAddress(chained)] = next;
-        return chained;
+        auto field = classFieldNamed(thrown, "_nextInChainPtr");
+        clearStoredMetadata(field.type, field.address);
+        field.storeReference(next.address);
+        nativeThrowableNext[thrown.address] = next;
+        return thrown;
     }
 
     private bool isThrowableConstructor(
@@ -2433,7 +2400,7 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place object,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
     ) {
-        const objectValue = receiverValue(object);
+        auto objectValue = classObjectFromReceiverPlace(object);
         if (dynamicClass(objectValue) is null || argumentPlaces.length == 0)
             return;
         auto metadata = classMetadata(objectValue);
@@ -2446,7 +2413,7 @@ private struct Walker {
         );
         if (
             argumentPlaces.length >= 4 &&
-            dynamicClass(readStoredValue(argumentPlaces[3])) !is null &&
+            dynamicClass(classObjectFromReferencePlace(argumentPlaces[3])) !is null &&
             classHasFieldNamed(objectValue, "_nextInChainPtr")
         )
             copyPlaceValue(
@@ -2625,10 +2592,8 @@ private struct Walker {
             auto initializer = with_.wthis._init.isExpInitializer;
             if (initializer is null)
                 throw new Exception("Interpreter with receiver has no initializer.");
-            setLocal(
-                with_.wthis,
-                storageValue(with_.wthis.type, constructedExpressionValue(initializer.exp)),
-            );
+            auto destination = ConstructionDestination(bindingPlace(with_.wthis));
+            runExpression(initializer.exp, destination);
             runStatement(with_._body);
         } else {
             runStatement(with_._body);
@@ -3467,7 +3432,9 @@ private struct Walker {
             return ExpressionResult.pointerValue(thisAddress);
 
         if (auto delegate_ = e1.isDelegateExp)
-            return runDelegateExpression(delegate_);
+            return ExpressionResult.functionPointerValue(
+                runDelegateExpression(delegate_).functionPointerId,
+            );
 
         // `this` is not an ordinary binding to compose an address from: the
         // receiver's address is the one this activation was entered with. A
@@ -4875,13 +4842,14 @@ private struct Walker {
     // body (`frame_layout.computeExpressionFrameLayout`'s own comment) --
     // reusing the triggering function's already-computed frame, or the
     // frame-less root the top-level `execute` entry point starts with,
-    // leaves such a temp with no slot anywhere, so `setLocal` rejects it
-    // ("has no native place"). The initializer can only name other module-
+    // leaves such a temp with no slot anywhere, so its binding has no native
+    // place. The initializer can only name other module-
     // scope declarations and its own literal/temp values -- never a local
     // of whatever function triggered this -- so swapping in a dedicated
     // frame around just this evaluation is exact, not an approximation.
-    private ExpressionResult evaluateDatasegInitializerExpression(
+    private void evaluateDatasegInitializerExpression(
         imported!"dmd.expression".Expression expression,
+        Place destination,
     ) {
         import quickbite.backends.interpreter.frame_layout:
             computeExpressionFrameLayout;
@@ -4892,7 +4860,8 @@ private struct Walker {
         _activationFrame = FrameBlock.allocate(
             computeExpressionFrameLayout(expression),
         );
-        return constructedExpressionValue(expression);
+        auto construction = ConstructionDestination(destination);
+        runExpression(expression, construction);
     }
 
     private void materializeDatasegInitializer(VarDeclaration variable) {
@@ -4918,9 +4887,10 @@ private struct Walker {
         if (variable._init is null) {
             import dmd.typesem: defaultInitLiteral;
 
-            setLocal(variable, evaluateDatasegInitializerExpression(
+            evaluateDatasegInitializerExpression(
                 variable.type.defaultInitLiteral(variable.loc),
-            ));
+                bindingPlace(variable),
+            );
             return;
         }
 
@@ -4939,10 +4909,10 @@ private struct Walker {
         auto initializerExp = variable._init.initializerToExpression;
         if (initializerExp !is null) {
             defaultLocalValue(variable);
-            setLocal(variable, storageValue(
-                variable.type,
-                evaluateDatasegInitializerExpression(initializerExp),
-            ));
+            evaluateDatasegInitializerExpression(
+                initializerExp,
+                bindingPlace(variable),
+            );
         }
     }
 
@@ -5053,33 +5023,36 @@ private struct Walker {
     }
 
     private ExpressionResult functionPointerValue(FuncDeclaration function_) {
+        return ExpressionResult.functionPointerValue(functionPointerId(function_));
+    }
+
+    private size_t functionPointerId(FuncDeclaration function_) {
         if (auto id = function_ in functionPointerIds)
-            return ExpressionResult.functionPointerValue(*id);
+            return *id;
 
-        const id = ++nextFunctionPointerId;
+        const id = newFunctionPointerId(function_);
         functionPointerIds[function_] = id;
-        functionPointers[id] = function_;
-        return ExpressionResult.functionPointerValue(id);
+        return id;
     }
 
-    private ExpressionResult newFunctionPointerValue(FuncDeclaration function_) {
+    private size_t newFunctionPointerId(FuncDeclaration function_) {
         const id = ++nextFunctionPointerId;
         functionPointers[id] = function_;
-        return ExpressionResult.functionPointerValue(id);
+        return id;
     }
 
-    private ExpressionResult runDelegateExpression(
+    private DelegateSlot runDelegateExpression(
         imported!"dmd.expression".DelegateExp delegate_,
     ) {
         if (delegate_.func is null)
             throw new Exception("Unsupported eval expression: delegate_");
 
-        const functionPointer = newFunctionPointerValue(delegate_.func);
+        const functionPointerId = newFunctionPointerId(delegate_.func);
         const contextPointer = delegateContextPointer(delegate_);
 
         RuntimeDelegate runtime;
         runtime.function_ = delegate_.func;
-        runtime.functionPointerId = functionPointer.functionPointerId;
+        runtime.functionPointerId = functionPointerId;
         runtime.contextPointer = contextPointer.pointerAddress;
         runtime.capturedAddresses = closureCapturedAddresses(delegate_.func);
         if (isMemberFunction(delegate_.func)) {
@@ -5097,8 +5070,8 @@ private struct Walker {
             runtime.hasReceiver = true;
         }
 
-        _executionState.delegates[functionPointer.functionPointerId] = runtime;
-        return functionPointer;
+        _executionState.delegates[functionPointerId] = runtime;
+        return interpretedDelegateSlot(functionPointerId);
     }
 
     // A function literal's typed destination decides its D value shape. Both
@@ -6815,7 +6788,27 @@ private struct Walker {
         return null;
     }
 
+    private imported!"dmd.dclass".ClassDeclaration dynamicClass(
+        ClassObject value,
+    ) {
+        if (value.address is null || value.type is null)
+            return null;
+        auto classType = value.type.toBasetype.isTypeClass;
+        return classType is null ? null : classType.sym;
+    }
+
     private bool classHasType(in ExpressionResult value, in string name) {
+        auto class_ = dynamicClass(value);
+        if (class_ is null)
+            return false;
+
+        foreach (typeName; classTypeNames(class_))
+            if (typeName == name)
+                return true;
+        return false;
+    }
+
+    private bool classHasType(ClassObject value, in string name) {
         auto class_ = dynamicClass(value);
         if (class_ is null)
             return false;
@@ -7248,17 +7241,24 @@ private struct Walker {
     ) {
         const memberReceiver = receiverValue(receiver);
 
-        if (declarationName(function_) == "next") {
-            if (classHasType(memberReceiver, "Throwable")) {
-                const body = classIdentityAddress(memberReceiver);
-                if (auto next = body in nativeThrowableNext)
-                    return expressionResultFrom(*next);
+        if (
+            declarationName(function_) == "next" &&
+            receiver.type.toBasetype.isTypeClass !is null
+        ) {
+            auto object = classObjectFromReceiverPlace(receiver);
+            if (classHasType(object, "Throwable")) {
+                if (auto next = object.address in nativeThrowableNext)
+                    return next.address is null
+                        ? ExpressionResult.null_
+                        : ExpressionResult.pointerValue(next.address);
 
-                if (classHasFieldNamed(memberReceiver, "_nextInChainPtr"))
-                    return classFieldNamed(
-                        memberReceiver,
-                        "_nextInChainPtr",
-                    );
+                if (classHasFieldNamed(object, "_nextInChainPtr")) {
+                    auto next = classFieldNamed(object, "_nextInChainPtr")
+                        .deref.address;
+                    return next is null
+                        ? ExpressionResult.null_
+                        : ExpressionResult.pointerValue(next);
+                }
             }
         }
 
@@ -9173,10 +9173,12 @@ private struct Walker {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
-            storeBinding(
-                variable,
+            writeStoredValue(
+                bindingPlace(variable),
                 storageValue(variable.type, value),
+                true,
             );
+            clearUninitializedBindingAddress(bindingPlace(variable).address);
 
             return;
         }
@@ -11618,10 +11620,12 @@ private struct Walker {
             // header. Appending rebinds that header, so it must use the same
             // binding write route as ordinary assignment instead of replacing
             // only this activation's local expression handle.
-            storeBinding(
-                variable,
-                appended,
+            copyPlaceValue(
+                Place(AggregateValue.native(appended).address, variable.type),
+                bindingPlace(variable),
+                true,
             );
+            clearUninitializedBindingAddress(bindingPlace(variable).address);
             return bindingPlace(variable);
         }
     }
@@ -13863,13 +13867,13 @@ private struct Walker {
                     blit.e2.isIntegerExp !is null
                 )
             ) {
-                setLocal(variable, runDefaultValue(variable.type));
+                defaultLocalValue(variable);
                 return;
             }
 
             // DMD default-initialises struct locals with `variable = 0`
             if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
-                setLocal(variable, runDefaultValue(variable.type));
+                defaultLocalValue(variable);
                 return;
             }
 
@@ -13998,8 +14002,8 @@ private struct Walker {
                     while (auto sourceCast = sourceArray.isCastExp)
                         sourceArray = sourceCast.e1;
 
-                    const source = constructedExpressionValue(sourceArray);
-                    setLocal(variable, source);
+                    auto source = constructedExpressionPlace(sourceArray);
+                    copyPlaceValue(source, bindingPlace(variable));
 
                     const count =
                         staticArrayLength(variable.type.toBasetype.isTypeSArray);
@@ -14028,21 +14032,6 @@ private struct Walker {
                 throw new Exception("Reference initializer has no native place.");
             _activationFrame.setReferenceSlot(variable, pointer.pointerAddress);
             clearUninitializedBindingAddress(pointer.pointerAddress);
-            return;
-        }
-
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
-
-        if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
-            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-            setLocal(variable, reconstructStoredArray(variable.type, []));
-            return;
-        }
-
-        if (auto slice = initializer.isSliceExp) {
-            size_t lower;
-            setLocal(variable, runSliceExpression(slice, lower));
             return;
         }
 
@@ -14310,17 +14299,17 @@ private struct Walker {
 
         // A delegate literal and a bare `&function` mint interpreter-only
         // callable identity with no native ABI address of their own.
-        // Construct straight into the destination's `nativeDelegateSlots`/
-        // `nativeFunctionPointerSlots` entry via `writeStoredValue`.
+        // Construct straight into the destination's address-keyed callable
+        // slot. Interpreted callables have no native ABI address of their own.
         if (auto delegate_ = rvalue.isDelegateExp) {
-            writeStoredValue(place, runDelegateExpression(delegate_));
+            storeDelegateSlot(place, runDelegateExpression(delegate_));
             destination.markConstructed;
             return true;
         }
 
         if (auto symbol = rvalue.isSymOffExp)
             if (auto function_ = symbol.var.isFuncDeclaration) {
-                writeStoredValue(place, functionPointerValue(function_));
+                storeFunctionPointerId(place, functionPointerId(function_));
                 destination.markConstructed;
                 return true;
             }
@@ -15942,11 +15931,13 @@ destinationFallback:
     private void copyPlaceValue(
         imported!"quickbite.backends.interpreter.place".Place source,
         imported!"quickbite.backends.interpreter.place".Place destination,
+        in bool consumeMetadata = false,
     ) {
         copyStoredMetadata(
             destination.type,
             cast(void*) source.address,
             destination.address,
+            consumeMetadata,
         );
         destination.copyFromUnchecked(source);
     }
@@ -15979,7 +15970,14 @@ destinationFallback:
     }
 
     private void defaultLocalValue(VarDeclaration variable) {
-        defaultValue(variable.type, bindingPlace(variable));
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+
+        auto destination = ConstructionDestination(bindingPlace(variable));
+        runExpression(
+            variable.type.defaultInitLiteral(Loc.initial),
+            destination,
+        );
     }
 
     private bool isRefVariable(VarDeclaration variable) const {
@@ -16251,8 +16249,8 @@ private bool isVoidSliceType(imported!"dmd.mtype".Type type) {
 
 // A newly allocated native class body begins as zeroed guest storage, but
 // D's field defaults need not be zero. Seed each declared field through the
-// same place codec used by assignments; the returned NativeAggregate retains
-// the reference slot and the body allocation as one expression value.
+// same typed-place copy used by assignments. The caller retains the reference
+// slot and body allocation.
 private void initializeNativeClassBody(
     ref Walker walker,
     imported!"dmd.mtype".Type type,
@@ -16261,7 +16259,6 @@ private void initializeNativeClassBody(
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: writeValue;
     import quickbite.backends.interpreter.runtime_values: defaultValue;
 
     auto classType = type.toBasetype.isTypeClass;
@@ -16285,17 +16282,14 @@ private void initializeNativeClassBody(
         auto destination = body.field(field);
         defaultValue(field.type, destination);
         if (field._init !is null) {
-            imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value;
+            Place source;
             if (auto initializer = field._init.isExpInitializer)
-                value = walker.storageValue(
-                    field.type,
-                    walker.constructedExpressionValue(initializer.exp),
-                );
+                source = walker.constructedExpressionPlace(initializer.exp);
             else if (field._init.isArrayInitializer !is null)
-                value = classFieldArrayLiteralDefault(walker, field);
+                source = classFieldArrayLiteralDefault(walker, field);
             else
                 continue;
-            writeValue(destination, value);
+            walker.copyPlaceValue(source, destination);
         }
     }
 }
@@ -16307,10 +16301,10 @@ private void initializeNativeClassBody(
 // class's static `.init` data, and every `new` that does not override the
 // field shares that one backing array: mutating it through one instance is
 // visible through another. Evaluate the literal once per field declaration
-// and cache the resulting native array `ExpressionResult`, so every later instance's
+// and cache the resulting native array place, so every later instance's
 // field descriptor points at the same backing storage instead of a fresh
 // per-object copy.
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
+private imported!"quickbite.backends.interpreter.place".Place
 classFieldArrayLiteralDefault(
     ref Walker walker,
     imported!"dmd.declaration".VarDeclaration field,
@@ -16320,17 +16314,15 @@ classFieldArrayLiteralDefault(
         typeByteSize, typeHasPointers;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
     if (walker.classArrayFieldDefaults is null)
         walker.classArrayFieldDefaults = new ClassArrayFieldDefaults;
     const key = cast(const(void)*) field._init;
     if (auto cached = key in walker.classArrayFieldDefaults.table)
-        return readValue(Place(cached.address, field.type));
+        return Place(cached.address, field.type);
 
-    const value = walker.storageValue(
-        field.type,
-        walker.constructedExpressionValue(field._init.initializerToExpression),
+    auto value = walker.constructedExpressionPlace(
+        field._init.initializerToExpression,
     );
     auto block = NativeBlock.allocate(
         typeByteSize(field.type),
@@ -16338,9 +16330,9 @@ classFieldArrayLiteralDefault(
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no,
     );
-    writeValue(Place(block.address, field.type), value);
+    walker.copyPlaceValue(value, Place(block.address, field.type));
     walker.classArrayFieldDefaults.table[key] = block;
-    return readValue(Place(block.address, field.type));
+    return Place(block.address, field.type);
 }
 
 

@@ -736,3 +736,10 @@
   every patch hunk in the containing function. A text-only replacement can
   silently change an unrelated execution path that happens to contain the
   same statement.
+
+- Do not replace DMD's `defaultInitLiteral` evaluation with
+  `runtime_values.defaultValue` when moving a default into typed storage. The
+  runtime helper starts from each field type's default and does not apply the
+  field declaration's initializer; a static array of structs then repeats the
+  wrong element image. Evaluate the semantic default expression directly into
+  the destination place.
