@@ -27,9 +27,8 @@ package(quickbite.backends.bytecode) struct RunResult {
 
 // Shrinks without surrendering append capacity: after a plain shrink the
 // array no longer ends at its block's recorded used size, so the next `~=`
-// reallocates and copies the whole array -- on every guest call/push, since
-// the machine pops these arrays on every return. The dropped tail holds only
-// dead index bookkeeping, so reusing its storage is safe.
+// reallocates and copies the whole array. The dropped tail holds only dead
+// index bookkeeping, so reusing its storage is safe.
 private void shrinkReusing(T)(ref T[] array, in size_t length) @trusted {
     array.length = length;
     array.assumeSafeAppend;
@@ -78,6 +77,10 @@ package(quickbite.backends.bytecode) RunResult run(
     // `throwString` with any handler active redirects to the innermost one
     // (popping it) instead of propagating as a host exception.
     Handler[] handlers;
+    // The active prefix of `frames`. Its storage remains at the greatest
+    // depth reached so returns can reuse their frame slots without changing
+    // the GC array metadata.
+    size_t frameDepth;
     size_t functionIndex = entryIndex;
     size_t base = 0;
     size_t ip;
@@ -1814,9 +1817,14 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. base + instruction.b + callee.parameterBytes
                     ];
 
-                frames ~= Frame(
+                const frame = Frame(
                     functionIndex, ip + 1, base, instruction.c,
                 );
+                if (frameDepth == frames.length)
+                    frames ~= frame;
+                else
+                    frames[frameDepth] = frame;
+                ++frameDepth;
                 functionIndex = calleeIndex;
                 base = calleeBase;
                 ip = 0;
@@ -1901,7 +1909,7 @@ package(quickbite.backends.bytecode) RunResult run(
                             base + instruction.c,
                         );
                 }
-                frames.shrinkReusing(handler.frameDepth);
+                frameDepth = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -1945,7 +1953,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. handler.base + clause.nextMessageOffset
                             + sliceDescriptorSize
                     ] = 0;
-                frames.shrinkReusing(handler.frameDepth);
+                frameDepth = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -1953,7 +1961,7 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case pushHandler:
                 handlers ~= Handler(
-                    functionIndex, base, frames.length, instruction.a,
+                    functionIndex, base, frameDepth, instruction.a,
                     instruction.b,
                 );
                 ++ip;
@@ -1979,7 +1987,7 @@ package(quickbite.backends.bytecode) RunResult run(
             case ret:
                 const resultSize =
                     size(program.functions[functionIndex].returnType);
-                if (frames.length == 0)
+                if (frameDepth == 0)
                     return RunResult(
                         stack[
                             base + instruction.a
@@ -1988,8 +1996,8 @@ package(quickbite.backends.bytecode) RunResult run(
                         heap,
                     );
 
-                const frame = frames[$ - 1];
-                frames.shrinkReusing(frames.length - 1);
+                const frame = frames[frameDepth - 1];
+                --frameDepth;
 
                 stack[
                     frame.base + frame.destination
@@ -2036,7 +2044,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         + sliceDescriptorSize
                 ] = 0;
             }
-            frames.shrinkReusing(handler.frameDepth);
+            frameDepth = handler.frameDepth;
             functionIndex = handler.functionIndex;
             base = handler.base;
             ip = clause.handlerIp;
