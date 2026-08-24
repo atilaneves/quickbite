@@ -113,8 +113,6 @@ private string[] emitObjectFilesForDubPackageLocked(
     if (global.errors != 0)
         throw new Exception(diagnosticMessage);
 
-    throwOnInlineAsm(rootModules);
-
     string[] objPaths;
     foreach (i; 0 .. rootModules.length)
         objPaths ~= buildPath(dir, text("obj_", i, ".o"));
@@ -197,8 +195,6 @@ private string[] emitObjectFilesForLinkLocked(
     // instances to the rod's members, and the rod must pick them up.
     auto modules = rootModules ~ userImports ~ dependencyImageImports
         ~ defaultImports ~ [rod];
-
-    throwOnInlineAsm(modules);
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
@@ -825,24 +821,6 @@ private void prepareDependencyImageImportsForTemplateCodegen(
 ) {
     foreach (module_; modules)
         module_.importedFrom = module_;
-}
-
-// The vendored frontend ships no inline assembler (source/dmd/iasm.d is a
-// no-op shim), so DMD's glue emits an empty body for any function holding an
-// `asm{}` block, which then returns garbage at run time. Refuse such a module
-// up front -- in the parent, before the codegen fork -- so the failure is a
-// clear, attributable error (e.g. a bench skip) rather than a silent
-// miscompile. The shim records the offending module during its semantic3.
-private void throwOnInlineAsm(imported!"dmd.dmodule".Module[] modules) {
-    import dmd.iasm: moduleHasInlineAsm;
-    import std.string: fromStringz;
-
-    foreach (module_; modules)
-        if (moduleHasInlineAsm(module_))
-            throw new Exception(
-                "the native codegen backend does not support inline asm"
-                ~ " (used by module " ~ module_.toPrettyChars.fromStringz.idup ~ ")",
-            );
 }
 
 private void emitObjectFiles(

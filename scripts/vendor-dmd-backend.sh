@@ -5,6 +5,7 @@
 # Reads the dmd version from dub.selections.json and copies:
 #   compiler/src/dmd/backend/  -> vendor/dmd-backend/dmd/backend/
 #   compiler/src/dmd/dmsc.d    -> vendor/dmd-backend/dmd/dmsc.d
+#   compiler/src/dmd/iasm/     -> vendor/dmd-backend/dmd/iasm/
 # from the matching dub cache entry.
 
 set -euo pipefail
@@ -38,5 +39,15 @@ cp -r "$SRC/backend" "$DEST/backend"
 
 echo "  copying dmsc.d..."
 cp "$SRC/dmsc.d" "$DEST/dmsc.d"
+
+# The dmd:frontend Dub package omits the assembler sources. Download the
+# matching tagged files from the official DMD repository instead.
+echo "  copying iasm/..."
+mkdir -p "$DEST/iasm"
+for file in dmdaarch64.d dmdx86.d gcc.d; do
+    curl -fL \
+        "https://raw.githubusercontent.com/dlang/dmd/v$DMD_VERSION/compiler/src/dmd/iasm/$file" \
+        -o "$DEST/iasm/$file"
+done
 
 echo "Done. vendor/dmd-backend/ is up to date for dmd $DMD_VERSION."

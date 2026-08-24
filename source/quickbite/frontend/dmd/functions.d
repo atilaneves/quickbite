@@ -79,8 +79,7 @@ public string noAvailableSourceMessage(
     );
 }
 
-// The inline-asm shim preserves semantic `AsmStatement` tokens by source
-// location, so snapshot them from the post-semantic AST. This includes AST
+// Snapshot inline-asm tokens from the post-semantic AST. This includes AST
 // bodies materialized by mixins, without reparsing source text.
 public struct InlineAsmToken {
     public string kind;
@@ -171,11 +170,10 @@ private void snapshotStatement(
         return;
 
     if (auto asm_ = statement.isCompoundAsmStatement) {
-        import dmd.iasm: inlineAsmTokens;
-
         InlineAsmToken[][] instructions;
         foreach (child; *asm_.statements) {
-            auto tokens = child is null ? null : inlineAsmTokens(child.loc);
+            auto inline_ = child is null ? null : child.isInlineAsmStatement;
+            auto tokens = inline_ is null ? null : inline_.tokens;
             if (tokens is null)
                 continue;
             InlineAsmToken[] instruction;
