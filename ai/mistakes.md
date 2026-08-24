@@ -696,3 +696,9 @@
   immune) and compare against a compiled-D ground-truth run before
   patching any site. Never sample `GC.stats.usedSize` in a hot path -- it
   walks GC pools and gets slower as the heap grows.
+
+- A high call count does not show which path dominates elapsed time. Measure
+  inclusive cycles for the whole VM and each nested phase, and measure the
+  timestamp overhead. The native-call path can be frequent but still consume
+  a small part of total VM time. Also, `ffi_call` timing includes the native
+  callee, so it is only an upper bound on FFI crossing overhead.
