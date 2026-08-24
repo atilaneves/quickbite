@@ -1340,12 +1340,13 @@ package(quickbite.backends.bytecode) struct Compiler {
     // core ever sees the labeled statement wrapping it, so only the AST node
     // kinds `compileStatement` itself dispatches as loops or a switch need a
     // case here -- mirrors `collectLabels`' same set of statement kinds above.
+    // No `isWhileStatement` case: DMD's `statementSemantic` also rewrites
+    // every `while` into a `ForStatement` before this ever runs, so a
+    // `WhileStatement` node never reaches here either.
     private static bool containsLoop(Statement statement) pure nothrow {
         if (statement is null)
             return false;
         if (statement.isForStatement !is null)
-            return true;
-        if (statement.isWhileStatement !is null)
             return true;
         if (statement.isDoStatement !is null)
             return true;
