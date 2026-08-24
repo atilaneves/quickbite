@@ -171,6 +171,10 @@ package(quickbite.backends.bytecode) struct Compiler {
     // conservatively treats the innermost entry as the guard, same as every
     // entry always was before that refinement.
     private CatchProtection[] _catchProtectedDepths;
+    // Catch-handler groups whose protected bodies are being compiled,
+    // innermost last. Ordinary control-flow exits pop the groups they leave;
+    // throws are cleaned up by runtime handler selection instead.
+    private CatchHandlerContext[] _catchHandlerStack;
 
     private static struct CatchProtection {
         size_t depth;
@@ -380,6 +384,7 @@ package(quickbite.backends.bytecode) struct Compiler {
         _switchStack = null;
         _tryFinallyStack = null;
         _catchProtectedDepths = null;
+        _catchHandlerStack = null;
         _pendingLoopLabel = null;
         _pendingFinallyExceptionMessageOffset = noCatchObjectField;
         _pendingFinallyExceptionClassIndex = noExceptionClass;
@@ -1335,13 +1340,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         // does not define the target label (the goto stays within the first
         // scope that does, and within every scope outside it).
         const target = cast(const(void)*) goto_.ident;
-        size_t exited;
-        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
-            if (target in _tryFinallyStack[index].labels)
-                break;
-            ++exited;
-        }
+        const exited = tryFinallyScopesExitedByGoto(target);
+        const exitedHandlers = catchHandlersExitedByGoto(target);
         runExitedFinally(exited);
+        popExitedCatchHandlers(exitedHandlers);
 
         const index = emitJump;
         const key = cast(const(void)*) goto_.ident;
@@ -1402,6 +1404,37 @@ package(quickbite.backends.bytecode) struct Compiler {
             _pendingFinallyExceptionClassIndex = savedExceptionClass;
             _tryFinallyStack = saved;
         }
+    }
+
+    // Emit one handler-group pop for each protected body an ordinary control
+    // transfer leaves. Finalizers run before these pops so their exceptions can
+    // still reach the enclosing handlers.
+    private void popExitedCatchHandlers(in size_t count) {
+        foreach (_; 0 .. count)
+            _code ~= Instruction(Op.popHandler);
+    }
+
+    private size_t tryFinallyScopesExitedByGoto(in const(void)* target) {
+        size_t count;
+        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
+            if (target in _tryFinallyStack[index].labels)
+                break;
+            ++count;
+        }
+        return count;
+    }
+
+    // The count of catch-handler groups a goto leaves. A label inside the
+    // innermost protected body keeps that group active; labels outside it
+    // require the groups crossed on the way out to be popped.
+    private size_t catchHandlersExitedByGoto(in const(void)* target) {
+        size_t count;
+        foreach_reverse (index; 0 .. _catchHandlerStack.length) {
+            if (target in _catchHandlerStack[index].labels)
+                break;
+            ++count;
+        }
+        return count;
     }
 
     // The count of innermost `_tryFinallyStack` scopes a `throw` at the
@@ -1510,6 +1543,7 @@ package(quickbite.backends.bytecode) struct Compiler {
         // A `return` leaves every active `try` body in the function. Run the
         // finalizers after the result expression has been captured.
         runExitedFinally(_tryFinallyStack.length);
+        popExitedCatchHandlers(_catchHandlerStack.length);
 
         _code ~= hasResult ? Instruction(Op.ret, result) : Instruction(Op.ret);
     }
@@ -1553,10 +1587,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         ));
     }
 
-    // The labels defined lexically within a statement subtree, used to decide
-    // whether a `goto` stays inside an enclosing `try` body. Recurses through
-    // every nested statement container so a label inside a switch/loop/if within
-    // the try body is found (a `goto` to it does not exit the try).
+    // The control targets defined lexically within a statement subtree, used to
+    // decide whether an unconditional transfer stays inside an enclosing `try`
+    // body. Recurses through every nested statement container so a label, case,
+    // or default inside a switch/loop/if within the try body is found.
     private static void collectLabels(
         imported!"dmd.statement".Statement statement,
         ref bool[const(void)*] labels,
@@ -1587,10 +1621,13 @@ package(quickbite.backends.bytecode) struct Compiler {
             collectLabels(do_._body, labels);
         else if (auto switch_ = statement.isSwitchStatement)
             collectLabels(switch_._body, labels);
-        else if (auto case_ = statement.isCaseStatement)
+        else if (auto case_ = statement.isCaseStatement) {
+            labels[cast(const(void)*) case_] = true;
             collectLabels(case_.statement, labels);
-        else if (auto default_ = statement.isDefaultStatement)
+        } else if (auto default_ = statement.isDefaultStatement) {
+            labels[cast(const(void)*) default_] = true;
             collectLabels(default_.statement, labels);
+        }
         else if (auto with_ = statement.isWithStatement)
             collectLabels(with_._body, labels);
         else if (auto tryFinally = statement.isTryFinallyStatement) {
@@ -1644,11 +1681,16 @@ package(quickbite.backends.bytecode) struct Compiler {
         );
 
         if (tryCatch._body !is null) {
+            CatchHandlerContext context;
+            context.loopDepth = _loopStack.length;
+            collectLabels(tryCatch._body, context.labels);
+            _catchHandlerStack ~= context;
             _catchProtectedDepths ~= CatchProtection(
                 _tryFinallyStack.length, catchTypeClasses((*tryCatch.catches)[]),
             );
             compileNestedStatement(tryCatch._body);
             _catchProtectedDepths.length -= 1;
+            _catchHandlerStack.length -= 1;
         }
 
         // Normal completion of the try body: drop the handler group and skip the
@@ -2009,7 +2051,9 @@ package(quickbite.backends.bytecode) struct Compiler {
         // Unlabeled `break` exits the innermost breakable statement, which
         // includes a switch; a switch's context is a break target like a loop.
         const loop = targetLoopIndex(break_.ident, false);
+        const exitedHandlers = catchHandlersInsideLoop(loop);
         runExitedFinally(finallyScopesInsideLoop(loop));
+        popExitedCatchHandlers(exitedHandlers);
         _loopStack[loop].breakPatches ~= emitJump;
     }
 
@@ -2020,8 +2064,23 @@ package(quickbite.backends.bytecode) struct Compiler {
     ) {
         // Unlabeled `continue` skips a switch and targets the enclosing loop.
         const loop = targetLoopIndex(continue_.ident, true);
+        const exitedHandlers = catchHandlersInsideLoop(loop);
         runExitedFinally(finallyScopesInsideLoop(loop));
+        popExitedCatchHandlers(exitedHandlers);
         _loopStack[loop].continuePatches ~= emitJump;
+    }
+
+    // The count of catch-handler groups a `break`/`continue` to the loop at
+    // `loopIndex` exits: those pushed while inside that loop have a greater
+    // recorded loop depth than the target loop's index.
+    private size_t catchHandlersInsideLoop(in size_t loopIndex) {
+        size_t count;
+        foreach_reverse (index; 0 .. _catchHandlerStack.length) {
+            if (_catchHandlerStack[index].loopDepth <= loopIndex)
+                break;
+            ++count;
+        }
+        return count;
     }
 
     // The count of innermost `try`/`finally` scopes a `break`/`continue` to the
@@ -2169,8 +2228,12 @@ package(quickbite.backends.bytecode) struct Compiler {
     private void compileGotoCaseStatement(
         imported!"dmd.statement".GotoCaseStatement gotoCase,
     ) {
-        _switchStack[$ - 1].gotoCasePatches[cast(const(void)*) gotoCase.cs] ~=
-            emitJump;
+        const target = cast(const(void)*) gotoCase.cs;
+        const exited = tryFinallyScopesExitedByGoto(target);
+        const exitedHandlers = catchHandlersExitedByGoto(target);
+        runExitedFinally(exited);
+        popExitedCatchHandlers(exitedHandlers);
+        _switchStack[$ - 1].gotoCasePatches[target] ~= emitJump;
     }
 
     // `goto default;` — an unconditional jump to the default case body, patched
@@ -2178,6 +2241,11 @@ package(quickbite.backends.bytecode) struct Compiler {
     private void compileGotoDefaultStatement(
         imported!"dmd.statement".GotoDefaultStatement gotoDefault,
     ) {
+        const target = cast(const(void)*) gotoDefault.sw.sdefault;
+        const exited = tryFinallyScopesExitedByGoto(target);
+        const exitedHandlers = catchHandlersExitedByGoto(target);
+        runExitedFinally(exited);
+        popExitedCatchHandlers(exitedHandlers);
         _switchStack[$ - 1].gotoDefaultPatches ~= emitJump;
     }
 
@@ -14556,6 +14624,14 @@ private struct SwitchContext {
 // time, so a `break`/`continue` to an enclosing loop knows it exits this scope.
 private struct TryFinallyContext {
     imported!"dmd.statement".Statement finalbody;
+    bool[const(void)*] labels;
+    size_t loopDepth;
+}
+
+// A catch-handler group active while its protected body is compiled. `labels`
+// identifies gotos that stay inside the body; `loopDepth` identifies loops
+// whose break/continue targets are still inside it.
+private struct CatchHandlerContext {
     bool[const(void)*] labels;
     size_t loopDepth;
 }

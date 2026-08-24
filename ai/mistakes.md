@@ -702,3 +702,8 @@
   timestamp overhead. The native-call path can be frequent but still consume
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
+
+- A `try`/`catch` fixture with only an unconditional `return` may be
+  simplified by DMD before bytecode compilation, leaving no runtime handler
+  to test. Keep a runtime branch that can throw, and trigger the later throw
+  from a separate callee after the return so handler lifetime is observable.

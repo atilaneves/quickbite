@@ -461,6 +461,38 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!()) {
+    @("exception.returnFromTryDoesNotCatchLaterThrow." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int returnFromTry(int seed) {
+                try {
+                    if (seed == 0)
+                        return seed + 1;
+                    throw new Exception("unexpected");
+                } catch (Exception) {
+                    return -1;
+                }
+            }
+
+            int throwLater(int value) {
+                if (value == 0)
+                    throw new Exception("later");
+                return value;
+            }
+
+            unittest {
+                int seed;
+                int value = returnFromTry(seed);
+
+                assert(value == 1);
+                throwLater(value - 1);
+            }
+        }).shouldThrow;
+    }
+}
+
 
 /++
     Finally.
