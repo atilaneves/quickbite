@@ -451,13 +451,21 @@ private bool sameBaseType(
     imported!"dmd.mtype".Type rhs,
 ) @trusted {
     import dmd.astenums: TY;
-    import dmd.typesem: mutableOf;
+    import dmd.typesem: mutableOf, unSharedOf;
 
     auto lhsVector = lhs.toBasetype.isTypeVector;
     auto rhsVector = rhs.toBasetype.isTypeVector;
     if (lhsVector !is null || rhsVector !is null)
         return lhsVector !is null && rhsVector !is null &&
-            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
+            mutableOf(lhsVector.basetype).unSharedOf.equals(
+                mutableOf(rhsVector.basetype).unSharedOf,
+            );
+
+    auto lhsPointer = lhs.toBasetype.isTypePointer;
+    auto rhsPointer = rhs.toBasetype.isTypePointer;
+    if (lhsPointer !is null || rhsPointer !is null)
+        return lhsPointer !is null && rhsPointer !is null &&
+            sameBaseType(lhsPointer.next, rhsPointer.next);
 
     auto lhsArray = lhs.toBasetype.isTypeDArray;
     auto rhsArray = rhs.toBasetype.isTypeDArray;
@@ -482,7 +490,9 @@ private bool sameBaseType(
         return sameBaseType(lhsAArray.index, rhsAArray.index) &&
             sameBaseType(lhsAArray.next, rhsAArray.next);
 
-    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
+    return mutableOf(lhs.toBasetype).unSharedOf.equals(
+        mutableOf(rhs.toBasetype).unSharedOf,
+    );
 }
 
 

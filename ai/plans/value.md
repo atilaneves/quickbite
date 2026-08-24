@@ -42,7 +42,8 @@ symbolic `TypeInfo`, and nested-context metadata by byte offset before it
 clears the destination range. A consuming copy clears the source metadata only
 when the source and destination do not overlap. Callable and symbolic
 `TypeInfo` reads and writes use their typed metadata operations; the native
-bytes remain the only ordinary value storage.
+bytes remain the only ordinary value storage. Qualification-only pointer
+copies have the same layout recursively through the pointee type.
 
 Exception transport uses a class-specific identity: the DMD class type and
 the object-body address. Local class owners and borrowed native-exception
@@ -56,25 +57,18 @@ scalar, pointer, or `NativeAggregate` contract across its caller boundary.
 Later families can use earlier contracts, but no family introduces a new
 general value wrapper.
 
-1. Replace address, pointer, variable, and member-result adapters, including
-   `constructedExpressionValue`, reference-return addresses, `runVariable*`,
-   `runAddress*`, `runPointer*`, `runDotVar*`, delegate properties, and
-   `typeid`. Remove their calls to `readStoredValue`, `writeStoredValue`, and
-   `storageValue`; the typed storage and metadata contracts above replace
-   those adapters.
-2. Replace call and interception results: `runCall*`, `runFunction`,
+1. Replace call and interception results: `runCall*`, `runFunction`,
    `runMemberFunction`, delegate and native calls, atomic hooks, string
-   `foreach`, duplication, and lazy arguments. Calls depend on step 1 for
-   callable and receiver places and write non-void results into caller-owned
-   destinations.
-3. Replace scalar operations, equality, and casts. These depend on typed call
+   `foreach`, duplication, and lazy arguments. Calls use callable and receiver
+   places and write non-void results into caller-owned destinations.
+2. Replace scalar operations, equality, and casts. These depend on typed call
    results for operator overloads and use the scalar reads on `Place` plus the
    existing `runtime_casts` destination operations.
-4. Replace the aggregate, slice, index, allocation, and literal fallbacks.
+3. Replace the aggregate, slice, index, allocation, and literal fallbacks.
    This depends on the typed scalar, call, and projection contracts and
    removes the remaining `NativeAggregate` conversions to and from
    `ExpressionResult`.
-5. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
+4. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
    `readValue`, `writeValue`, `readScalarLeaf`, and `writeScalarLeaf`; the
    boxed overloads in `aggregate_value.d`; `expression_result.d`; and the
    implementation-detail tests `tests/ut/backends/interpreter/place_value.d`
