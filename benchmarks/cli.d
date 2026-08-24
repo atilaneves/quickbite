@@ -2,7 +2,10 @@ module benchmarks.cli;
 
 import benchmarks.harness: measure, measureWithResults, Result;
 import benchmarks.backends: BackendEnv, makeRunners;
-import quickbite.backends.runner: Runner, TestResult, runTests;
+import quickbite.backends.runner:
+    CompileTimeReporter, Runner, TestResult, runTests;
+import core.time: Duration;
+import std.typecons: Nullable;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.frontend.compiler: FrontendFlags, parseModule, parseSnippetUncached;
 import dmd.dmodule: Module;
@@ -223,21 +226,37 @@ public int run(string[] args) {
                 foreach (member; unit.members)
                     modules ~= member.module_;
 
+                // Compilation happens inside the timed operation (lazily for
+                // some backends), so the split comes from sampling the
+                // backend's own compile clock around each iteration.
+                auto compileReporter = cast(CompileTimeReporter) runner;
+                Duration[] compileDeltas;
+                TestResult[] runAndSampleCompileTime() {
+                    if (compileReporter is null)
+                        return runTests(runner, modules);
+                    const before = compileReporter.compileTime;
+                    auto results = runTests(runner, modules);
+                    compileDeltas ~= compileReporter.compileTime - before;
+                    return results;
+                }
+
                 try {
                     if (skipCheck) {
+                        const timing = measure(
+                            () { runAndSampleCompileTime; },
+                            warmup,
+                            runs,
+                        );
                         rows ~= BenchmarkRow(
                             unit.displayName,
                             name,
                             "unchecked",
-                            measure(
-                                () { runTests(runner, modules); },
-                                warmup,
-                                runs,
-                            ),
+                            timing,
+                            medianCompileTime(compileDeltas, warmup),
                         );
                     } else {
                         auto measured = measureWithResults(
-                            () { return runTests(runner, modules); },
+                            () { return runAndSampleCompileTime; },
                             warmup,
                             runs,
                         );
@@ -250,6 +269,7 @@ public int run(string[] args) {
                             name,
                             "",
                             measured.timing,
+                            medianCompileTime(compileDeltas, warmup),
                         );
                     }
                 } catch (Exception e) {
@@ -302,6 +322,7 @@ public int run(string[] args) {
                 ? row.tests
                 : checkedTestsDisplay(checkedResults, unit, row.backend),
             row.result,
+            row.compileMedian,
         );
         writeln;
     }
@@ -706,6 +727,34 @@ public struct BenchmarkRow {
     public string backend;
     public string tests;
     public Result result;
+    // Median per-iteration compile time; null for backends that do not
+    // report a compile split.
+    public Nullable!Duration compileMedian;
+}
+
+// Deltas hold one sample per delegate invocation (warmup + measured); the
+// median only ever covers the measured iterations. Null when the backend
+// reported nothing.
+public Nullable!Duration medianCompileTime(
+    Duration[] deltas,
+    in size_t warmup,
+) {
+    import core.time: hnsecs;
+    import std.algorithm.sorting: sort;
+
+    if (deltas.length <= warmup)
+        return Nullable!Duration.init;
+
+    auto measured = deltas[warmup .. $];
+    measured.sort;
+    return Nullable!Duration(
+        measured.length % 2 == 1
+            ? measured[$ / 2]
+            : hnsecs(
+                (measured[$ / 2 - 1].total!"hnsecs"
+                 + measured[$ / 2].total!"hnsecs") / 2,
+            ),
+    );
 }
 
 // One unit's preparation outcome. A failure to prepare is reported here, never
@@ -839,9 +888,9 @@ public DubInfo dubInfoFromDescribeData(
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s %10s",
         "fixture", "backend", "tests", "GC", "min", "median", "stddev",
-        "GC used ram delta",
+        "compile", "GC used ram delta",
     );
     writeln;
 }
@@ -851,12 +900,13 @@ public void printRow(
     in string backendName,
     in string tests,
     in Result result,
+    in Nullable!Duration compileTime = Nullable!Duration.init,
 ) {
     import std.stdio: writefln;
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
+        "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %7.1f KiB",
         fixture,
         backendName,
         tests,
@@ -864,8 +914,21 @@ public void printRow(
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
+        compileDisplay(compileTime),
         result.ramKiB,
     );
+}
+
+private string compileDisplay(in Nullable!Duration compileTime) {
+    import std.format: format;
+
+    enum hnsecsPerMs = 10_000.0;
+    return compileTime.isNull
+        ? "n/a"
+        : format(
+            "%7.3f ms",
+            compileTime.get.total!"hnsecs" / hnsecsPerMs,
+        );
 }
 
 public string renderBenchmarkSection(
@@ -878,14 +941,14 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s\n\n",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s %10s\n\n",
         "fixture", "backend", "tests", "GC", "min", "median", "stddev",
-        "GC used ram delta",
+        "compile", "GC used ram delta",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
+            "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %7.1f KiB\n",
             row.fixture,
             row.backend,
             row.tests,
@@ -893,6 +956,7 @@ public string renderBenchmarkSection(
             row.result.min.total!"hnsecs" / hnsecsPerMs,
             row.result.median.total!"hnsecs" / hnsecsPerMs,
             row.result.stddevHnsecs / hnsecsPerMs,
+            compileDisplay(row.compileMedian),
             row.result.ramKiB,
         ));
     }

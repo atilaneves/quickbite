@@ -14,6 +14,15 @@ public interface GroupedRunner: Runner {
     TestResult[] runTests(Module[] modules);
 }
 
+// A backend whose compilation happens inside `runTests` (eagerly or lazily
+// mid-execution) reports the wall-clock cost of that compilation here, so a
+// caller timing `runTests` can split compile time out of the total.
+public interface CompileTimeReporter {
+    import core.time: Duration;
+    Duration compileTime() @safe @nogc nothrow pure const scope;
+    void resetCompileTime() @safe @nogc nothrow pure scope;
+}
+
 public TestResult[] runTests(Runner runner, imported!"dmd.dmodule".Module[] modules) {
     if (auto grouped = cast(GroupedRunner) runner)
         return grouped.runTests(modules);

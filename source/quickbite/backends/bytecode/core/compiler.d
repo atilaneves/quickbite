@@ -2,12 +2,14 @@ module quickbite.backends.bytecode.core.compiler;
 
 private:
 
-// What the backend needs to run a compiled entry function: the program and
-// the lazy-compilation hook the machine calls for not-yet-compiled callees.
+// What the backend needs to run a compiled entry function: the program, the
+// lazy-compilation hook the machine calls for not-yet-compiled callees, and
+// which function index is the entry to start executing at.
 package(quickbite.backends.bytecode) struct Compilation {
     imported!"quickbite.backends.bytecode.core.program".Program* program;
     imported!"quickbite.backends.bytecode.core.machine".CompileFunction
         compileFunction;
+    size_t entryIndex;
 }
 
 // Compiles a semantically analysed entry function (an eval wrapper or a
@@ -17,18 +19,52 @@ package(quickbite.backends.bytecode) struct Compilation {
 package(quickbite.backends.bytecode) Compilation compile(
     imported!"dmd.func".FuncDeclaration entry,
 ) {
-    auto compiler = new Compiler;
-    compiler.registerFunction(entry);
+    Compiler* compiler;
+    return compile(entry, compiler);
+}
+
+// Like the single-argument overload, but reuses `compiler` (creating it on
+// first use) so already-compiled functions, class infos, and module-variable
+// slots carry over between entries: dataseg state written by one unittest
+// stays visible to the next, matching compiled D, and shared callees are
+// compiled once instead of once per entry. The caller owns the compiler's
+// lifetime; every FuncDeclaration it has seen must stay valid for that whole
+// lifetime, so a caller that parses new code between entries (e.g. a REPL
+// eval) must use the single-argument overload instead: DMD's AST arena can
+// hand a recycled pointer to an unrelated new function, which a persistent
+// `_functionIndices` would silently resolve to the old function's code.
+// The shared lifetime also means the program's 16-bit-indexed pools
+// (functions, module data, literals, catch clauses) span every entry the
+// compiler ever sees; each pool guards its own overflow with a thrown
+// diagnostic rather than silent truncation.
+package(quickbite.backends.bytecode) Compilation compile(
+    imported!"dmd.func".FuncDeclaration entry,
+    ref Compiler* compiler,
+) {
+    if (compiler is null)
+        compiler = new Compiler;
+    const entryIndex = compiler.registerFunction(entry);
     // A literal-false assert directly in a unittest body must throw
     // "unittest failure" (DMD's _d_unittest hook); the same assert in a
     // called function throws "Assertion failure". Only the entry can be a
     // unittest declaration; lazily-compiled callees never are.
     compiler._inUnittestEntry = entry.isUnitTestDeclaration !is null;
-    compiler.compileFunctionBody(0);
-    return Compilation(compiler._program, &compiler.compileFunctionBody);
+    compiler._entryIndex = entryIndex;
+    // A re-run entry (repeated runTests over the same module, e.g. every
+    // benchmark iteration) is already compiled. An entry is never a callee,
+    // so nothing else can have compiled it partially; recompiling would
+    // append duplicate literal, data-segment, and catch-clause pool entries
+    // on every iteration until their 16-bit index guards throw.
+    if (compiler._program.functions[entryIndex].code.length == 0)
+        compiler.compileFunctionBody(entryIndex);
+    return Compilation(
+        compiler._program,
+        &compiler.compileFunctionBody,
+        entryIndex,
+    );
 }
 
-private struct Compiler {
+package(quickbite.backends.bytecode) struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, CompiledFunction,
@@ -239,6 +275,9 @@ private struct Compiler {
     private bool _hasNestedContext;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
+    private size_t _entryIndex;    // index of the entry `compile` most
+                                   // recently registered; with a reused
+                                   // compiler, entries land past index 0
     private ResultType _currentReturnType; // result type of the function whose
                                            // body is currently being compiled
     private bool _currentReturnsRef;
@@ -317,9 +356,9 @@ private struct Compiler {
     }
 
     private void compileFunctionBody(in size_t index) {
-        // Only the entry (index 0) can be a unittest body; any lazily
-        // compiled callee is an ordinary function.
-        if (index > 0)
+        // Only the entry can be a unittest body; any lazily compiled callee
+        // is an ordinary function.
+        if (index != _entryIndex)
             _inUnittestEntry = false;
 
         auto function_ = _functions[index];
@@ -539,6 +578,10 @@ private struct Compiler {
         }
 
         const index = _functions.length;
+        if (index > ushort.max)
+            throw new Exception(
+                "Bytecode function count exceeds 16-bit indices",
+            );
         _functions ~= function_;
         _functionIndices[function_] = index;
         const layout = parameterLayout(function_);
@@ -1581,6 +1624,10 @@ private struct Compiler {
             ));
 
         const catchStart = _program.catchClauses.length;
+        if (catchStart + tryCatch.catches.length > ushort.max)
+            throw new Exception(
+                "Bytecode catch clauses exceed 16-bit indices",
+            );
         foreach (catch_; *tryCatch.catches)
             _program.catchClauses ~= CatchClause(
                 catchClass(catch_),
