@@ -20,11 +20,6 @@ cross-references.
 
 ### Item 10 — Carrier deletion
 
-Re-measure with `grep -c ExpressionResult
-source/quickbite/backends/interpreter/*.d`. `Walker._returnDestination` is
-already destination-typed, not carrier-typed — that former bottleneck is
-cleared and no longer blocks the rest.
-
 Expression evaluation has one dispatch: `constructInto` for an observed result
 and `executeForEffectImpl` for a discarded result. Arm-local adapters can still
 return `ExpressionResult`, but no separate result-returning expression walk
@@ -41,15 +36,39 @@ only those places. Member and delegate receivers are places too. Reverse FFI
 callbacks borrow the typed libffi buffers directly, and callable metadata is
 keyed by the delegate place address.
 
-- **Final flip**: type `readStoredValue`/
-  `writeStoredValue` and the `run*` helpers' signatures, delete
-  `constructedExpressionValue`'s boundary box and `place_value.d`'s carrier
-  codec (`readValue`/`writeValue`/`readScalarLeaf`/`writeScalarLeaf`),
-  `git rm expression_result.d`, and retire
-  `tests/ut/backends/interpreter/place_value.d`/`native_array.d`. Also
-  inventory real corpus crossings that need an interpreted callable or
-  `TypeInfo` to escape to native code — the standing refusal holds:
-  no trampoline or proxy until a real crossing exists.
+Finish deletion in this order. Each family keeps a typed `Place`, native
+scalar, pointer, or `NativeAggregate` contract across its caller boundary.
+Later families can use earlier contracts, but no family introduces a new
+general value wrapper.
+
+1. Replace the stored-value and metadata boundary: `readStoredValue`,
+   `writeStoredValue`, `storageValue`, and the class, exception, callable, and
+   `TypeInfo` metadata helpers. This supplies the typed storage operations the
+   remaining expression families depend on.
+2. Replace address, pointer, variable, and member-result adapters, including
+   `constructedExpressionValue`, reference-return addresses, `runVariable*`,
+   `runAddress*`, `runPointer*`, `runDotVar*`, delegate properties, and
+   `typeid`. This depends on the storage and metadata contracts from step 1.
+3. Replace call and interception results: `runCall*`, `runFunction`,
+   `runMemberFunction`, delegate and native calls, atomic hooks, string
+   `foreach`, duplication, and lazy arguments. Calls depend on step 2 for
+   callable and receiver places and write non-void results into caller-owned
+   destinations.
+4. Replace scalar operations, equality, and casts. These depend on typed call
+   results for operator overloads and use the scalar reads on `Place` plus the
+   existing `runtime_casts` destination operations.
+5. Replace the aggregate, slice, index, allocation, and literal fallbacks.
+   This depends on the typed scalar, call, and projection contracts and
+   removes the remaining `NativeAggregate` conversions to and from
+   `ExpressionResult`.
+6. Delete the residue: `readValue`, `writeValue`, `readScalarLeaf`, and
+   `writeScalarLeaf`; the boxed overloads in `aggregate_value.d`;
+   `expression_result.d`; and the implementation-detail tests
+   `tests/ut/backends/interpreter/place_value.d` and
+   `tests/ut/backends/interpreter/native_array.d`. Update the test module
+   aggregation. Inventory real corpus crossings that need an interpreted
+   callable or `TypeInfo` to escape to native code. The standing refusal
+   holds: no trampoline or proxy until a real crossing exists.
 - **Deferred findings** (need a proving test first, AGENTS.md): a native
   delegate slot's `.ptr`/`.funcptr` always throws, pre-existing;
   `constructPointerExpressionInto`'s pointer-typed `CastExp` branch

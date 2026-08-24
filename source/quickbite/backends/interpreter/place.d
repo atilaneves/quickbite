@@ -193,6 +193,25 @@ public struct Place {
         );
     }
 
+    // Read the address stored in a pointer, class-reference, or
+    // associative-array place. The result is the native address itself;
+    // callers that need the pointed-to value compose another typed `Place`
+    // from it.
+    public void* loadReference() @safe {
+        if (
+            _type.isTypePointer is null &&
+            _type.isTypeClass is null &&
+            _type.isTypeAArray is null
+        )
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.loadReference: "
+                ~ "only a pointer, class, or associative-array place stores "
+                ~ "a reference",
+            );
+
+        return readStoredPointer(_address);
+    }
+
     // The write side of `deref`'s class case, and now also of a pointer
     // place's own slot: stores `reference` -- a class object body's own
     // address, a pointer's own host address, or `null` -- as the
@@ -317,6 +336,81 @@ public struct Place {
         memcpy(&value, _address, T.sizeof);
         return value;
     }
+
+    public long loadSignedScalar() @safe {
+        import dmd.astenums: TY;
+
+        auto type = scalarBaseType(_type);
+        with (TY) switch (type.ty) {
+            case Tbool: return loadNativeScalar!bool;
+            case Tint8: return loadNativeScalar!byte;
+            case Tuns8: return loadNativeScalar!ubyte;
+            case Tchar: return loadNativeScalar!char;
+            case Tint16: return loadNativeScalar!short;
+            case Tuns16: return loadNativeScalar!ushort;
+            case Twchar: return loadNativeScalar!wchar;
+            case Tint32: return loadNativeScalar!int;
+            case Tuns32: return loadNativeScalar!uint;
+            case Tdchar: return loadNativeScalar!dchar;
+            case Tint64: return loadNativeScalar!long;
+            case Tuns64: return cast(long) loadNativeScalar!ulong;
+            default:
+                throw new Exception("Place.loadSignedScalar needs an integer scalar.");
+        }
+    }
+
+    public ulong loadUnsignedScalar() @safe {
+        import dmd.astenums: TY;
+
+        auto type = scalarBaseType(_type);
+        with (TY) switch (type.ty) {
+            case Tbool: return loadNativeScalar!bool;
+            case Tint8: return cast(ulong) loadNativeScalar!byte;
+            case Tuns8: return loadNativeScalar!ubyte;
+            case Tchar: return loadNativeScalar!char;
+            case Tint16: return cast(ulong) loadNativeScalar!short;
+            case Tuns16: return loadNativeScalar!ushort;
+            case Twchar: return loadNativeScalar!wchar;
+            case Tint32: return cast(ulong) loadNativeScalar!int;
+            case Tuns32: return loadNativeScalar!uint;
+            case Tdchar: return loadNativeScalar!dchar;
+            case Tint64: return cast(ulong) loadNativeScalar!long;
+            case Tuns64: return loadNativeScalar!ulong;
+            default:
+                throw new Exception("Place.loadUnsignedScalar needs an integer scalar.");
+        }
+    }
+
+    public real loadRealScalar() @safe {
+        import dmd.astenums: TY;
+
+        auto type = scalarBaseType(_type);
+        with (TY) switch (type.ty) {
+            case Tbool: return loadNativeScalar!bool;
+            case Tint8: return loadNativeScalar!byte;
+            case Tuns8: return loadNativeScalar!ubyte;
+            case Tchar: return loadNativeScalar!char;
+            case Tint16: return loadNativeScalar!short;
+            case Tuns16: return loadNativeScalar!ushort;
+            case Twchar: return loadNativeScalar!wchar;
+            case Tint32: return loadNativeScalar!int;
+            case Tuns32: return loadNativeScalar!uint;
+            case Tdchar: return loadNativeScalar!dchar;
+            case Tint64: return loadNativeScalar!long;
+            case Tuns64: return loadNativeScalar!ulong;
+            case Tfloat32: return loadNativeScalar!float;
+            case Tfloat64: return loadNativeScalar!double;
+            case Tfloat80: return loadNativeScalar!real;
+            case Timaginary32: return loadNativeScalar!ifloat.im;
+            case Timaginary64: return loadNativeScalar!idouble.im;
+            case Timaginary80: return loadNativeScalar!ireal.im;
+            case Tcomplex32: return loadNativeScalar!cfloat.re;
+            case Tcomplex64: return loadNativeScalar!cdouble.re;
+            case Tcomplex80: return loadNativeScalar!creal.re;
+            default:
+                throw new Exception("Place.loadRealScalar needs a numeric scalar.");
+        }
+    }
 }
 
 
@@ -335,6 +429,17 @@ public Place placeAt(
 // narrow DMD boundary.
 private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
     return type.toBasetype.isTypeClass !is null;
+}
+
+
+// DMD's immutable type graph supplies this read-only base-type query, but its
+// API is not annotated `@safe`.
+private imported!"dmd.mtype".Type scalarBaseType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    auto base = type.toBasetype;
+    auto enumType = base.isTypeEnum;
+    return enumType is null ? base : enumType.toBasetype2;
 }
 
 

@@ -137,7 +137,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             case unitTest:
                 return EvalResult("");
             case formatted:
-                return EvalResult(formattedDisplay(walker.readStoredValue(rootDestination.place)));
+                return EvalResult(formattedDisplay(rootDestination.place));
             }
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
@@ -178,20 +178,11 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
 }
 
 private string formattedDisplay(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    // `readScalarLeaf`, not the generic `readValue`: a formatted-display
-    // root is always a character array (the repl's own display-function
-    // contract), so each element place is already known to be a native
-    // character scalar -- `readValue`'s enum/aggregate dispatch ahead of
-    // its own native-scalar arm would never fire here.
-    import quickbite.backends.interpreter.place_value: readScalarLeaf;
-
-    auto aggregate = AggregateValue.native(value);
     char[] display;
-    foreach (index; 0 .. AggregateValue.elementCount(value))
-        display ~= readScalarLeaf(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
+    foreach (index; 0 .. value.arrayLength)
+        display ~= value.index(index).loadNativeScalar!char;
     return display.idup;
 }
 
@@ -1897,10 +1888,6 @@ private struct Walker {
         if (!hasDirectWriteProjectionPlace(expression) || expression.type is null)
             return false;
 
-        const type = expression.type.toBasetype;
-        if (type.isTypeStruct !is null || type.isTypeSArray !is null)
-            return false;
-
         imported!"dmd.expression".IndexExp[16] indexes;
         size_t indexCount;
         if (!collectDirectWriteProjectionIndexes(expression, indexes, indexCount))
@@ -2030,10 +2017,7 @@ private struct Walker {
         in ExpressionResult value,
     ) {
         auto destination = directWriteProjectionPlace(target);
-        writeStoredValue(
-            destination,
-            storageValue(target.type, value),
-        );
+        writeStoredValue(destination, storageValue(target.type, value));
         clearProjectionRootUninitialized(target);
     }
 
@@ -3406,6 +3390,17 @@ private struct Walker {
         ));
         runExpression(expression, destination);
         return readStoredValue(destination.place);
+    }
+
+    private Place constructedExpressionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return destination.place;
     }
 
     // `+`/`-` mix scalar arithmetic with pointer arithmetic. Detect pointer
@@ -5287,10 +5282,6 @@ private struct Walker {
             elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
 
         return elements;
-    }
-
-    private ExpressionResult[] arrayPointerElements(in ExpressionResult value) {
-        return arrayElements(value);
     }
 
     private long arrayPointerOffset(in ExpressionResult value, in long offset) {
@@ -8981,7 +8972,18 @@ private struct Walker {
         return ExpressionResult.typeName(name);
     }
 
-    private ExpressionResult runAssignExpression(imported!"dmd.expression".BinExp assign) {
+    private Place runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        if (auto blit = assign.isBlitExp) {
+            import quickbite.frontend.dmd.types: isStructType;
+
+            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type)) {
+                auto destination = directWriteProjectionPlace(assign.e1);
+                defaultValue(assign.e1.type, destination);
+                clearProjectionRootUninitialized(assign.e1);
+                return destination;
+            }
+        }
+
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
@@ -9015,15 +9017,14 @@ private struct Walker {
             const address = pointerOperandPlace(pointer.e1).deref.address;
             if (address !is null) {
                 auto destination = Place(cast(void*) address, assign.e1.type);
-                const value = assignThroughTypedTemporary(destination, assign.e2);
+                auto value = assignThroughTypedTemporary(destination, assign.e2);
                 clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
         }
 
-        if (auto dot = assign.e1.isDotVarExp)
-            if (isDirectProjectionWriteTarget(dot))
-                return runProjectionAssignExpression(dot, assign.e2);
+        if (isDirectProjectionWriteTarget(assign.e1))
+            return runProjectionAssignExpression(assign.e1, assign.e2);
 
         if (auto slice = assign.e1.isSliceExp)
             return runSliceAssignExpression(slice, assign.e2);
@@ -9032,15 +9033,7 @@ private struct Walker {
         // live typed place too. Resolve it before constructing the RHS, then
         // let the projection assignment path construct into fresh temporary
         // storage and copy the complete value into that already-selected
-        // place. Class bindings retain the existing path: their native slot
-        // is only a body pointer and the value path also carries its owning
-        // aggregate.
-        if (
-            isDirectProjectionWriteTarget(assign.e1) &&
-            assign.e1.type.toBasetype.isTypeClass is null
-        )
-            return runProjectionAssignExpression(assign.e1, assign.e2);
-
+        // place.
         // dmd's semantic3 merges a synthesized `BlitExp(VarExp(param), 0)`
         // into a function's own body for every `out` parameter of a
         // zero-init struct type (the literal's `.type` is retyped to the
@@ -9063,61 +9056,30 @@ private struct Walker {
         // call): `assign.e1` is then a `DotVarExp`, not a `VarExp`, so it
         // needs the same default-value materialization rather than writing
         // the raw `0` literal into the field's native struct storage.
-        if (auto blit = assign.isBlitExp) {
-            import quickbite.frontend.dmd.types: isStructType;
-
-            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type)) {
-                if (auto var = assign.e1.isVarExp)
-                    if (auto variable = var.var.isVarDeclaration) {
-                        const value = defaultValueResult(variable.type);
-                        writeLocation(assign.e1, value);
-                        return value;
-                    }
-                if (assign.e1.isDotVarExp !is null) {
-                    const value = defaultValueResult(assign.e1.type);
-                    writeLocation(assign.e1, value);
-                    return value;
-                }
-            }
-        }
-
-        // A struct or static-array binding is a live typed place too, but
-        // `isDirectProjectionWriteTarget` refuses a struct/static-array
-        // target above, so a whole-aggregate `VarExp` assignment never
-        // reaches `runProjectionAssignExpression`. Resolve it the same way:
-        // construct the RHS into a fresh temporary, then copy or convert
-        // that complete value into the binding's own place. Class bindings
-        // stay on the carrier path below for the same reason as the
-        // projection check above.
+        // A binding is also a live typed place. Resolve it the same way:
+        // construct the RHS into a fresh temporary, then copy that complete
+        // value into the binding's own place.
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
-                if (
-                    variable.type.toBasetype.isTypeClass is null &&
-                    hasBindingPlace(variable)
-                ) {
+                if (hasBindingPlace(variable)) {
                     auto destination = bindingPlace(variable);
-                    if (canAssignThroughTypedTemporary(destination, assign.e2)) {
-                        const value = assignThroughTypedTemporary(destination, assign.e2);
-                        clearUninitializedBindingAddress(destination.address);
-                        return value;
-                    }
+                    auto value = assignThroughTypedTemporary(destination, assign.e2);
+                    clearUninitializedBindingAddress(destination.address);
+                    return value;
                 }
 
-        auto value = constructedExpressionValue(assign.e2);
+        // Captured bindings and the remaining computed targets do not expose
+        // a direct place yet. Keep their established write path local to this
+        // fallback, but return the RHS's typed temporary to the construction
+        // dispatch instead of carrying its value across that boundary.
+        auto result = constructedExpressionPlace(assign.e2);
+        auto value = readStoredValue(result);
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
                 if (variable.type.toBasetype.isTypeClass !is null)
                     value = rootedNativeClassValue(assign.e2, value);
         writeLocation(assign.e1, value);
-
-        // Plain-variable assignments are bindings just like declaration
-        // initializers: propagate storage-backed views and reference aliases
-        // after `writeLocation` has dropped the target's previous binding.
-        if (auto var = assign.e1.isVarExp)
-            if (auto variable = var.var.isVarDeclaration) {
-            }
-
-        return value;
+        return result;
     }
 
     // DMD lowers a modifiable `aa[key]` to `*(_d_aaGetY(...))`.  Evaluating
@@ -9133,7 +9095,7 @@ private struct Walker {
             call.f.ident.toString == "_d_aaGetY";
     }
 
-    private ExpressionResult runRewrittenAssociativeArrayAssignment(
+    private Place runRewrittenAssociativeArrayAssignment(
         imported!"dmd.expression".PtrExp pointer,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -9143,7 +9105,7 @@ private struct Walker {
         if (address is null)
             throw new Exception("Associative-array entry has no native address.");
 
-        const value = assignThroughTypedTemporary(
+        auto value = assignThroughTypedTemporary(
             Place(cast(void*) address, pointer.type),
             rhs,
         );
@@ -9151,7 +9113,7 @@ private struct Walker {
         return value;
     }
 
-    private ExpressionResult runProjectionAssignExpression(
+    private Place runProjectionAssignExpression(
         imported!"dmd.expression".Expression target,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -9162,36 +9124,12 @@ private struct Walker {
         // into the live place. DMD has already made any required conversion,
         // postblit, or destructor action explicit around this assignment, so
         // this is the ordinary representation-preserving move itself.
-        // A direct `DotVarExp` has already composed its live field place
-        // above. Struct and static-array fields do not enter this path, so
-        // their DMD-lowered postblit and chained-method handling is unchanged.
-        if (
-            canAssignThroughTypedTemporary(destination, rhs)
-        ) {
-            const value = assignThroughTypedTemporary(destination, rhs);
-            clearProjectionRootUninitialized(target);
-            return value;
-        }
-
-        const value = constructedExpressionValue(rhs);
-        writeStoredValue(
-            destination,
-            storageValue(target.type, value),
-        );
+        // The direct target has already composed its live place above.
+        // DMD-lowered postblit and chained-method handling stays explicit in
+        // `rhs`.
+        auto value = assignThroughTypedTemporary(destination, rhs);
         clearProjectionRootUninitialized(target);
         return value;
-    }
-
-    // Item 9: resolve the assignment's live place before its RHS, then build
-    // that RHS in separate fresh typed storage. The typed copy or conversion
-    // is the only write to the live place, so aliases cannot observe
-    // construction. DMD keeps any postblit, destructor, or move lowering in
-    // `rhs`; this helper only stores that complete result.
-    private bool canAssignThroughTypedTemporary(
-        imported!"quickbite.backends.interpreter.place".Place destination,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        return destination.type !is null && hasTypedTemporaryRhs(rhs);
     }
 
     private bool hasTypedTemporaryRhs(
@@ -9200,40 +9138,25 @@ private struct Walker {
         return rhs !is null && rhs.type !is null;
     }
 
-    private bool sameAssignmentType(
-        imported!"dmd.mtype".Type targetType,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        return targetType !is null &&
-            rhs.type !is null &&
-            targetType.toBasetype.equals(rhs.type.toBasetype);
-    }
-
-    private bool sameAssignmentType(
-        imported!"dmd.expression".Expression target,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        return target !is null && sameAssignmentType(target.type, rhs);
-    }
-
-    private ExpressionResult assignThroughTypedTemporary(
+    // Resolve the assignment's live place before its RHS, then build the RHS
+    // in separate fresh typed storage. The typed copy is the only write to
+    // the live place, so aliases cannot observe construction. DMD keeps any
+    // postblit, destructor, or move lowering in `rhs`; this helper only stores
+    // that complete result.
+    private Place assignThroughTypedTemporary(
         imported!"quickbite.backends.interpreter.place".Place destination,
         imported!"dmd.expression".Expression rhs,
     ) {
         import quickbite.backends.interpreter.place: Place;
 
-        assert(canAssignThroughTypedTemporary(destination, rhs));
+        assert(destination.type !is null && hasTypedTemporaryRhs(rhs));
         auto temporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(rhs),
-            rhs.type,
+            _activationFrame.temporaryAddress(rhs, destination.type),
+            destination.type,
         ));
         runExpression(rhs, temporary);
-        const value = readStoredValue(temporary.place);
-        if (sameAssignmentType(destination.type, rhs))
-            copyPlaceValue(temporary.place, destination);
-        else
-            writeStoredValue(destination, storageValue(destination.type, value));
-        return value;
+        copyPlaceValue(temporary.place, destination);
+        return destination;
     }
 
     private void writeLocation(
@@ -9587,6 +9510,13 @@ private struct Walker {
         );
     }
 
+    private void writeArrayLengthLocation(
+        imported!"dmd.expression".ArrayLengthExp target,
+        Place value,
+    ) {
+        writeArrayLengthLocation(target, readStoredValue(value));
+    }
+
     private ExpressionResult resizedStoredArray(
         imported!"dmd.mtype".Type type,
         in ExpressionResult current,
@@ -9720,22 +9650,6 @@ private struct Walker {
         foreach (byte_; raw)
             bytes ~= ExpressionResult(byte_);
         return bytes;
-    }
-
-    private ExpressionResult scalarWithByte(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult current,
-        in size_t index,
-        in ExpressionResult byte_,
-    ) {
-        import std.conv: text;
-
-        auto bytes = scalarBytes(type, current);
-        if (index >= bytes.length)
-            throw new Exception(text("Scalar byte index out of bounds: ", index));
-
-        bytes[index] = ExpressionResult(cast(ubyte) byte_.asLong);
-        return scalarFromBytes(type, bytes);
     }
 
     // The inverse of `scalarBytes` above. `place_value.readScalarLeaf` keeps
@@ -10303,7 +10217,7 @@ private struct Walker {
         return updated;
     }
 
-    private ExpressionResult runIndexAssignExpression(
+    private Place runIndexAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -10325,11 +10239,7 @@ private struct Walker {
             const arrayIndex = scalarOperand!size_t(index.e2);
             auto destination = Place(address.pointerAddress, index.e1.type)
                 .index(arrayIndex);
-            if (canAssignThroughTypedTemporary(destination, rhs))
-                return assignThroughTypedTemporary(destination, rhs);
-            const value = constructedExpressionValue(rhs);
-            writeStoredValue(destination, storageValue(index.type, value));
-            return value;
+            return assignThroughTypedTemporary(destination, rhs);
         }
 
         if (isPointerType(index.e1.type)) {
@@ -10348,18 +10258,8 @@ private struct Walker {
                     ),
                     elementType,
                 );
-                if (canAssignThroughTypedTemporary(destination, rhs)) {
-                    const value = assignThroughTypedTemporary(destination, rhs);
-                    clearUninitializedBindingAddress(cast(void*) address);
-                    return value;
-                }
-                const value = constructedExpressionValue(rhs);
-                storeNativePointerElement(
-                    index.e1.type,
-                    ExpressionResult.pointerValue(cast(void*) address),
-                    arrayIndex,
-                    value,
-                );
+                auto value = assignThroughTypedTemporary(destination, rhs);
+                clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
             throw new Exception("Pointer index assignment needs a native address.");
@@ -10379,13 +10279,8 @@ private struct Walker {
                 const arrayIndex = scalarOperand!size_t(index.e2);
                 auto destination = Place(cast(void*) address, index.e1.type)
                     .index(arrayIndex);
-                if (canAssignThroughTypedTemporary(destination, rhs)) {
-                    const value = assignThroughTypedTemporary(destination, rhs);
-                    clearUninitializedBindingAddress(cast(void*) address);
-                    return value;
-                }
-                const value = constructedExpressionValue(rhs);
-                writeStoredValue(destination, value);
+                auto value = assignThroughTypedTemporary(destination, rhs);
+                clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
             throw new Exception("Unsupported interpreter assignment target.");
@@ -10428,11 +10323,7 @@ private struct Walker {
                             AggregateValue.length(AggregateValue.native(source)));
                     const arrayIndex = scalarOperand!size_t(index.e2);
                     auto destination = fieldPlace.index(arrayIndex);
-                    if (canAssignThroughTypedTemporary(destination, rhs))
-                        return assignThroughTypedTemporary(destination, rhs);
-                    const value = constructedExpressionValue(rhs);
-                    writeStoredValue(destination, value);
-                    return value;
+                    return assignThroughTypedTemporary(destination, rhs);
                 }
                 throw new Exception("Class field assignment needs a native address.");
             }
@@ -10455,13 +10346,7 @@ private struct Walker {
                         AggregateValue.length(AggregateValue.native(source)));
                 const arrayIndex = scalarOperand!size_t(index.e2);
                 auto destination = fieldPlace.index(arrayIndex);
-                if (canAssignThroughTypedTemporary(destination, rhs)) {
-                    const value = assignThroughTypedTemporary(destination, rhs);
-                    clearProjectionRootUninitialized(index);
-                    return value;
-                }
-                const value = constructedExpressionValue(rhs);
-                writeStoredValue(destination, storageValue(index.type, value));
+                auto value = assignThroughTypedTemporary(destination, rhs);
                 clearProjectionRootUninitialized(index);
                 return value;
             }
@@ -10490,11 +10375,7 @@ private struct Walker {
                                 AggregateValue.length(AggregateValue.native(source)));
                         const arrayIndex = scalarOperand!size_t(index.e2);
                         auto destination = fieldPlace.index(arrayIndex);
-                        if (canAssignThroughTypedTemporary(destination, rhs))
-                            return assignThroughTypedTemporary(destination, rhs);
-                        const value = constructedExpressionValue(rhs);
-                        writeStoredValue(destination, storageValue(index.type, value));
-                        return value;
+                        return assignThroughTypedTemporary(destination, rhs);
                     }
                 }
 
@@ -10547,7 +10428,7 @@ private struct Walker {
             writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
                 AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedArray),
             ));
-            return value;
+            return rhsTemporary.place;
         }
 
         auto var = index.e1.isVarExp;
@@ -10568,14 +10449,7 @@ private struct Walker {
         auto elementType = index.e1.type.toBasetype.nextOf;
         auto destination = bindingPlace(variable).index(arrayIndex);
 
-        if (canAssignThroughTypedTemporary(destination, rhs)) {
-            const value = assignThroughTypedTemporary(destination, rhs);
-            clearUninitializedBindingAddress(bindingPlace(variable).address);
-            return value;
-        }
-
-        const value = constructedExpressionValue(rhs);
-        writeStoredValue(destination, storageValue(elementType, value));
+        auto value = assignThroughTypedTemporary(destination, rhs);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
     }
@@ -10696,7 +10570,7 @@ private struct Walker {
         copyPlaceValue(Place(cell.block.address, type), destination);
     }
 
-    private ExpressionResult runNestedIndexAssignExpression(
+    private Place runNestedIndexAssignExpression(
         imported!"dmd.expression".IndexExp outer,
         imported!"dmd.expression".IndexExp inner,
         imported!"dmd.expression".Expression rhs,
@@ -10725,13 +10599,8 @@ private struct Walker {
             const innerIndex = scalarOperand!size_t(inner.e2);
             auto destination = Place(cast(void*) address, outer.type)
                 .index(innerIndex);
-            if (canAssignThroughTypedTemporary(destination, rhs)) {
-                const value = assignThroughTypedTemporary(destination, rhs);
-                clearUninitializedBindingAddress(cast(void*) address);
-                return value;
-            }
-            const value = constructedExpressionValue(rhs);
-            writeStoredValue(destination, value);
+            auto value = assignThroughTypedTemporary(destination, rhs);
+            clearUninitializedBindingAddress(cast(void*) address);
             return value;
         }
 
@@ -10795,11 +10664,7 @@ private struct Walker {
                 // the selected element can be written in isolation instead
                 // of rebuilding and rewriting the whole nested array.
                 auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                if (canAssignThroughTypedTemporary(destination, rhs))
-                    return assignThroughTypedTemporary(destination, rhs);
-                const value = constructedExpressionValue(rhs);
-                writeStoredValue(destination, value);
-                return value;
+                return assignThroughTypedTemporary(destination, rhs);
             }
 
             // A `this`/`super`-rooted receiver chain (`this.m[i][j] = v`, or
@@ -10825,13 +10690,7 @@ private struct Walker {
                 const innerIndex = scalarOperand!size_t(inner.e2);
                 checkStaticArrayIndexInBounds(outerElement, innerIndex);
                 auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                if (canAssignThroughTypedTemporary(destination, rhs)) {
-                    const value = assignThroughTypedTemporary(destination, rhs);
-                    clearProjectionRootUninitialized(inner);
-                    return value;
-                }
-                const value = constructedExpressionValue(rhs);
-                writeStoredValue(destination, value);
+                auto value = assignThroughTypedTemporary(destination, rhs);
                 clearProjectionRootUninitialized(inner);
                 return value;
             }
@@ -10865,11 +10724,7 @@ private struct Walker {
                         const innerIndex = scalarOperand!size_t(inner.e2);
                         checkStaticArrayIndexInBounds(outerElement, innerIndex);
                         auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                        if (canAssignThroughTypedTemporary(destination, rhs))
-                            return assignThroughTypedTemporary(destination, rhs);
-                        const value = constructedExpressionValue(rhs);
-                        writeStoredValue(destination, value);
-                        return value;
+                        return assignThroughTypedTemporary(destination, rhs);
                     }
                 }
 
@@ -10922,7 +10777,7 @@ private struct Walker {
             writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
                 AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedField),
             ));
-            return value;
+            return rhsTemporary.place;
         }
 
         auto var = outer.e1.isVarExp;
@@ -10947,13 +10802,7 @@ private struct Walker {
         auto destination = bindingPlace(variable)
             .index(outerIndex)
             .index(innerIndex);
-        if (canAssignThroughTypedTemporary(destination, rhs)) {
-            const value = assignThroughTypedTemporary(destination, rhs);
-            clearUninitializedBindingAddress(bindingPlace(variable).address);
-            return value;
-        }
-        const value = constructedExpressionValue(rhs);
-        writeStoredValue(destination, storageValue(inner.type, value));
+        auto value = assignThroughTypedTemporary(destination, rhs);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
     }
@@ -11007,7 +10856,7 @@ private struct Walker {
         return readStoredValue(place);
     }
 
-    private ExpressionResult runSliceAssignExpression(
+    private Place runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -11112,7 +10961,7 @@ private struct Walker {
                 value,
             );
 
-        return value;
+        return rhsPlace;
     }
 
     // Writing one element of an array whose element type is `void`: the
@@ -11160,7 +11009,7 @@ private struct Walker {
     // addressable slice header.  Keep that native header and write its
     // elements in place; rebuilding its enclosing array would create a second
     // storage authority for this lvalue shape.
-    private ExpressionResult runIndexedSliceAssignExpression(
+    private Place runIndexedSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
@@ -11190,14 +11039,14 @@ private struct Walker {
                     : value;
             AggregateValue.withArrayElement(currentAggregate, elementIndex, element);
         }
-        return value;
+        return rhsPlace;
     }
 
     // A slice assignment through a pointer (`p[i .. j] = source`) writes
     // element by element through the pointer — native memory via the FFI
     // store, D array storage via the tracked pointer — and never converts
     // the lvalue to a detached Array, which would silently sever aliasing.
-    private ExpressionResult runPointerSliceAssignExpression(
+    private Place runPointerSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -11236,7 +11085,7 @@ private struct Walker {
         // matters — a zero-length assignment through a null pointer is a no-op
         // in compiled D, not an unsupported target.
         if (upper == lower)
-            return value;
+            return rhsPlace;
 
         // A fill assignment (`p[i .. j] = scalar;`, e.g. druntime's own
         // `(cast(ubyte*)&entry.value)[0 .. V.sizeof] = 0` zeroing a new AA
@@ -11265,7 +11114,7 @@ private struct Walker {
                 );
             if (lower == 0)
                 recordCopiedClassIdentity(cast(void*) address, value);
-            return value;
+            return rhsPlace;
         }
 
         throw new Exception(text(
@@ -11338,7 +11187,7 @@ private struct Walker {
     // e.g. a field backed by a `Mallocator`-returned block whose destructor
     // later frees the field's pointer: swapping in a differently-sourced
     // block there corrupts the allocator on free.
-    private ExpressionResult runFieldSliceAssignExpression(
+    private Place runFieldSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
@@ -11388,7 +11237,7 @@ private struct Walker {
                 value,
             );
 
-        return value;
+        return rhsPlace;
     }
 
     // The array storage a struct field's own slice assignment must land in,
@@ -11454,7 +11303,7 @@ private struct Walker {
     // `AggregateValue.withArrayElement` reaches the original backing array.
     // Rebuilding an array from the written elements instead would leave the
     // result in a fresh allocation the source never sees.
-    private ExpressionResult runCastedSliceAssignExpression(
+    private Place runCastedSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -11499,7 +11348,7 @@ private struct Walker {
                 value,
             );
 
-        return value;
+        return rhsPlace;
     }
 
     private bool isBlockSliceAssignment(
@@ -11530,7 +11379,7 @@ private struct Walker {
         return reconstructStoredArray(aggregate.type, elements);
     }
 
-    private ExpressionResult runLoweredAssignExpression(
+    private Place runLoweredAssignExpression(
         imported!"dmd.expression".LoweredAssignExp assign,
     ) {
         import quickbite.frontend.dmd.types: isDynamicArrayType;
@@ -11542,15 +11391,15 @@ private struct Walker {
             if (assign.lowering !is null) {
                 if (assign.lowering.type.toBasetype.ty == TY.Tvoid) {
                     executeForEffect(assign.lowering);
-                    return ExpressionResult.void_;
+                    return Place.init;
                 }
-                return constructedExpressionValue(assign.lowering);
+                return constructedExpressionPlace(assign.lowering);
             }
 
             throw new Exception(text("Unsupported eval expression: ", assign.op));
         }
 
-        const lengthValue = constructedExpressionValue(assign.e2);
+        auto lengthValue = constructedExpressionPlace(assign.e2);
 
         auto var = arrayLength.e1.isVarExp;
         if (var is null) {
@@ -11566,7 +11415,7 @@ private struct Walker {
 
         const current = readBindingValue(variable);
 
-        const newLength = cast(size_t) lengthValue.asLong;
+        const newLength = cast(size_t) lengthValue.loadSignedScalar;
 
         // DMD lowers postfix `.length++`/`.length--` through a synthetic
         // `ref` local, so resize via that binding's native place.
@@ -11670,7 +11519,7 @@ private struct Walker {
             );
     }
 
-    private ExpressionResult runArrayAppendAssignExpression(
+    private Place runArrayAppendAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -11682,12 +11531,13 @@ private struct Walker {
         // bounds-check handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
             const element = constructedExpressionValue(assign.e2);
-            const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
+            auto appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
                 AggregateValue.native(constructedExpressionValue(assign.e1)),
                 element,
             ));
             writeLocation(assign.e1, appended);
-            return appended;
+            auto aggregate = AggregateValue.native(appended);
+            return Place(aggregate.address, aggregate.type);
         }
 
         if (auto index = assign.e1.isIndexExp)
@@ -11772,7 +11622,7 @@ private struct Walker {
                 variable,
                 appended,
             );
-            return readBindingValue(variable);
+            return bindingPlace(variable);
         }
     }
 
@@ -11832,7 +11682,7 @@ private struct Walker {
         return elements;
     }
 
-    private ExpressionResult runArrayConcatenateAssignExpression(
+    private Place runArrayConcatenateAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         if (assign.e1.isDotVarExp is null) {
@@ -11843,12 +11693,13 @@ private struct Walker {
                 );
         }
 
-        const concatenated = concatenatedArray(assign.e1.type, assign.e1, assign.e2);
+        auto concatenated = concatenatedArray(assign.e1.type, assign.e1, assign.e2);
         writeLocation(assign.e1, concatenated);
-        return concatenated;
+        auto aggregate = AggregateValue.native(concatenated);
+        return Place(aggregate.address, aggregate.type);
     }
 
-    private ExpressionResult runIndexedArrayAppendAssignExpression(
+    private Place runIndexedArrayAppendAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -11867,12 +11718,12 @@ private struct Walker {
             AggregateValue.elementAt(AggregateValue.native(current), arrayIndex),
         );
         const element = constructedExpressionValue(rhs);
-        const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
+        auto appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
             AggregateValue.native(currentElement), element,
         ));
         writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
-        return appended;
+        return bindingPlace(variable).index(arrayIndex);
     }
 
     private ExpressionResult castScalarResult(
@@ -14701,6 +14552,23 @@ destinationFallback:
         return true;
     }
 
+    private bool storeConstructionResult(
+        ref ConstructionDestination destination,
+        Place source,
+    ) {
+        if (source.type is null) {
+            import dmd.astenums: TY;
+
+            assert(destination.place.type.toBasetype.ty == TY.Tvoid);
+            destination.markConstructed;
+            return true;
+        }
+
+        copyPlaceValue(source, destination.place);
+        destination.markConstructed;
+        return true;
+    }
+
     private bool constructAtExpressionType(
         Expression expression,
         ref ConstructionDestination destination,
@@ -16368,18 +16236,6 @@ private imported!"quickbite.backends.interpreter.place".Place nativeConstructorR
         return receiver;
     auto owner = defaultValueOwner(structDecl.type);
     return Place(owner.address, structDecl.type);
-}
-
-
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult defaultValueOwnerResult(
-    imported!"dmd.mtype".Type type,
-) {
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: readValue;
-    import quickbite.backends.interpreter.runtime_values: defaultValueOwner;
-
-    auto owner = defaultValueOwner(type);
-    return readValue(Place(owner.address, type));
 }
 
 

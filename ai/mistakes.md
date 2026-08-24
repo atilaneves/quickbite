@@ -731,3 +731,8 @@
   accept the same roots. Adding struct `this`/`super` to only the first check
   still rejects `this.arrayField[index]` when the collector reaches the root;
   compound assignment then loses the live place that it must select once.
+
+- For a mechanical edit of repeated statements such as `return value`, anchor
+  every patch hunk in the containing function. A text-only replacement can
+  silently change an unrelated execution path that happens to contain the
+  same statement.
