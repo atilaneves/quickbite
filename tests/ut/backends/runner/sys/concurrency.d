@@ -66,3 +66,26 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// The signed-int counterpart: `atomicFetchAdd` is generic over its operand's
+// type, and DRuntime's naked asm body for the 32-bit case is identical for
+// `int` and `uint` -- only the parameter's DMD type differs.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "core.internal.atomic.atomicFetchAdd has inline assembly that CTFE " ~
+        "cannot execute"),
+)) {
+    @("atomic.fetchAddIntReturnsPreviousValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.atomic : atomicFetchAdd;
+
+            unittest {
+                int value = 41;
+                assert(atomicFetchAdd(&value, 1) == 41);
+                assert(value == 42);
+            }
+        });
+    }
+}
