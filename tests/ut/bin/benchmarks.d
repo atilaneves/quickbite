@@ -38,6 +38,16 @@ unittest {
     assert(("bytecode" in runners) !is null);
 }
 
+@("benchmarkBackends.constructsOnlyRequestedBackends")
+unittest {
+    import benchmarks.backends: BackendEnv, makeRunners;
+
+    auto runners = makeRunners(BackendEnv(), ["ctfe"]);
+
+    assert(runners.length == 1);
+    assert(("ctfe" in runners) !is null);
+}
+
 @("makeRunners.llvmjitReceivesDubPackage")
 unittest {
     import quickbite.backends.native: DubPackage, LLVMJit;

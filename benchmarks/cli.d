@@ -110,13 +110,14 @@ public int run(string[] args) {
 
     printRunHeader(warmup, runs);
 
-    // Every environment produces the same backend names, so the default runner
-    // set both validates the selection and serves the standalone fixtures.
-    auto defaultRunners = makeRunners(BackendEnv());
-
     string[] backendNames = opts.backendNames.length == 0
         ? defaultBackendNames.dup
         : opts.backendNames.dup;
+
+    // Construct only selected backends. Some backends load package dependency
+    // images in their constructor, and that is unsafe for an unused backend
+    // under the LDC benchmark host.
+    auto defaultRunners = makeRunners(BackendEnv(), backendNames);
 
     foreach (name; backendNames)
         if (name !in defaultRunners)
@@ -167,7 +168,7 @@ public int run(string[] args) {
             preparation ~= PreparationRecord(
                 dubPkg, dubInfo.fixtures.length, unit.members.length, "",
             );
-            groups ~= BenchmarkGroup(makeRunners(env), [unit]);
+            groups ~= BenchmarkGroup(makeRunners(env, backendNames), [unit]);
         } catch (Exception e)
             preparation ~= PreparationRecord(
                 dubPkg, dubInfo.fixtures.length, 0, e.msg.firstLine,

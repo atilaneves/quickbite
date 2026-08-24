@@ -55,7 +55,10 @@ private Runner makeLLVMJit(in BackendEnv env) {
     );
 }
 
-public Runner[string] makeRunners(in BackendEnv env) {
+public Runner[string] makeRunners(
+    in BackendEnv env,
+    in string[] backendNames = null,
+) {
     Runner function(in BackendEnv)[string] registry = [
         "ctfe":          &makeCtfe,
         "bytecode":      &makeBytecode,
@@ -65,7 +68,11 @@ public Runner[string] makeRunners(in BackendEnv env) {
     ];
 
     Runner[string] runners;
-    foreach (name, make; registry)
-        runners[name] = make(env);
+    const names = backendNames.length == 0 ? registry.keys : backendNames;
+    foreach (name; names) {
+        if (name !in registry)
+            continue;
+        runners[name] = registry[name](env);
+    }
     return runners;
 }
