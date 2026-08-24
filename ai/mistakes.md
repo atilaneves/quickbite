@@ -704,3 +704,9 @@
   #525's equivalent interpreter probe attributed 5.0 of 7.4 GB to returned
   activations discarding and rebuilding their expression-keyed temporary
   blocks; reusing eligible frames removed that churn.
+
+- When one AST discriminator covers result types with different execution
+  paths, retire only the type covered by the new path. A destination arm for
+  void logical expressions does not replace the boxed fallback for a non-void
+  logical expression when a destination-type mismatch makes scalar construction
+  decline.

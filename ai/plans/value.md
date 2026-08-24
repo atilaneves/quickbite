@@ -40,14 +40,13 @@ cleared and no longer blocks the rest.
   labeled dispatch against the `construct*Into` dispatches, and flip each to
   destination-passing (`runCallExpression(call, destination*)`), cheapest
   first: (a) delegate `.ptr`/`.funcptr`, `.re`/`.im` dot-identifier, vector
-  pair, `SymOffExp` variable case, assert, throw-expression, this/super, tuple
-  entry, void-typed logicals, pointer comparisons, function literals, defensive
-  identifier residue; (b) identity family, post-increment/decrement, scalar
-  compound assign, concatenation family, typeid, null-literal aggregate
-  residues, struct-literal type-mismatch residue, cast residues, `new`
-  residues, slice/index non-projection residues, `DotVarExp` reads, non-scalar
-  equality internals; (c) the assign/construct/blit cluster, shared with the
-  statement path's `writeLocation` machinery.
+  pair, `SymOffExp` variable case, pointer comparisons, function literals;
+  (b) identity family, post-increment/decrement, scalar compound assign,
+  concatenation family, typeid, null-literal aggregate residues,
+  struct-literal type-mismatch residue, cast residues, `new` residues,
+  slice/index non-projection residues, `DotVarExp` reads, non-scalar equality
+  internals; (c) the assign/construct/blit cluster, shared with the statement
+  path's `writeLocation` machinery.
 - **Argument-channel residue**, dying with the signature flips: the binder's
   arity check and `setLocal`/synthetic-carrier fallbacks; the places-less
   `bindFunctionParameters` callers (the ref-returning call trio, the FFI

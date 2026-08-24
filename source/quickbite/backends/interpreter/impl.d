@@ -755,7 +755,15 @@ private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
 private struct Walker {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.declaration: VarDeclaration;
-    import dmd.expression: DivExp, Expression, ModExp;
+    import dmd.expression:
+        AssertExp,
+        DivExp,
+        Expression,
+        IdentifierExp,
+        LogicalExp,
+        ModExp,
+        ThrowExp,
+        TupleExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
@@ -2879,6 +2887,8 @@ private struct Walker {
     // sub-walk was for. Everything else evaluates through the value path and
     // drops the result, which is what an arm for it would replace.
     private void executeForEffectImpl(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
+
         // Both operands of a comma expression in a discarding position are
         // discarded: D already defines the left one's value as unused, and
         // here the whole expression's value -- the right operand's -- is
@@ -2903,7 +2913,59 @@ private struct Walker {
             return;
         }
 
+        if (auto assert_ = expression.isAssertExp) {
+            executeAssertExpression(assert_);
+            return;
+        }
+
+        if (auto throw_ = expression.isThrowExp) {
+            executeThrowExpression(throw_);
+            return;
+        }
+
+        if (auto logical = expression.isLogicalExp)
+            if (logical.type.toBasetype.ty == TY.Tvoid) {
+                executeVoidLogicalExpression(logical);
+                return;
+            }
+
+        if (expression.isThisExp !is null || expression.isSuperExp !is null) {
+            requireReceiverExpression(expression);
+            return;
+        }
+
+        if (auto identifier = expression.isIdentifierExp)
+            if (isDefensiveIdentifierExpression(identifier))
+                return;
+
         cast(void) runExpressionImpl(expression);
+    }
+
+    private void executeAssertExpression(AssertExp assert_) {
+        import quickbite.backends.interpreter.messages: assertFailureMessage;
+
+        if (!conditionTruthy(assert_.e1))
+            throwAssertError(assertFailureMessage(
+                assert_,
+                runningCalledFunction,
+                inUnitTest,
+                &assertOperandPlace,
+            ));
+    }
+
+    private void executeThrowExpression(ThrowExp throw_) {
+        throwInterpretedException(throw_.e1);
+    }
+
+    private void executeVoidLogicalExpression(LogicalExp logical) {
+        import dmd.tokens: EXP;
+
+        const left = conditionTruthy(logical.e1);
+        if (
+            logical.op == EXP.andAnd && left ||
+            logical.op == EXP.orOr && !left
+        )
+            cast(void) runDestructorBoundedCondition(logical.e2);
     }
 
     // The temporaries a full expression creates live until that expression
@@ -2976,8 +3038,6 @@ private struct Walker {
             goto assocArrayLiteralExpression;
         case structLiteral:
             goto structLiteralExpression;
-        case assert_:
-            goto assertExpression;
         case not:
             goto notExpression;
         case andAnd:
@@ -2998,8 +3058,6 @@ private struct Walker {
             goto comparisonExpression;
         case question:
             goto conditionalExpression;
-        case throw_:
-            goto throwExpression;
         case plusPlus:
         case minusMinus:
             goto postExpression;
@@ -3062,8 +3120,6 @@ private struct Walker {
             goto bitXorExpression;
         case comma:
             goto commaExpression;
-        case tuple:
-            goto tupleExpression;
         case declaration:
             goto declarationExpression;
         case call:
@@ -3098,14 +3154,8 @@ private struct Walker {
             goto vectorExpression;
         case vectorArray:
             goto vectorArrayExpression;
-        case this_:
-            goto thisExpression;
-        case super_:
-            goto superExpression;
         case typeid_:
             goto typeidExpression;
-        case identifier:
-            goto identifierExpression;
         case variable:
             goto variableExpression;
         default:
@@ -3165,35 +3215,13 @@ structLiteralExpression:
         if (auto struct_ = expression.isStructLiteralExp)
             return structLiteralValue(struct_);
 
-assertExpression:
-        if (auto assert_ = expression.isAssertExp) {
-            import quickbite.backends.interpreter.messages:
-                assertFailureMessage;
-
-            if (!conditionTruthy(assert_.e1))
-                throwAssertError(assertFailureMessage(
-                    assert_,
-                    runningCalledFunction,
-                    inUnitTest,
-                    &assertOperandPlace,
-                ));
-            return ExpressionResult(true);
-        }
-
 notExpression:
         if (auto not = expression.isNotExp)
             return scalarExpressionValue(not);
 
 logicalExpression:
-        if (auto logical = expression.isLogicalExp) {
-            if (logical.type.toBasetype.ty == TY.Tvoid) {
-                if (logical.op == EXP.andAnd)
-                    return runLogicalAndExpression(logical);
-                if (logical.op == EXP.orOr)
-                    return runLogicalOrExpression(logical);
-            }
+        if (auto logical = expression.isLogicalExp)
             return scalarExpressionValue(logical);
-        }
 
 castExpression:
         if (auto cast_ = expression.isCastExp) {
@@ -3228,12 +3256,6 @@ conditionalExpression:
             return conditional.type.toBasetype.ty == TY.Tvoid
                 ? runConditionalExpression(conditional)
                 : constructedExpressionValue(conditional);
-
-throwExpression:
-        if (auto throw_ = expression.isThrowExp) {
-            throwInterpretedException(throw_.e1);
-            return ExpressionResult.void_;
-        }
 
 postExpression:
         if (auto post = expression.isPostExp)
@@ -3369,10 +3391,6 @@ commaExpression:
             return constructedExpressionValue(comma.e2);
         }
 
-tupleExpression:
-        if (auto tuple = expression.isTupleExp)
-            return runTupleExpression(tuple);
-
 declarationExpression:
         // DMD's own semantic analysis types a `DeclarationExp` `void`:
         // declaring a variable initialises its storage and yields nothing.
@@ -3464,68 +3482,9 @@ vectorArrayExpression:
         if (auto vectorArray = expression.isVectorArrayExp)
             return runVectorArrayExpression(vectorArray);
 
-thisExpression:
-        if (expression.isThisExp !is null) {
-            if (!hasThis)
-                throw new Exception("Unsupported eval expression: this");
-            return receiverValue(thisValue);
-        }
-
-superExpression:
-        if (expression.isSuperExp !is null) {
-            if (!hasThis)
-                throw new Exception("Unsupported eval expression: super");
-            return receiverValue(thisValue);
-        }
-
 typeidExpression:
         if (auto typeid_ = expression.isTypeidExp)
             return runTypeidExpression(typeid_);
-
-identifierExpression:
-        if (auto identifier = expression.isIdentifierExp) {
-            const name = identifier.ident is null
-                ? ""
-                : identifier.ident.toString.idup;
-
-            // DMD's own `IdentifierExp` semantic (`expressionsem.d`) always
-            // resolves `__ctfe` into a `VarExp` before a fully-semantic'd
-            // module reaches this walker -- confirmed empirically, including
-            // through the `-preview=dip1008` scope-catch-var destructor that
-            // synthesizes this identifier (`statementsem.d`'s
-            // `if (!__ctfe) _d_delThrowable(var)`): its own subsequent
-            // `statementSemantic` resolves it before any backend walks it.
-            // This arm is defensive dead code kept in the same shape as the
-            // `VarExp` arm below rather than assumed unreachable forever.
-            if (name == "__ctfe")
-                return ExpressionResult(false);
-
-            // Constructor and member-method `this` is the native body
-            // pointer. Resolve an unqualified class field through that body,
-            // straight off `thisValue`'s own place -- `Place.field` derives
-            // the field's offset from `field` itself, not from the place's
-            // recorded type, so no reconstruction is needed here.
-            if (
-                hasThis &&
-                thisValue.type !is null &&
-                thisValue.type.toBasetype.isTypeClass !is null &&
-                currentFunction !is null
-            ) {
-                auto thisParameter = currentFunction.vthis;
-                auto classType = thisParameter is null
-                    ? null
-                    : thisParameter.type.toBasetype.isTypeClass;
-                if (classType !is null && classType.sym !is null) {
-                    import quickbite.backends.interpreter.layout: classFields, fieldName;
-                    import quickbite.backends.interpreter.place_value: readValue;
-
-                    foreach (field; classFields(classType.sym))
-                        if (fieldName(field) == name)
-                            return readValue(thisValue.field(field));
-                }
-            }
-        }
-        goto unsupportedExpression;
 
 variableExpression:
         if (auto var = expression.isVarExp) {
@@ -3618,24 +3577,6 @@ unsupportedExpression:
         scope_.pop;
     }
 
-    private ExpressionResult runTupleExpression(imported!"dmd.expression".TupleExp tuple) {
-        // DMD lowers a tuple assignment (`target.tupleof = source.tupleof`, or a
-        // `Tuple` constructor's `field[] = values[]`) into a `TupleExp`: an
-        // optional side-effect prefix `e0` followed by the per-element
-        // expressions, which are ordinary assignments the interpreter already
-        // evaluates. Run the prefix, then each element in order; the sequence's
-        // value is its last element (matching the IR lowering), and is discarded
-        // in the statement-expression positions this arises in.
-        if (tuple.e0 !is null)
-            executeForEffect(tuple.e0);
-
-        auto result = ExpressionResult.void_;  // mutated below; `const` cannot express the fold
-        if (tuple.exps !is null)
-            foreach (element; *tuple.exps)
-                result = constructedExpressionValue(element);
-        return result;
-    }
-
     private ExpressionResult runSymbolDeclarationVarExpression(
         imported!"dmd.expression".VarExp var,
     ) {
@@ -3669,28 +3610,6 @@ unsupportedExpression:
         }
 
         assert(0, "SymbolDeclaration VarExp was not an aggregate initializer");
-    }
-
-    private ExpressionResult runLogicalAndExpression(
-        imported!"dmd.expression".LogicalExp logical,
-    ) {
-        const left = conditionTruthy(logical.e1);
-        if (!left)
-            return ExpressionResult(false);
-
-        const right = runDestructorBoundedCondition(logical.e2);
-        return ExpressionResult(right);
-    }
-
-    private ExpressionResult runLogicalOrExpression(
-        imported!"dmd.expression".LogicalExp logical,
-    ) {
-        const left = conditionTruthy(logical.e1);
-        if (left)
-            return ExpressionResult(true);
-
-        const right = runDestructorBoundedCondition(logical.e2);
-        return ExpressionResult(right);
     }
 
     // Mirrors `e2ir.d`'s `visitLogical`: DMD lowers `&&`/`||`'s left operand
@@ -5637,11 +5556,10 @@ unsupportedExpression:
     }
 
     // A void-typed conditional has no result to construct: each arm runs for
-    // its own effect only, mirroring `runLogicalAndExpression`/
-    // `runLogicalOrExpression`'s void-typed case. A non-void conditional
-    // goes through `constructedExpressionValue` instead (`constructInto`'s
-    // `CondExp` arm recurses into whichever arm is selected, so it already
-    // covers every result type family).
+    // its own effect only, like `executeVoidLogicalExpression`. A non-void
+    // conditional goes through `constructedExpressionValue` instead
+    // (`constructInto`'s `CondExp` arm recurses into whichever arm is
+    // selected, so it already covers every result type family).
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
@@ -14980,6 +14898,8 @@ unsupportedExpression:
         imported!"dmd.expression".Expression rvalue,
         ref ConstructionDestination destination,
     ) {
+        import dmd.astenums: TY;
+
         if (!destination.isFresh)
             throw new Exception(
                 "quickbite.backends.interpreter.impl.Walker.constructInto: "
@@ -14987,6 +14907,42 @@ unsupportedExpression:
             );
 
         auto place = destination.place;
+
+        if (auto assert_ = rvalue.isAssertExp) {
+            executeAssertExpression(assert_);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto throw_ = rvalue.isThrowExp) {
+            executeThrowExpression(throw_);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto logical = rvalue.isLogicalExp)
+            if (logical.type.toBasetype.ty == TY.Tvoid) {
+                executeVoidLogicalExpression(logical);
+                destination.markConstructed;
+                return true;
+            }
+
+        if (auto tuple = rvalue.isTupleExp) {
+            constructTupleInto(tuple, destination);
+            return true;
+        }
+
+        if (rvalue.isThisExp !is null || rvalue.isSuperExp !is null) {
+            constructReceiverExpressionInto(rvalue, place);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto identifier = rvalue.isIdentifierExp)
+            if (constructDefensiveIdentifierInto(identifier, place)) {
+                destination.markConstructed;
+                return true;
+            }
 
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
@@ -15195,6 +15151,98 @@ unsupportedExpression:
 
 destinationFallback:
         return false;
+    }
+
+    private void constructTupleInto(
+        TupleExp tuple,
+        ref ConstructionDestination destination,
+    ) {
+        if (tuple.e0 !is null)
+            executeForEffect(tuple.e0);
+
+        if (tuple.exps is null || (*tuple.exps).length == 0) {
+            destination.markConstructed;
+            return;
+        }
+
+        foreach (element; (*tuple.exps)[0 .. $ - 1])
+            executeForEffect(element);
+        runExpression((*tuple.exps)[$ - 1], destination);
+    }
+
+    private void constructReceiverExpressionInto(
+        Expression expression,
+        Place destination,
+    ) {
+        requireReceiverExpression(expression);
+        if (expression.type.toBasetype.isTypeClass !is null) {
+            destination.storeReference(thisValue.address);
+            return;
+        }
+        copyPlaceValue(thisValue, destination);
+    }
+
+    private void requireReceiverExpression(Expression expression) {
+        if (hasThis)
+            return;
+        throw new Exception(expression.isThisExp !is null
+            ? "Unsupported eval expression: this"
+            : "Unsupported eval expression: super");
+    }
+
+    private bool constructDefensiveIdentifierInto(
+        IdentifierExp identifier,
+        Place destination,
+    ) {
+        const name = identifierName(identifier);
+        if (name == "__ctfe") {
+            destination.storeNativeScalar(false);
+            return true;
+        }
+
+        auto field = defensiveIdentifierField(name);
+        if (field is null)
+            return false;
+        copyPlaceValue(thisValue.field(field), destination);
+        return true;
+    }
+
+    private bool isDefensiveIdentifierExpression(IdentifierExp identifier) {
+        const name = identifierName(identifier);
+        return name == "__ctfe" || defensiveIdentifierField(name) !is null;
+    }
+
+    private string identifierName(IdentifierExp identifier) {
+        return identifier.ident is null ? "" : identifier.ident.toString.idup;
+    }
+
+    private VarDeclaration defensiveIdentifierField(in string name) {
+        // DMD's own `IdentifierExp` semantic (`expressionsem.d`) always
+        // resolves `__ctfe` into a `VarExp` before a fully-semantic'd module
+        // reaches this walker. The same is normally true for unqualified
+        // fields. Keep these defensive paths in native places in case a
+        // partially semantic imported body still exposes either shape.
+        if (
+            !hasThis ||
+            thisValue.type is null ||
+            thisValue.type.toBasetype.isTypeClass is null ||
+            currentFunction is null
+        )
+            return null;
+
+        auto thisParameter = currentFunction.vthis;
+        auto classType = thisParameter is null
+            ? null
+            : thisParameter.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return null;
+
+        import quickbite.backends.interpreter.layout: classFields, fieldName;
+
+        foreach (field; classFields(classType.sym))
+            if (fieldName(field) == name)
+                return field;
+        return null;
     }
 
     // Array literals construct the header and elements in the caller's typed
