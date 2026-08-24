@@ -160,3 +160,46 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A module-scope `immutable` static array whose initializer is a literal
+// of literals (`int[2][2] table = [[1, 2], [3, 4]];`) reads the same as
+// any other module-scope `immutable`: indexing it twice reaches the
+// initializer's own value.
+static foreach (backend; Matrix!()) {
+    @("immutableGlobal.nestedArrayInitializerRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            immutable int[2][2] table = [[1, 2], [3, 4]];
+
+            unittest {
+                int row = 1;
+                assert(table[row][0] == 3);
+            }
+        });
+    }
+}
+
+// A module-scope `immutable` with a constant initializer has exactly one
+// storage location for the whole process: taking its address twice yields
+// the same address both times, and an aggregate sibling's elements read
+// back the initializer's own values.
+static foreach (backend; Matrix!()) {
+    @("immutableGlobal.constantInitializerHasStableAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            immutable int answer = 42;
+            immutable int[3] table = [1, 2, 3];
+
+            unittest {
+                const p = &answer;
+                assert(*p == 42);
+                assert(p is &answer);
+                int index = 1;
+                assert(table[index] == 2);
+            }
+        });
+    }
+}

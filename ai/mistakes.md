@@ -727,3 +727,15 @@
   `bin/ut @Bytecode` sweep, since the regression surfaces in unrelated
   fixtures (any fixture whose assert diagnostic or `switch` on a string
   reaches `__switch`), not in the fixture that motivated the change.
+
+- A "decline this shape, return `null`" helper is only actually graceful if
+  every line in it stays within that contract. `moduleStaticArrayLiteralInitializerBytes`
+  looked like it declined a nested static-array element (`int[2][2]`)
+  gracefully -- its final `return null` for a non-`IntegerExp`/`RealExp`
+  element reads that way -- but it called `scalarType(elementType)`
+  unconditionally before that per-element loop, and `scalarType` throws
+  `"Unsupported type in bytecode core: ..."` for any type it has no scalar
+  mapping for, `Tsarray` included. The actual behaviour for a nested array
+  was an uncaught exception, not a decline. Before trusting a `null`-decline
+  contract, check whether the helper calls anything that itself throws on
+  an unexpected shape, and guard that shape before reaching the call.

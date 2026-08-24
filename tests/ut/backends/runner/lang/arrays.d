@@ -3101,6 +3101,36 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The nested-array counterpart of `persistsAcrossCalls`: a `static` local
+// whose element type is itself a static array (`int[2][2]`) is still one
+// piece of dataseg storage, not a fresh frame slot per call, so a mutation
+// through two index operations in one call is visible to the next call.
+// `Ctfe` cannot read dataseg storage at compile time. `Interpreter` and
+// `LLVMJit` both reset the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `table` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 5"),
+    Omit!(LLVMJit, Because.refusal, "1 != 5"),
+)) {
+    @("datasegLocal.nestedArrayInitializerPersistsAcrossCalls." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int next() {
+                    static int[2][2] table = [[1, 2], [3, 4]];
+                    ++table[1][1];
+                    return table[1][1];
+                }
+                assert(next == 5);
+                assert(next == 6);
+            }
+        });
+    }
+}
+
 // Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
 // sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
 // DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts

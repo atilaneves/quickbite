@@ -2579,8 +2579,20 @@ package(quickbite.backends.bytecode) struct Compiler {
                 return Operand(offset, ScalarType.bool_);
             }
 
+            // An `immutable` declaration whose module registration declines
+            // (a literal shape none of the module literal writers cover,
+            // e.g. a static array of structs) has no module storage to read
+            // through; rematerialise its value straight from the AST
+            // instead, the same as before module storage existed for it.
+            // `storage != DeclarationStorage.module_` guards this so a
+            // successfully registered immutable (the common case) keeps
+            // reading through the module Place machinery above instead of
+            // recomputing its initializer on every read.
             if (auto declaration = variable.var.isVarDeclaration)
-                if (isDeclarationNamed(declaration, "$"))
+                if (isDeclarationNamed(declaration, "$") ||
+                    (declaration.isImmutable &&
+                        moduleDeclarationRecord(declaration).storage !=
+                            DeclarationStorage.module_))
                     if (auto initializer =
                             declaration._init is null
                                 ? null
@@ -4769,17 +4781,33 @@ package(quickbite.backends.bytecode) struct Compiler {
         // no bytecode instruction to re-run later. `resolvePlace` and the
         // scalar/struct/array read and write paths already fall back to
         // module storage for a declaration with no frame storage
-        // registered. Module registration can decline an initializer shape
-        // its literal writers do not cover yet (e.g. a static array whose
-        // elements are themselves arrays, as `core.internal.switch_`'s own
-        // `static immutable cases` table is): fall through to ordinary
-        // frame compilation below for that case. Recomputing the value on
-        // every call is not observably different from computing it once,
-        // because a dataseg initializer is always a compile-time constant.
+        // registered.
         if (variable.isDataseg &&
             moduleDeclarationRecord(variable).storage ==
                 DeclarationStorage.module_)
             return;
+
+        // Module registration can still decline an initializer shape its
+        // literal writers do not cover (e.g. a static array of structs).
+        // Falling through to ordinary frame compilation below is only safe
+        // for an `immutable`/`const` local: a dataseg initializer is always
+        // a compile-time constant, so recomputing it on every call is not
+        // observably different from computing it once, and this is the path
+        // `core.internal.switch_`'s own `static immutable cases` table
+        // needs. A *mutable* declined declaration (`static`/`__gshared`
+        // with no `immutable`/`const`) cannot take that shortcut: frame
+        // compilation would silently reset every mutation on the next call,
+        // since the "shares one slot across calls" promise `isDataseg`
+        // makes has no other storage to fall back on. Refuse it loudly
+        // instead of returning wrong results.
+        if (variable.isDataseg &&
+            !variable.isImmutable && !variable.isConst)
+        {
+            throw new Exception(text(
+                "Unsupported initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+        }
 
         final switch (declarationRecord(variable).facts.representation)
             with (DeclarationRepresentation)
@@ -10069,15 +10097,22 @@ package(quickbite.backends.bytecode) struct Compiler {
     // array literal whose every element is a constant scalar expression --
     // the static-array counterpart of `writeStructLiteralFieldBytes`'s
     // per-field layout, laid out at each element's own `index * elementSize`
-    // offset instead of a field's DMD-computed offset. Returns `null`
+    // offset instead of a field's DMD-computed offset. A nested static array
+    // element (`int[2][2] table = [[1, 2], [3, 4]];`) recurses one level:
+    // each outer element is itself an `ArrayLiteralExp`, laid out at its own
+    // `index * elementSize` offset the same way, so a `Tsarray` element type
+    // is handled before the scalar-only cases below (`scalarType` has no
+    // mapping for `Tsarray` and throws if reached with one). Returns `null`
     // (declining registration, same as the default-initializer path) when
     // the element count does not exactly fill the array, an element is
-    // missing, or any element is not a constant scalar expression.
+    // missing, or any element is not a constant scalar expression (nor,
+    // recursively, a constant static-array-literal expression).
     private ubyte[] moduleStaticArrayLiteralInitializerBytes(
         ArrayLiteralExp literal,
         Type elementType,
         in ushort totalSize,
     ) {
+        import dmd.astenums: TY;
         import std.bitmanip: nativeToLittleEndian;
 
         if (literal is null || literal.elements is null)
@@ -10088,6 +10123,27 @@ package(quickbite.backends.bytecode) struct Compiler {
             literal.elements.length * elementSize != totalSize)
         {
             return null;
+        }
+
+        if (elementType.toBasetype.ty == TY.Tsarray) {
+            auto nestedElementType = elementType.toBasetype.nextOf;
+            ubyte[] bytes;
+            bytes.length = totalSize;
+            foreach (index, element; *literal.elements) {
+                if (element is null)
+                    return null;
+
+                const elementOffset = index * elementSize;
+                auto nestedBytes = moduleStaticArrayLiteralInitializerBytes(
+                    element.isArrayLiteralExp, nestedElementType,
+                    cast(ushort) elementSize,
+                );
+                if (nestedBytes is null)
+                    return null;
+                bytes[elementOffset .. elementOffset + elementSize] =
+                    nestedBytes[];
+            }
+            return bytes;
         }
 
         const elementScalarType = scalarType(elementType);
