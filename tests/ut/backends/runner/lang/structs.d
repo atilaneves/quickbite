@@ -141,6 +141,46 @@ static foreach (backend; Matrix!(
 }
 
 
+// A struct declared in a function carries a hidden context field even when
+// no method of it reads an enclosing local, and returning such a struct does
+// not extend the declaring frame's lifetime: compiled D allocates a closure
+// only for a frame that something escaping actually reads. So a caller can
+// loop over many such calls -- as any range pipeline built from local lambdas
+// does -- allocating as it goes, and a pointer it took to one of its own
+// locals beforehand names that local throughout.
+static foreach (backend; Matrix!()) {
+    @("struct.returnedNestedStructWithoutCapturesLeavesCallerLocalsInPlace." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto counter() {
+                struct Counter {
+                    int next() {
+                        return 1;
+                    }
+                }
+
+                return Counter();
+            }
+
+            unittest {
+                int guard;
+                int* pointer = &guard;
+                int total;
+                foreach (i; 0 .. 20_000) {
+                    auto scratch = new ubyte[](4096);
+                    scratch[0] = 1;
+                    total += counter.next + scratch[0];
+                    guard = i;
+                    assert(*pointer == i);
+                }
+                assert(total == 40_000);
+            }
+        });
+    }
+}
+
+
 // Each static-array element is initialized as a struct value. Its declared
 // field initializer applies independently to every element.
 static foreach (backend; Matrix!(

@@ -968,7 +968,14 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     uint parameterBytes;
     ResultType returnType;
     bool hasThis;
-    // A returned nested struct can keep this frame as its hidden context.
+    // Set from DMD's `needsClosure`: a nested function or struct method that
+    // reads this frame's locals can outlive the call, so once this function
+    // has run the machine never hands its frame's slots to a later callee.
+    // Compiled D heap-allocates such a frame and lets the GC reclaim it; this
+    // keeps every such frame for the rest of the run instead, so a loop over
+    // such calls grows the stack by one frame per iteration. Retire once a
+    // nested struct's context can live in a heap closure the way an escaping
+    // delegate's already does.
     bool preservesFrame;
     // Set only for a native-leaf function reached through a function-pointer
     // value (`&f` where `f.fbody is null`, taken e.g. by

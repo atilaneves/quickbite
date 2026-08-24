@@ -594,39 +594,25 @@ package(quickbite.backends.bytecode) struct Compiler {
             layout.blockSize,
             functionResultType(function_),
             layout.hasThis,
-            returnsNestedStruct(function_),
+            needsPreservedFrame(function_),
             nativeCallIndex,
         );
         return cast(ushort) index;
     }
 
-    private bool returnsNestedStruct(FuncDeclaration function_) {
-        auto functionType = function_.type.toBasetype.isTypeFunction;
-        if (functionType is null || functionType.next is null)
-            return false;
-        auto structType = functionType.next.toBasetype.isTypeStruct;
-        return structType !is null && structOrFieldIsNested(structType.sym);
-    }
-
-    // True if `declaration` itself is nested (carries a hidden context field),
-    // or any of its fields is, at any depth -- since `compileStructLiteralInto`
-    // recurses into a nested struct-typed field and gives it the same
-    // context-initialization treatment a directly nested struct gets
-    // (`initializeNestedContext`). A function returning such a struct must
-    // keep its own frame alive exactly as if it returned the nested struct
-    // directly, or the context field that initialization writes will point at
-    // a frame the caller has since reused.
-    private bool structOrFieldIsNested(
-        imported!"dmd.dstruct".StructDeclaration declaration,
-    ) {
-        if (declaration.isNested)
-            return true;
-        foreach (field; declaration.fields) {
-            auto fieldStruct = field.type.toBasetype.isTypeStruct;
-            if (fieldStruct !is null && structOrFieldIsNested(fieldStruct.sym))
-                return true;
-        }
-        return false;
+    // DMD's own escape analysis for the function's frame: true when a nested
+    // function or a nested struct's method that reads this function's locals
+    // can outlive the call (a returned nested struct, an escaping delegate,
+    // ...). Compiled D heap-allocates the frame in exactly these cases; the
+    // machine keeps the frame's stack slots out of later callees' reach
+    // instead (`CompiledFunction.preservesFrame`). A nested struct that reads
+    // nothing from the frame still carries a context field, but its frame
+    // needs no such treatment -- and every phobos range built from a local
+    // lambda is such a struct, so gating on the struct's shape rather than
+    // on actual captures would preserve a frame per call in ordinary loops.
+    private static bool needsPreservedFrame(FuncDeclaration function_) {
+        import dmd.funcsem: needsClosure;
+        return needsClosure(function_);
     }
 
     // Registers a native leaf's `Program.nativeCalls` entry for indirect

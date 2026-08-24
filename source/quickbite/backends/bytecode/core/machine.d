@@ -7,18 +7,16 @@ private:
 package(quickbite.backends.bytecode) alias CompileFunction =
     void delegate(in size_t index);
 
-// Bytes reserved upfront for the VM call stack so growing it for callee frames
-// reuses the same block: raw `&local` pointers stay valid across calls. A
-// single guest unittest almost never nests deep enough to need more than a
-// few KiB of frame space (measured: a struct+string round trip through six
-// levels of generic dispatch peaks under 4.5 KiB), so this only needs to be
-// large enough to make reallocation rare in practice, not to bound every
-// program that could ever run -- `run`'s own callee-frame growth already
-// handles exceeding it correctly. A flat multi-megabyte reservation charged
-// to every single test, regardless of what it actually uses, was the
-// dominant cost inflating Bytecode's measured memory use far past what the
-// guest program itself needs (issue #509).
-private enum stackCapacity = 64 * 1024;
+// Address space reserved for the VM call stack. The reservation is one
+// anonymous mapping whose pages the OS commits only when a frame first
+// touches them, so a test is charged for the frame space it actually uses
+// (issue #509) while the block itself never moves: a raw `&local` pointer a
+// guest stores in a struct field or on the heap stays valid for the whole
+// run. A program needing more than this stops with a diagnostic rather than
+// relocating live frames under such pointers -- the same bound a native
+// thread's stack imposes, sized up because a VM frame holds every temporary
+// a native frame keeps in registers.
+private enum stackCapacity = 64 * 1024 * 1024;
 
 package(quickbite.backends.bytecode) struct RunResult {
     ubyte[] bytes;
@@ -51,18 +49,14 @@ package(quickbite.backends.bytecode) RunResult run(
         sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
 
-    // Reserve a generous fixed capacity so growing `stack` for callee frames
-    // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
-    // struct field or heap and dereferenced later must stay valid across the
-    // intervening calls that grow the stack.
-    auto stack = new ubyte[](program.functions[entryIndex].frameSize);
-    stack.reserve(stackCapacity);
+    auto reservation = reserveStack;
+    scope(exit) releaseStack(reservation);
+    auto stack = reservation[0 .. program.functions[entryIndex].frameSize];
     // Guest locals and temporaries -- including slice/class/struct pointers
     // a real druntime allocation hook returned -- live here as raw bytes;
-    // scan them like compiled D scans its own stack frames. A callee-frame
-    // growth past the reserved capacity can still move `stack` to a fresh
-    // `NO_SCAN` block, so the growth site re-marks it too.
-    markScanned(stack);
+    // scan them like compiled D scans its own stack frames: only the prefix
+    // frames have reached, extended as callee frames grow it.
+    scanStack(stack);
     // Lazy compilation can add module slots while this machine is running, so
     // access the program-owned segment directly. The compiler reserves its
     // maximum addressable capacity before execution, keeping raw addresses
@@ -1804,14 +1798,12 @@ package(quickbite.backends.bytecode) RunResult run(
                     : preservedFrameEnd;
                 if (callee.preservesFrame)
                     preservedFrameEnd = calleeBase + callee.frameSize;
-                if (stack.length < calleeBase + callee.frameSize) {
-                    // Growth past the reserved capacity can relocate `stack`
-                    // to a fresh `NO_SCAN` block; re-mark it scanned so the
-                    // GC keeps seeing guest pointers stored in its frames.
-                    const stackPtrBeforeGrowth = stack.ptr;
-                    stack.length = calleeBase + callee.frameSize;
-                    if (stack.ptr !is stackPtrBeforeGrowth)
-                        markScanned(stack);
+                const calleeEnd = calleeBase + callee.frameSize;
+                if (stack.length < calleeEnd) {
+                    if (calleeEnd > reservation.length)
+                        throw stackOverflow(calleeEnd, reservation.length);
+                    stack = reservation[0 .. calleeEnd];
+                    scanStack(stack);
                 }
 
                 stack[calleeBase .. calleeBase + callee.parameterBytes] =
@@ -2048,6 +2040,58 @@ package(quickbite.backends.bytecode) RunResult run(
             ip = clause.handlerIp;
         }
     }
+}
+
+// The whole `stackCapacity` reservation as one slice; see `stackCapacity`.
+// `MAP_NORESERVE` keeps the untouched remainder out of the process's commit
+// charge. `mmap` hands back an unbounded raw pointer, hence `@trusted`.
+private ubyte[] reserveStack() @trusted {
+    import core.sys.linux.sys.mman: MAP_NORESERVE;
+    import core.sys.posix.sys.mman:
+        MAP_ANON, MAP_FAILED, MAP_PRIVATE, mmap, PROT_READ, PROT_WRITE;
+
+    auto memory = mmap(
+        null,
+        stackCapacity,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
+        -1,
+        0,
+    );
+    if (memory == MAP_FAILED)
+        throw new Exception("Cannot reserve the bytecode stack");
+    return (cast(ubyte*) memory)[0 .. stackCapacity];
+}
+
+// Unmaps a `reserveStack` reservation after dropping its GC root range. Only
+// ever passed the slice `reserveStack` returned, hence `@trusted`.
+private void releaseStack(ubyte[] reservation) @trusted {
+    import core.memory: GC;
+    import core.sys.posix.sys.mman: munmap;
+
+    GC.removeRange(reservation.ptr);
+    munmap(reservation.ptr, reservation.length);
+}
+
+// Registers the frames-in-use prefix of the reservation as the GC root range
+// for the stack, replacing the previous prefix: the GC sees every guest
+// pointer stored in a frame and scans no further than the frames reach.
+// `GC.removeRange` is a no-op for a pointer with no range yet. Both take the
+// reservation's raw base pointer, hence `@trusted`.
+private void scanStack(ubyte[] stack) @trusted {
+    import core.memory: GC;
+
+    GC.removeRange(stack.ptr);
+    GC.addRange(stack.ptr, stack.length);
+}
+
+private Exception stackOverflow(in size_t needed, in size_t reserved) @safe pure {
+    import std.conv: text;
+
+    return new Exception(text(
+        "Bytecode stack overflow: ", needed, " bytes needed, ",
+        reserved, " reserved",
+    ));
 }
 
 private SelectedHandler selectHandler(
