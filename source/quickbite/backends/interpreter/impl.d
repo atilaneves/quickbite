@@ -3031,6 +3031,11 @@ private struct Walker {
             }
         }
 
+        if (auto post = expression.isPostExp) {
+            if (runPostExpression(post, null))
+                return;
+        }
+
         if (auto identity = expression.isIdentityExp) {
             executeForEffectImpl(identity.e1);
             executeForEffectImpl(identity.e2);
@@ -3271,9 +3276,6 @@ private struct Walker {
             goto equalExpression;
         case question:
             goto conditionalExpression;
-        case plusPlus:
-        case minusMinus:
-            goto postExpression;
         case addAssign:
             goto addAssignExpression;
         case add:
@@ -3439,10 +3441,6 @@ conditionalExpression:
             return conditional.type.toBasetype.ty == TY.Tvoid
                 ? runConditionalExpression(conditional)
                 : constructedExpressionValue(conditional);
-
-postExpression:
-        if (auto post = expression.isPostExp)
-            return runPostIncrementExpression(post);
 
 addAssignExpression:
         if (auto addAssign = expression.isAddAssignExp)
@@ -8914,7 +8912,7 @@ unsupportedExpression:
         // A dereferenced native pointer (`*p += v`) has no storage-owned
         // Place: `hasDirectWriteProjectionPlace` never accepts a `PtrExp`.
         // `pointerOperandPlace` evaluates `pointer.e1` exactly once,
-        // matching `runPostIncrementExpression`'s identical `PtrExp` arm;
+        // matching `runPostExpression`'s identical `PtrExp` arm;
         // reuse the resulting place for the old value, the write, and the
         // result, instead of the fallback below, which re-evaluates
         // `pointer.e1` in the initial read, `writeLocation`'s own `PtrExp`
@@ -10396,11 +10394,11 @@ unsupportedExpression:
 
     // `storageValue`'s scalar-cast fallback, factored out for callers whose
     // value is already known -- by construction, not by this type's runtime
-    // tag -- to be a plain scalar or pointer: a compound-assignment or
-    // increment/decrement result never carries a type-name or
-    // native-aggregate tag (`compoundAssignedValue`/`incrementedValue` only
-    // ever answer a numeric, complex, or pointer variant, or throw), so
-    // those callers skip the two tag checks above and land here directly.
+    // tag -- to be a plain scalar or pointer: a compound-assignment result
+    // never carries a type-name or native-aggregate tag
+    // (`compoundAssignedValue` only ever answers a numeric, complex, or
+    // pointer variant, or throws), so that caller skips the two tag checks
+    // above and lands here directly.
     private ExpressionResult castScalarToType(
         imported!"dmd.mtype".Type type,
         in ExpressionResult value,
@@ -15094,6 +15092,12 @@ unsupportedExpression:
                 return true;
             }
 
+        if (auto post = rvalue.isPostExp)
+            if (runPostExpression(post, &place)) {
+                destination.markConstructed;
+                return true;
+            }
+
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
                 runExpression(conditional.e1, destination);
@@ -16700,109 +16704,168 @@ destinationFallback:
         return (variable.storage_class & STC.manifest) != STC.none;
     }
 
-    private ExpressionResult runPostIncrementExpression(
+    // Postfix increment and decrement select their live lvalue once. When the
+    // result is observed, the old value is copied to its place before the
+    // selected storage is mutated, so the result stays independent of the
+    // write.
+    private bool runPostExpression(
         imported!"dmd.expression".PostExp post,
+        imported!"quickbite.backends.interpreter.place".Place* destination,
     ) {
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (
+            post.e1 is null ||
+            post.e1.type is null ||
+            destination !is null && destination.type is null
+        )
+            return false;
 
         const delta = post.op == EXP.plusPlus
-            ? ExpressionResult(cast(int) 1)
+            ? 1
             : post.op == EXP.minusMinus
-                ? ExpressionResult(cast(int) -1)
-                : ExpressionResult.void_;
-        if (delta == ExpressionResult.void_)
-            throw new Exception("Unsupported eval post expression.");
+                ? -1
+                : 0;
+        if (delta == 0)
+            return false;
+
+        const resultKind = post.e1.type.toBasetype.ty;
+        if (
+            destination !is null &&
+            destination.type.toBasetype.ty != resultKind
+        )
+            return false;
+
+        Place target;
+        bool clearsProjectionRoot;
 
         if (auto var = post.e1.isVarExp) {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported eval post expression target.");
 
-            // Reuse the ordinary VarExp read path so post-increment observes
-            // the binding's authoritative native storage.
-            const oldValue = constructedExpressionValue(post.e1);
-            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
-            return oldValue;
-        }
+            materializeDatasegInitializer(variable);
+            if (!hasBindingPlace(variable))
+                throw new Exception("Unsupported eval post expression target.");
+            if (isUninitializedBinding(variable)) {
+                import quickbite.backends.interpreter.messages:
+                    uninitializedVariableMessage;
 
-        if (post.e1.isDotVarExp !is null) {
-            if (isDirectProjectionWriteTarget(post.e1)) {
-                auto destination = directWriteProjectionPlace(post.e1);
-                const oldValue = readStoredValue(destination);
-                writeStoredValue(
-                    destination,
-                    castScalarToType(
-                        post.e1.type,
-                        incrementedValue(oldValue, post.e1.type, delta),
-                    ),
-                );
-                clearProjectionRootUninitialized(post.e1);
-                return oldValue;
+                throw new Exception(uninitializedVariableMessage(
+                    variable,
+                    currentFunction,
+                ));
             }
 
-            const oldValue = constructedExpressionValue(post.e1);
-            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
-            return oldValue;
-        }
-
-        if (post.e1.isIndexExp !is null) {
-            if (isDirectProjectionWriteTarget(post.e1)) {
-                auto destination = directWriteProjectionPlace(post.e1);
-                const oldValue = readStoredValue(destination);
-                writeStoredValue(
-                    destination,
-                    castScalarToType(
-                        post.e1.type,
-                        incrementedValue(oldValue, post.e1.type, delta),
-                    ),
-                );
-                clearProjectionRootUninitialized(post.e1);
-                return oldValue;
-            }
-
-            const oldValue = constructedExpressionValue(post.e1);
-            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
-            return oldValue;
-        }
-
-        if (auto pointer = post.e1.isPtrExp) {
-            // Construct the pointer operand in its own typed place rather
-            // than reading it through the carrier: `pointerOperandPlace`
-            // evaluates `pointer.e1` exactly once, matching the single-read
-            // contract the atomic hooks build their own target place under,
-            // and `.deref.address` is the identical address
-            // `nativeElementAddress(..., 0, ...)` those composed. Pair it
-            // with `post.e1.type.toBasetype` -- the same pointee type
-            // `loadNativePointerElement` resolved -- so an enum-typed
-            // pointee still reads/writes as its base scalar here.
-            import quickbite.backends.interpreter.place: Place;
-
-            auto target = Place(
+            target = bindingPlace(variable);
+            clearsProjectionRoot = true;
+        } else if (isDirectProjectionWriteTarget(post.e1)) {
+            target = directWriteProjectionPlace(post.e1);
+            clearsProjectionRoot = true;
+        } else if (auto pointer = post.e1.isPtrExp) {
+            target = Place(
                 pointerOperandPlace(pointer.e1).deref.address,
                 post.e1.type.toBasetype,
             );
-            const oldValue = readStoredValue(target);
-            writeStoredValue(target, incrementedValue(oldValue, target.type, delta));
-            return oldValue;
+        } else if (auto index = post.e1.isIndexExp) {
+            import quickbite.frontend.dmd.types: isPointerType;
+
+            if (!isPointerType(index.e1.type))
+                return false;
+            auto pointer = pointerOperandPlace(index.e1);
+            const arrayIndex = scalarOperand!size_t(index.e2);
+            target = Place(
+                pointer.index(arrayIndex).address,
+                post.e1.type.toBasetype,
+            );
+        } else if (auto dot = post.e1.isDotVarExp) {
+            auto field = dot.var.isVarDeclaration;
+            if (field is null || dot.e1.type is null)
+                return false;
+
+            if (hasProjectionPlace(dot)) {
+                target = projectionPlace(dot, /* writeBounds */ true);
+                clearsProjectionRoot = true;
+            } else {
+                if (dot.e1.type.toBasetype.isTypeClass is null)
+                    return false;
+
+                auto receiver = ConstructionDestination(Place(
+                    _activationFrame.temporaryAddress(dot.e1),
+                    dot.e1.type,
+                ));
+                runExpression(dot.e1, receiver);
+                auto bodyAddress = receiver.place.deref.address;
+                auto bodyType = dot.e1.type;
+                if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                    bodyType = (*metadata).type;
+                }
+                target = Place(bodyAddress, bodyType).field(field);
+            }
+        } else {
+            return false;
         }
 
-        throw new Exception("Unsupported eval post expression target.");
+        const kind = target.type.toBasetype.ty;
+        if (kind == TY.Tpointer) {
+            if (resultKind != TY.Tpointer)
+                return false;
+
+            // `auto`: the typed pointer stores below require a mutable
+            // address, although this helper does not mutate through it.
+            auto oldAddress = target.deref.address;
+            if (destination !is null)
+                destination.storeReference(oldAddress);
+            target.storeReference(offsetPointerAddress(
+                oldAddress,
+                delta * cast(long) pointerElementSize(target.type),
+            ));
+        } else {
+            if (resultKind != kind)
+                return false;
+
+            switch (kind) with (TY) {
+                case Tint8: postIncrementScalar!byte(target, destination, delta); break;
+                case Tuns8: postIncrementScalar!ubyte(target, destination, delta); break;
+                case Tchar: postIncrementScalar!char(target, destination, delta); break;
+                case Tint16: postIncrementScalar!short(target, destination, delta); break;
+                case Tuns16: postIncrementScalar!ushort(target, destination, delta); break;
+                case Twchar: postIncrementScalar!wchar(target, destination, delta); break;
+                case Tint32: postIncrementScalar!int(target, destination, delta); break;
+                case Tuns32: postIncrementScalar!uint(target, destination, delta); break;
+                case Tdchar: postIncrementScalar!dchar(target, destination, delta); break;
+                case Tint64: postIncrementScalar!long(target, destination, delta); break;
+                case Tuns64: postIncrementScalar!ulong(target, destination, delta); break;
+                case Tfloat32: postIncrementScalar!float(target, destination, delta); break;
+                case Tfloat64: postIncrementScalar!double(target, destination, delta); break;
+                case Tfloat80: postIncrementScalar!real(target, destination, delta); break;
+                case Timaginary32: postIncrementScalar!ifloat(target, destination, delta); break;
+                case Timaginary64: postIncrementScalar!idouble(target, destination, delta); break;
+                case Timaginary80: postIncrementScalar!ireal(target, destination, delta); break;
+                case Tcomplex32: postIncrementScalar!cfloat(target, destination, delta); break;
+                case Tcomplex64: postIncrementScalar!cdouble(target, destination, delta); break;
+                case Tcomplex80: postIncrementScalar!creal(target, destination, delta); break;
+                default: return false;
+            }
+        }
+
+        if (clearsProjectionRoot)
+            clearProjectionRootUninitialized(post.e1);
+        return true;
     }
 
-    // A post-inc/dec target's next value. A pointer-typed target moves by
-    // whole elements: DMD's own `scaleFactor` folds that same scaling into
-    // the frontend AST for `p++`/`p--` on a real pointer (multiplying the
-    // unit delta by the pointee's size), so `pointerOffsetBy` -- which adds
-    // its argument as a raw byte count -- needs the same multiplication here.
-    // Anything else is plain scalar arithmetic.
-    private ExpressionResult incrementedValue(
-        in ExpressionResult oldValue,
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult delta,
+    private void postIncrementScalar(T)(
+        imported!"quickbite.backends.interpreter.place".Place target,
+        imported!"quickbite.backends.interpreter.place".Place* destination,
+        in int delta,
     ) {
-        return oldValue.isPointer
-            ? oldValue.pointerOffsetBy(delta.asLong * pointerElementSize(type))
-            : oldValue + delta;
+        const oldValue = target.loadNativeScalar!T;
+        if (destination !is null)
+            destination.storeNativeScalar(oldValue);
+        target.storeNativeScalar(cast(T) (oldValue + delta));
     }
 
     private ExpressionResult runAddAssignExpression(
