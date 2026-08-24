@@ -170,9 +170,7 @@ public EvalResult displayEvalResult(
 ) {
     try {
         const display = produceDisplay();
-        return EvalResult(functionReturnsString(function_)
-            ? `"` ~ display ~ `"`
-            : display);
+        return EvalResult(stringDisplay(display, function_));
     } catch (Throwable throwable)
         return EvalResult(EvalResult.Diagnostic(throwable.msg));
 }
@@ -189,11 +187,22 @@ public EvalResult voidEvalResult(scope void delegate() execute) {
     }
 }
 
-private bool functionReturnsString(
+private string stringDisplay(
+    in string display,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
+    import dmd.astenums: TY;
     import quickbite.frontend.dmd.types: isCharacterArrayType;
 
     auto returnType = function_.type is null ? null : function_.type.nextOf;
-    return isCharacterArrayType(returnType);
+    if (!isCharacterArrayType(returnType))
+        return display;
+
+    const elementType = returnType.toBasetype.nextOf.toBasetype;
+    switch (elementType.ty) with (TY) {
+        case Tchar: return `"` ~ display ~ `"`;
+        case Twchar: return `"` ~ display ~ `"w`;
+        case Tdchar: return `"` ~ display ~ `"d`;
+        default: assert(0);
+    }
 }

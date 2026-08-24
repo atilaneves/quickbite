@@ -176,7 +176,24 @@ private string reifyCharacterArray(
         ));
         result ~= encoded[0 .. encodedLength];
     }
-    return topLevel ? result : `"` ~ result ~ `"`;
+    return topLevel
+        ? result
+        : `"` ~ result ~ `"` ~ characterArraySuffix(type);
+}
+
+private string characterArraySuffix(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case char_: return "";
+        case wchar_: return "w";
+        case dchar_: return "d";
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, float_, double_, real_:
+            assert(0);
+    }
 }
 
 private dchar character(
