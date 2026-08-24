@@ -757,6 +757,8 @@ private struct Walker {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AssertExp,
+        DelegateFuncptrExp,
+        DelegatePtrExp,
         DivExp,
         Expression,
         IdentifierExp,
@@ -2938,6 +2940,16 @@ private struct Walker {
             if (isDefensiveIdentifierExpression(identifier))
                 return;
 
+        if (auto delegatePointer = expression.isDelegatePtrExp) {
+            requireInterpretedDelegate(delegatePointer.e1);
+            return;
+        }
+
+        if (auto delegateFunctionPointer = expression.isDelegateFuncptrExp) {
+            requireInterpretedDelegate(delegateFunctionPointer.e1);
+            return;
+        }
+
         cast(void) runExpressionImpl(expression);
     }
 
@@ -3142,10 +3154,6 @@ private struct Walker {
             goto pointerExpression;
         case address:
             goto addressExpression;
-        case delegatePointer:
-            goto delegatePointerExpression;
-        case delegateFunctionPointer:
-            goto delegateFunctionPointerExpression;
         case dotIdentifier:
             goto dotIdentifierExpression;
         case dotVariable:
@@ -3457,14 +3465,6 @@ pointerExpression:
 addressExpression:
         if (auto address = expression.isAddrExp)
             return runAddressExpression(address);
-
-delegatePointerExpression:
-        if (auto delegatePointer = expression.isDelegatePtrExp)
-            return runDelegatePointerExpression(delegatePointer);
-
-delegateFunctionPointerExpression:
-        if (auto delegateFunctionPointer = expression.isDelegateFuncptrExp)
-            return runDelegateFunctionPointerExpression(delegateFunctionPointer);
 
 dotIdentifierExpression:
         if (auto dotIdentifier = expression.isDotIdExp)
@@ -6874,22 +6874,6 @@ unsupportedExpression:
 
     private ExpressionResult delegateReceiver(RuntimeDelegate runtime) {
         return expressionResultFrom(runtime.receiver);
-    }
-
-    private ExpressionResult runDelegatePointerExpression(
-        imported!"dmd.expression".DelegatePtrExp expression,
-    ) {
-        return delegateProperty(
-            delegateSlotValue(constructedExpressionValue(expression.e1)), "ptr",
-        );
-    }
-
-    private ExpressionResult runDelegateFunctionPointerExpression(
-        imported!"dmd.expression".DelegateFuncptrExp expression,
-    ) {
-        return delegateProperty(
-            delegateSlotValue(constructedExpressionValue(expression.e1)), "funcptr",
-        );
     }
 
     private bool isStringForeachApplyCall(FuncDeclaration function_) const {
@@ -14944,6 +14928,18 @@ unsupportedExpression:
                 return true;
             }
 
+        if (auto delegatePointer = rvalue.isDelegatePtrExp) {
+            constructDelegatePointerInto(delegatePointer, place);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto delegateFunctionPointer = rvalue.isDelegateFuncptrExp) {
+            constructDelegateFunctionPointerInto(delegateFunctionPointer, place);
+            destination.markConstructed;
+            return true;
+        }
+
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
                 runExpression(conditional.e1, destination);
@@ -15180,6 +15176,61 @@ destinationFallback:
             return;
         }
         copyPlaceValue(thisValue, destination);
+    }
+
+    private void constructDelegatePointerInto(
+        DelegatePtrExp expression,
+        Place destination,
+    ) {
+        // `const` would qualify the stored context pointer and prevent this
+        // typed pointer place from accepting it.
+        auto runtime = requireInterpretedDelegate(expression.e1);
+        clearStoredMetadata(destination.type, destination.address);
+        destination.storeReference(runtime.contextPointer);
+    }
+
+    private void constructDelegateFunctionPointerInto(
+        DelegateFuncptrExp expression,
+        Place destination,
+    ) {
+        const runtime = requireInterpretedDelegate(expression.e1);
+        clearStoredMetadata(destination.type, destination.address);
+        nativeFunctionPointerSlots[destination.address] =
+            runtime.functionPointerId;
+        destination.storeReference(null);
+    }
+
+    private RuntimeDelegate* requireInterpretedDelegate(Expression expression) {
+        const slot = constructedDelegateSlot(expression);
+        if (slot.isNative)
+            throw new Exception("Unsupported interpreter field read.");
+
+        auto runtime = slot.functionPointerId in _executionState.delegates;
+        if (runtime is null)
+            throw new Exception("Unsupported interpreter field read.");
+        return runtime;
+    }
+
+    private DelegateSlot constructedDelegateSlot(Expression expression) {
+        import quickbite.backends.interpreter.native_call_adapter:
+            NativeOperand, nativeDelegateMetadata;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+
+        if (auto slot = destination.place.address in nativeDelegateSlots)
+            return *slot;
+
+        const native = nativeDelegateMetadata(NativeOperand(
+            destination.place.type,
+            destination.place.address,
+        ));
+        if (native.isNull)
+            throw new Exception("Expected function pointer.");
+        return DelegateSlot(true, native.context, native.funcptr, 0);
     }
 
     private void requireReceiverExpression(Expression expression) {
