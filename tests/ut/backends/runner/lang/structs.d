@@ -365,6 +365,327 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct's user-defined constructor with a side effect (writing to a
+// module-scope variable) is invoked as a field-initializer argument of
+// another struct's implicit field-wise constructor call. D still runs the
+// inner constructor's body in that position - the side effect must be
+// visible once construction completes. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'gInputBytes' cannot be read at compile time`"),
+)) {
+    @("struct.nestedConstructorRunsWhenUsedAsFieldInitializerArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            private ubyte[] gInputBytes;
+
+            struct Inner {
+                this(ubyte[] bytes) { gInputBytes = bytes; }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Inner(payload));
+
+                assert(gInputBytes == [9, 7, 6]);
+            }
+        });
+    }
+}
+
+// A struct field initialised by a constructor call that sets the
+// constructed struct's own fields (not a module-scope variable): the
+// finished outer value's field must show what the constructor set, not the
+// field's zeroed default. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.constructedFieldValueIsVisibleAfterFieldInitializerCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Inner(payload));
+
+                assert(o.b == 2);
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// The same field-initializer constructor call, but for the outer struct's
+// first field (offset 0) rather than a later one.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerConstructorCallAtFieldOffsetZero." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                Inner input;
+                ubyte b;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(Inner(payload), 2);
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+                assert(o.b == 2);
+            }
+        });
+    }
+}
+
+// The field-initializer constructor call nested two structs deep: the
+// middle struct's own field-initializer argument is itself a constructor
+// call, one level inside the outer struct's own field-initializer
+// argument.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerConstructorCallNestedTwoStructsDeep." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Mid {
+                Inner input;
+            }
+
+            struct Outer {
+                ubyte b;
+                Mid mid;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, Mid(Inner(payload)));
+
+                assert(o.mid.input.count == 3);
+                assert(o.mid.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from a plain function call that returns a struct by
+// value, rather than a constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromFunctionReturningStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            Inner makeInner(ubyte[] bytes) {
+                return Inner(bytes);
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto o = Outer(2, makeInner(payload));
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from an already-constructed struct variable rather
+// than a fresh constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromExistingStructVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] payload = [9, 7, 6];
+                auto existing = Inner(payload);
+                auto o = Outer(2, existing);
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// A field initialised from a ternary between two struct values, each built
+// by its own constructor call.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerFromTernaryBetweenStructValues." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                size_t count;
+                ubyte first;
+
+                this(ubyte[] bytes) {
+                    count = bytes.length;
+                    first = bytes[0];
+                }
+            }
+
+            struct Outer {
+                ubyte b;
+                Inner input;
+            }
+
+            unittest {
+                ubyte[] longer = [9, 7, 6];
+                ubyte[] shorter = [1, 2];
+                bool pickLonger = longer.length > shorter.length;
+                auto o = Outer(2, pickLonger ? Inner(longer) : Inner(shorter));
+
+                assert(o.input.count == 3);
+                assert(o.input.first == 9);
+            }
+        });
+    }
+}
+
+// A struct freshly built by a template `@property` getter (the exact shape
+// of cerealed's `Decerealiser.value!T`: default-construct a local, mutate
+// its fields through further generic dispatch, return it by value) is
+// passed straight into a second generic function whose parameters are
+// `in auto ref` (the exact shape of unit-threaded's `isEqual`). Calling
+// `==` directly on the getter's result works; forwarding that same result
+// through the second function's `in auto ref` parameters observes a
+// different, unequal value. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.autoRefForwardingOfTemplatePropertyRvalueObservesWrongValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Simple {
+                ubyte first;
+                ushort second;
+            }
+
+            struct Decoder {
+                ubyte[] bytes;
+
+                @property T value(T)() {
+                    T val;
+                    grainStruct(this, val);
+                    return val;
+                }
+            }
+
+            void grainStruct(T)(ref Decoder d, ref T val) {
+                foreach (member; __traits(allMembers, T))
+                    grainField(d, __traits(getMember, val, member));
+            }
+
+            void grainField(T)(ref Decoder d, ref T val) if (is(T == ubyte)) {
+                val = d.bytes[0];
+                d.bytes = d.bytes[1 .. $];
+            }
+
+            void grainField(T)(ref Decoder d, ref T val) if (is(T == ushort)) {
+                val = cast(ushort)((d.bytes[0] << 8) | d.bytes[1]);
+                d.bytes = d.bytes[2 .. $];
+            }
+
+            bool isEqual(V, E)(in auto ref V value, in auto ref E expected) {
+                return value == expected;
+            }
+
+            unittest {
+                ubyte[] bytes = [2, 0, 3];
+                const e = Simple(2, 3);
+
+                auto dec = Decoder(bytes);
+                assert(dec.value!Simple == e, "direct == on the getter's result");
+
+                auto dec2 = Decoder(bytes);
+                assert(
+                    isEqual(dec2.value!Simple, e),
+                    "the same result, forwarded through `in auto ref`",
+                );
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4738,6 +5059,71 @@ static foreach (backend; Matrix!()) {
                 Pair whenFalse = cond ? a : Pair.init;
                 assert(whenTrue.i == 1);
                 assert(whenFalse.i == 0);
+            }
+        });
+    }
+}
+
+// A struct field initialised inside an outer struct literal follows D's
+// copy/move rules for that argument: an lvalue argument is copied into the
+// field (postblit runs once, and both the source and the field are
+// destroyed), while an rvalue argument - a function return or a direct
+// constructor call - is moved into the field (no postblit, and only the
+// field is destroyed; the temporary is not destroyed a second time).
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerCopyOrMoveRunsPostblitAndDtors." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int* postblits;
+                int* dtors;
+
+                this(this) {
+                    ++*postblits;
+                }
+
+                ~this() {
+                    ++*dtors;
+                }
+            }
+
+            struct Outer {
+                int tag;
+                Tracker tracker;
+            }
+
+            Tracker make(int* postblits, int* dtors) {
+                return Tracker(postblits, dtors);
+            }
+
+            unittest {
+                int postblits = 0;
+                int dtors = 0;
+
+                {
+                    Tracker source = Tracker(&postblits, &dtors);
+                    Outer copied = Outer(1, source);
+
+                    assert(postblits == 1);
+                    assert(dtors == 0);
+                }
+
+                assert(dtors == 2);
+
+                postblits = 0;
+                dtors = 0;
+
+                {
+                    Outer moved = Outer(2, make(&postblits, &dtors));
+                    Outer constructed = Outer(3, Tracker(&postblits, &dtors));
+
+                    assert(postblits == 0);
+                    assert(dtors == 0);
+                }
+
+                assert(dtors == 2);
             }
         });
     }

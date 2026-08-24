@@ -717,6 +717,23 @@ unittest {
     assert(counter.value == 88);
 }
 
+void addTo(ref int target, int amount) {
+    target = target + amount;
+}
+
+void addThroughPointer(T)(ref T val, int amount) {
+    addTo(*val, amount);
+}
+
+unittest {
+    int value = 5;
+    int* pointer = &value;
+
+    addThroughPointer(pointer, 37);
+
+    assert(value == 42);
+}
+
 interface Codec {
     int transform();
 }
@@ -1123,6 +1140,72 @@ unittest {
     assert(scaleDouble(1.0, 3.0, doubleFactor) == 6.0);
 }
 
+float divideFloat(float numerator, float denominator) {
+    return numerator / denominator;
+}
+
+double divideDouble(double numerator, double denominator) {
+    return numerator / denominator;
+}
+
+unittest {
+    float floatDenominator = 3.0f;
+    double doubleDenominator = 3.0;
+
+    assert(divideFloat(6.0f, floatDenominator) == 2.0f);
+    assert(divideDouble(6.0, doubleDenominator) == 2.0);
+}
+
+float moduloFloat(float numerator, float denominator) {
+    return numerator % denominator;
+}
+
+double moduloDouble(double numerator, double denominator) {
+    return numerator % denominator;
+}
+
+unittest {
+    float floatDenominator = 4.0f;
+    double doubleDenominator = 4.0;
+
+    assert(moduloFloat(6.0f, floatDenominator) == 2.0f);
+    assert(moduloDouble(-6.0, doubleDenominator) == -2.0);
+}
+
+real addReal(real lhs, real rhs) {
+    return lhs + rhs;
+}
+
+real subtractReal(real lhs, real rhs) {
+    return lhs - rhs;
+}
+
+real multiplyReal(real lhs, real rhs) {
+    return lhs * rhs;
+}
+
+real divideReal(real lhs, real rhs) {
+    return lhs / rhs;
+}
+
+real moduloReal(real lhs, real rhs) {
+    return lhs % rhs;
+}
+
+unittest {
+    real lhs = 6.0L;
+    real rhs = 4.0L;
+
+    assert(addReal(lhs, rhs) == 10.0L);
+    assert(subtractReal(lhs, rhs) == 2.0L);
+    assert(multiplyReal(lhs, rhs) == 24.0L);
+    assert(divideReal(lhs, rhs) == 1.5L);
+    assert(moduloReal(lhs, rhs) == 2.0L);
+
+    real negativeLhs = -6.0L;
+    assert(moduloReal(negativeLhs, rhs) == -2.0L);
+}
+
 unittest {
     ulong value = 0;
     assert(~value > 0);
@@ -1229,6 +1312,217 @@ unittest {
 }
 
 unittest {
+    enum Direction : ubyte {
+        north = 0,
+        south = 1,
+    }
+
+    ubyte[] raw = [0, 1];
+    size_t index;
+
+    Direction first = cast(Direction) raw[index++];
+    Direction second = cast(Direction) raw[index++];
+
+    assert(first == Direction.north);
+    assert(second == Direction.south);
+}
+
+unittest {
     uint function(uint) fn = &factorial;
     assert(fn(5) == 120);
+}
+
+struct FieldCtorPart {
+    size_t count;
+    ubyte first;
+
+    this(ubyte[] bytes) {
+        count = bytes.length;
+        first = bytes[0];
+    }
+}
+
+struct FieldCtorWhole {
+    ubyte tag;
+    FieldCtorPart part;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWhole(2, FieldCtorPart(payload));
+
+    assert(whole.tag == 2);
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+struct FieldCtorWholeFirst {
+    FieldCtorPart part;
+    ubyte tag;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWholeFirst(FieldCtorPart(payload), 2);
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+    assert(whole.tag == 2);
+}
+
+struct FieldCtorMiddle {
+    FieldCtorPart part;
+}
+
+struct FieldCtorOuterNested {
+    ubyte tag;
+    FieldCtorMiddle middle;
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorOuterNested(2, FieldCtorMiddle(FieldCtorPart(payload)));
+
+    assert(whole.middle.part.count == 3);
+    assert(whole.middle.part.first == 9);
+}
+
+FieldCtorPart makeFieldCtorPart(ubyte[] bytes) {
+    return FieldCtorPart(bytes);
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto whole = FieldCtorWhole(2, makeFieldCtorPart(payload));
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+unittest {
+    ubyte[] payload = [9, 7, 6];
+    auto existing = FieldCtorPart(payload);
+    auto whole = FieldCtorWhole(2, existing);
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+unittest {
+    ubyte[] longer = [9, 7, 6];
+    ubyte[] shorter = [1, 2];
+    bool pickLonger = longer.length > shorter.length;
+    auto whole = FieldCtorWhole(
+        2, pickLonger ? FieldCtorPart(longer) : FieldCtorPart(shorter),
+    );
+
+    assert(whole.part.count == 3);
+    assert(whole.part.first == 9);
+}
+
+bool isPositive(T)(auto ref T value) {
+    return *value > 0;
+}
+
+bool isPositiveForwarded(T)(auto ref T value) {
+    return isPositive(value);
+}
+
+unittest {
+    int number = 42;
+
+    assert(isPositiveForwarded(&number));
+}
+
+struct Coordinates {
+    ubyte row;
+    ushort column;
+}
+
+Coordinates makeCoordinates(ubyte row, ushort column) {
+    Coordinates result;
+    result.row = row;
+    result.column = column;
+    return result;
+}
+
+bool matches(V, E)(auto ref V value, auto ref E expected) {
+    return value == expected;
+}
+
+unittest {
+    auto place = makeCoordinates(2, 300);
+    const expected = Coordinates(2, 300);
+
+    assert(matches(place, expected));
+}
+
+struct LifetimeTracker {
+    int* postblits;
+    int* dtors;
+
+    this(this) {
+        ++*postblits;
+    }
+
+    ~this() {
+        ++*dtors;
+    }
+}
+
+struct TrackerHolder {
+    int tag;
+    LifetimeTracker tracker;
+}
+
+LifetimeTracker makeTracker(int* postblits, int* dtors) {
+    return LifetimeTracker(postblits, dtors);
+}
+
+unittest {
+    int postblits = 0;
+    int dtors = 0;
+
+    {
+        LifetimeTracker source = LifetimeTracker(&postblits, &dtors);
+        TrackerHolder copied = TrackerHolder(1, source);
+
+        assert(postblits == 1);
+        assert(dtors == 0);
+    }
+
+    assert(dtors == 2);
+
+    postblits = 0;
+    dtors = 0;
+
+    {
+        TrackerHolder moved = TrackerHolder(2, makeTracker(&postblits, &dtors));
+        TrackerHolder constructed =
+            TrackerHolder(3, LifetimeTracker(&postblits, &dtors));
+
+        assert(postblits == 0);
+        assert(dtors == 0);
+    }
+
+    assert(dtors == 2);
+}
+
+struct Reading {
+    int amount;
+
+    this(int amount) {
+        this.amount = amount;
+    }
+}
+
+auto wrapReading(V)(auto ref V value) {
+    return () { return Reading(value); }();
+}
+
+unittest {
+    int measured = 5;
+    auto reading = wrapReading(measured);
+
+    assert(reading.amount == measured);
 }

@@ -8,8 +8,17 @@ package(quickbite.backends.bytecode) alias CompileFunction =
     void delegate(in size_t index);
 
 // Bytes reserved upfront for the VM call stack so growing it for callee frames
-// reuses the same block: raw `&local` pointers stay valid across calls.
-private enum stackCapacity = 4 * 1024 * 1024;
+// reuses the same block: raw `&local` pointers stay valid across calls. A
+// single guest unittest almost never nests deep enough to need more than a
+// few KiB of frame space (measured: a struct+string round trip through six
+// levels of generic dispatch peaks under 4.5 KiB), so this only needs to be
+// large enough to make reallocation rare in practice, not to bound every
+// program that could ever run -- `run`'s own callee-frame growth already
+// handles exceeding it correctly. A flat multi-megabyte reservation charged
+// to every single test, regardless of what it actually uses, was the
+// dominant cost inflating Bytecode's measured memory use far past what the
+// guest program itself needs (issue #509).
+private enum stackCapacity = 64 * 1024;
 
 package(quickbite.backends.bytecode) struct RunResult {
     ubyte[] bytes;
@@ -1294,6 +1303,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case addReal:
+                const ubyte[real.sizeof] sum = floatBytes(
+                    floatValue!real(stack, base + instruction.b) +
+                    floatValue!real(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = sum;
+                ++ip;
+                break;
+
             case subFloat:
                 const ubyte[float.sizeof] difference = floatBytes(
                     floatValue!float(stack, base + instruction.b) -
@@ -1324,6 +1343,26 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case mulReal:
+                const ubyte[real.sizeof] product = floatBytes(
+                    floatValue!real(stack, base + instruction.b) *
+                    floatValue!real(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = product;
+                ++ip;
+                break;
+
+            case divFloat:
+                const ubyte[float.sizeof] quotient = floatBytes(
+                    floatValue!float(stack, base + instruction.b) /
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = quotient;
+                ++ip;
+                break;
+
             case divDouble:
                 const ubyte[double.sizeof] quotient = floatBytes(
                     floatValue!double(stack, base + instruction.b) /
@@ -1334,6 +1373,46 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case divReal:
+                const ubyte[real.sizeof] quotient = floatBytes(
+                    floatValue!real(stack, base + instruction.b) /
+                    floatValue!real(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = quotient;
+                ++ip;
+                break;
+
+            case modFloat:
+                const ubyte[float.sizeof] remainder = floatBytes(
+                    floatValue!float(stack, base + instruction.b) %
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = remainder;
+                ++ip;
+                break;
+
+            case modDouble:
+                const ubyte[double.sizeof] remainder = floatBytes(
+                    floatValue!double(stack, base + instruction.b) %
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = remainder;
+                ++ip;
+                break;
+
+            case modReal:
+                const ubyte[real.sizeof] remainder = floatBytes(
+                    floatValue!real(stack, base + instruction.b) %
+                    floatValue!real(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = remainder;
+                ++ip;
+                break;
+
             case subDouble:
                 const ubyte[double.sizeof] difference = floatBytes(
                     floatValue!double(stack, base + instruction.b) -
@@ -1341,6 +1420,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 stack[base + instruction.a
                     .. base + instruction.a + double.sizeof] = difference;
+                ++ip;
+                break;
+
+            case subReal:
+                const ubyte[real.sizeof] difference = floatBytes(
+                    floatValue!real(stack, base + instruction.b) -
+                    floatValue!real(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = difference;
                 ++ip;
                 break;
 

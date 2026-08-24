@@ -534,11 +534,19 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterOrEqualReal,
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
+    addReal, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs
     subDouble, // a: destination frame offset, b: lhs, c: rhs
+    subReal, // a: destination frame offset, b: lhs, c: rhs
     mulFloat, // a: destination frame offset, b: lhs, c: rhs
     mulDouble, // a: destination frame offset, b: lhs, c: rhs
+    mulReal, // a: destination frame offset, b: lhs, c: rhs
+    divFloat, // a: destination frame offset, b: lhs, c: rhs
     divDouble, // a: destination frame offset, b: lhs, c: rhs
+    divReal, // a: destination frame offset, b: lhs, c: rhs
+    modFloat, // a: destination frame offset, b: lhs, c: rhs
+    modDouble, // a: destination frame offset, b: lhs, c: rhs
+    modReal, // a: destination frame offset, b: lhs, c: rhs
     negateFloat, // a: destination frame offset, b: source
     negateDouble, // a: destination frame offset, b: source
     negateReal, // a: destination frame offset, b: source
