@@ -3717,10 +3717,10 @@ unsupportedExpression:
             _activationFrame.temporaryAddress(expression),
             expression.type,
         ));
-        assert(
-            constructScalarExpressionInto(expression, destination.place),
-            "expression did not construct into its scalar destination",
-        );
+        if (!constructScalarExpressionInto(expression, destination.place))
+            throw new Exception(
+                "expression did not construct into its scalar destination",
+            );
         return readStoredValue(destination.place);
     }
 
@@ -15680,7 +15680,7 @@ destinationFallback:
                 // before touching operands so unhandled BinExp subclasses
                 // (e.g. CommaExp) fall through untouched.
                 switch (expression.op) with (EXP) {
-                    case add, min, mul, div:
+                    case add, min, mul, div, mod:
                         break;
                     default:
                         return false;
@@ -15692,6 +15692,7 @@ destinationFallback:
                     case min: destination.storeNativeScalar(left - right); return true;
                     case mul: destination.storeNativeScalar(left * right); return true;
                     case div: destination.storeNativeScalar(left / right); return true;
+                    case mod: destination.storeNativeScalar(left % right); return true;
                     default: assert(0, "unreachable: filtered above");
                 }
             }

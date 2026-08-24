@@ -10,6 +10,10 @@
 
 - Never weaken or replace a test to make it pass.
 
+- Never put a required evaluation inside `assert`. Release builds remove the
+  expression and can read untouched destination storage. Evaluate first, then
+  report a normal checked failure if the required operation declines.
+
 - When a normalization helper may return its input unchanged, do not infer
   that normalization occurred solely from the result's value category.
 
