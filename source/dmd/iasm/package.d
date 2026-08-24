@@ -71,3 +71,7 @@ public void asmSemantic(
         );
     }
 }
+
+// dmd:lexer 2.112.x references Edition.init without emitting it.
+pragma(mangle, "_D3dmd8astenums7Edition6__initZ")
+public __gshared ushort editionInit = 2023;
