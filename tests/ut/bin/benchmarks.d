@@ -198,6 +198,35 @@ unittest {
     reporter.compileTime.should == Duration.zero;
 }
 
+@("systemLinkerReportsCompileTime")
+unittest {
+    import core.time: Duration;
+    import quickbite.backends.native: SystemLinker;
+    import quickbite.backends.runner: CompileTimeReporter;
+    import quickbite.frontend.compiler:
+        FrontendFlags, parseSnippetWithCheckActionContext;
+
+    auto linker = new SystemLinker;
+    auto reporter = cast(CompileTimeReporter) linker;
+    assert(reporter !is null);
+    reporter.compileTime.should == Duration.zero;
+
+    auto moduleResult = parseSnippetWithCheckActionContext(
+        q{
+            unittest {
+                assert(21 * 2 == 42);
+            }
+        },
+        [],
+        FrontendFlags.init,
+    );
+    linker.runTests(moduleResult.module_).length.should == 1;
+
+    assert(reporter.compileTime > Duration.zero);
+    reporter.resetCompileTime;
+    reporter.compileTime.should == Duration.zero;
+}
+
 @("renderBenchmarkSectionShowsCompileTime")
 unittest {
     import benchmarks.harness: Result;
