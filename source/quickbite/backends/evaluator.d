@@ -176,6 +176,19 @@ public EvalResult displayEvalResult(
         return EvalResult(EvalResult.Diagnostic(throwable.msg));
 }
 
+public EvalResult displayEvalResult(
+    scope string delegate() produceDisplay,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    try {
+        const display = produceDisplay();
+        return EvalResult(functionReturnsString(function_)
+            ? `"` ~ display ~ `"`
+            : display);
+    } catch (Throwable throwable)
+        return EvalResult(EvalResult.Diagnostic(throwable.msg));
+}
+
 // Executes work whose successful result has no display. Backends use this for
 // unittest execution, whose public result is either an empty display or the
 // unmodified diagnostic from the thrown host exception.
