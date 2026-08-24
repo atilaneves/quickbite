@@ -12708,9 +12708,8 @@ package(quickbite.backends.bytecode) struct Compiler {
                 typeFacts(staticSource.type).representation == staticArray)
                 if (auto place = placeOrNull(staticSource)) {
                     const source = addressOfPlace(*place);
-                    const element = staticSource.type.toBasetype.nextOf;
                     const count = typeFacts(staticSource.type).byteWidth /
-                        typeFacts(cast(Type) element).byteWidth;
+                        dynamicArrayElementSize(argument.type);
                     _code ~= Instruction(
                         Op.copy, cast(ushort) sliceDescriptorPtrOffset(slot),
                         source.offset,

@@ -739,3 +739,17 @@
   was an uncaught exception, not a decline. Before trusting a `null`-decline
   contract, check whether the helper calls anything that itself throws on
   an unexpected shape, and guard that shape before reaching the call.
+
+- A third, independently-written site of the same bug class as the
+  `dynamicArrayDescriptor`/`rescaleReinterpretedSliceLength` entries above:
+  `emitCallArgument`'s (`compiler.d`) whole-static-array-slice fast path
+  manually strips every enclosing `CastExp` to find the underlying static
+  array's storage, then sized the passed slice's length from THAT stripped
+  (pre-cast) type's element instead of the argument's own (post-cast) type --
+  `cast(void[]) s[]` for `ulong[3] s` reported a 3-element slice instead of a
+  24-byte one. Any code that manually unwraps a cast chain to reach
+  underlying storage must still derive the resulting descriptor's element
+  size from the argument's own outermost type, not from whatever type the
+  unwrap lands on; reusing `dynamicArrayElementSize(argument.type)` (already
+  `Tvoid`-aware) rather than re-deriving element width from the stripped
+  type is the fix in all three sites.

@@ -6821,3 +6821,67 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A whole static-array slice passed as a call argument through a
+// reinterpreting cast (`cast(void[]) s[]`) must report a byte length, not
+// the source array's element count: `void[]` has a one-byte element stride,
+// so `ulong[3]`'s 24 bytes become a 24-element `void[]`, not a 3-element one.
+// Ctfe omitted: dmd's own CTFE engine (verified directly with `pragma(msg,
+// ...)` inside an `enum`) evaluates this same reinterpreting cast to the
+// source element count, not the byte length -- a real dmd CTFE divergence
+// from compiled-code behaviour, not a quickbite backend bug.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "dmd's own CTFE engine reinterprets a whole static-array slice cast "
+        ~ "by element count, not by byte length (verified directly against "
+        ~ "dmd, independent of quickbite's Ctfe backend)"),
+)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthIsBytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t byteLength(void[] chunk) {
+                return chunk.length;
+            }
+
+            unittest {
+                ulong[3] storage;
+                assert(byteLength(cast(void[]) storage[]) == 24);
+            }
+        });
+    }
+}
+
+// The same reinterpreting-cast call argument, cast to a target element type
+// narrower than the source element (`ulong[3]` -> `ushort[]`): the reported
+// length must scale by the TARGET element size, not the source's, so 24
+// source bytes become 12 `ushort` elements.
+// Ctfe omitted: dmd's own CTFE engine refuses an element-size-changing array
+// cast outright (verified directly against dmd), permanently, not a
+// quickbite backend gap. Interpreter omitted: its native-argument path
+// rejects a static-array-to-narrower-element reinterpreting cast.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "array cast from `uint[3]` to `ushort[]` is not supported at "
+        ~ "compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: native "
+        ~ "aggregate type mismatch uint[] -> ushort[]"),
+)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthScalesByTargetElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t count(ushort[] halves) {
+                return halves.length;
+            }
+
+            unittest {
+                uint[3] storage;
+                assert(count(cast(ushort[]) storage[]) == 6);
+            }
+        });
+    }
+}
