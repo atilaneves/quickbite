@@ -80,7 +80,17 @@ private void foreachStaticCtorDeclaration(
         // A `shared static this` inside a template (e.g. tardy's `vtable`
         // mixin template) only shows up here: `AttribDeclaration.include`
         // does not reach into instantiated templates.
-        if (auto templateInstance = symbol.isTemplateInstance)
+        if (auto templateInstance = symbol.isTemplateInstance) {
             foreachStaticCtorDeclaration(templateInstance.members, visit);
+            continue;
+        }
+
+        // A `shared static this`/`static this` declared inside a struct,
+        // class, or union counts as the enclosing module's module
+        // constructor, not the aggregate's own: DMD collects it into the
+        // module's startup sequence, so this walk must recurse into
+        // aggregate members to find it.
+        if (auto aggregate = symbol.isAggregateDeclaration)
+            foreachStaticCtorDeclaration(aggregate.members, visit);
     }
 }

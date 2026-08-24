@@ -25,7 +25,11 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     // module), not once per `runTests` call: the benchmark harness calls
     // `runTests` repeatedly on the same instance and module (warmup plus
     // measured runs), and `_compiler` -- and the dataseg state its module
-    // constructors write to -- persists across those calls.
+    // constructors write to -- persists across those calls. Keyed by
+    // `Module` identity: a caller that re-parses the same source into a new
+    // `Module` against the same persisted `_compiler` (the REPL's
+    // `runLoadedTests`) runs that module's constructors again over the same
+    // dataseg state, since the new `Module` is not yet in this table.
     private bool[Module] _moduleConstructorsRun;
 
     public alias eval = Evaluator.eval;
@@ -86,7 +90,6 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
 
         if (module_ in _moduleConstructorsRun)
             return;
-        _moduleConstructorsRun[module_] = true;
 
         FuncDeclaration[] sharedCtors;
         FuncDeclaration[] plainCtors;
@@ -102,11 +105,17 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         // matching compiled D's startup order; a thrown/asserted ctor
         // propagates like any other host exception -- it is not caught and
         // turned into a diagnostic here, since a module constructor failure
-        // is fatal, not attributable to a single unittest.
+        // is fatal, not attributable to a single unittest. The memo is set
+        // only after both loops finish, so a ctor that throws is not
+        // recorded as done: the next `runTests` call on this module reruns
+        // (and rethrows) it instead of silently treating the module as
+        // constructed.
         foreach (ctor; sharedCtors)
             runModuleConstructor(ctor);
         foreach (ctor; plainCtors)
             runModuleConstructor(ctor);
+
+        _moduleConstructorsRun[module_] = true;
     }
 
     private void runModuleConstructor(FuncDeclaration ctor) {
