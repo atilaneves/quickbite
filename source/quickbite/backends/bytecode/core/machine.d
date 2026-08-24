@@ -25,6 +25,16 @@ package(quickbite.backends.bytecode) struct RunResult {
     ubyte[][] heap;
 }
 
+// Shrinks without surrendering append capacity: after a plain shrink the
+// array no longer ends at its block's recorded used size, so the next `~=`
+// reallocates and copies the whole array -- on every guest call/push, since
+// the machine pops these arrays on every return. The dropped tail holds only
+// dead index bookkeeping, so reusing its storage is safe.
+private void shrinkReusing(T)(ref T[] array, in size_t length) @trusted {
+    array.length = length;
+    array.assumeSafeAppend;
+}
+
 // Executes the program's entry function and returns the raw bytes of its
 // result (empty for void), plus heap roots for result descriptors.
 package(quickbite.backends.bytecode) RunResult run(
@@ -1891,7 +1901,7 @@ package(quickbite.backends.bytecode) RunResult run(
                             base + instruction.c,
                         );
                 }
-                frames.length = handler.frameDepth;
+                frames.shrinkReusing(handler.frameDepth);
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -1935,7 +1945,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. handler.base + clause.nextMessageOffset
                             + sliceDescriptorSize
                     ] = 0;
-                frames.length = handler.frameDepth;
+                frames.shrinkReusing(handler.frameDepth);
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -1950,7 +1960,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case popHandler:
-                handlers.length -= 1;
+                handlers.shrinkReusing(handlers.length - 1);
                 ++ip;
                 break;
 
@@ -1979,7 +1989,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     );
 
                 const frame = frames[$ - 1];
-                frames.length -= 1;
+                frames.shrinkReusing(frames.length - 1);
 
                 stack[
                     frame.base + frame.destination
@@ -2026,7 +2036,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         + sliceDescriptorSize
                 ] = 0;
             }
-            frames.length = handler.frameDepth;
+            frames.shrinkReusing(handler.frameDepth);
             functionIndex = handler.functionIndex;
             base = handler.base;
             ip = clause.handlerIp;
@@ -2043,7 +2053,7 @@ private SelectedHandler selectHandler(
 ) @safe {
     while (handlers.length != 0) {
         const handler = handlers[$ - 1];
-        handlers.length -= 1;
+        handlers.shrinkReusing(handlers.length - 1);
         foreach (index; 0 .. handler.catchCount) {
             const clause = clauses[handler.catchStart + index];
             if (classMatches(thrownClass, clause.catchClass, classes))

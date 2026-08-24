@@ -688,3 +688,11 @@
   machinery (a multi-level nested-frame walk here) than the actual bug
   requires. The precise fix: make every caller that pattern-matches a
   specific expression shape unwrap the same inlining wrapper first.
+
+- A total-divided-by-calls average is not attribution: 26 GB of benchmark
+  garbage "per native call" turned out to be whole-array reallocation in
+  the VM's own call loop, with the FFI path a bystander. Bracket each
+  candidate phase with `GC.allocatedInCurrentThread` (O(1), collection-
+  immune) and compare against a compiled-D ground-truth run before
+  patching any site. Never sample `GC.stats.usedSize` in a hot path -- it
+  walks GC pools and gets slower as the heap grows.
