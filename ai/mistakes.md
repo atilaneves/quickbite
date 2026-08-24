@@ -710,3 +710,8 @@
   void logical expressions does not replace the boxed fallback for a non-void
   logical expression when a destination-type mismatch makes scalar construction
   decline.
+
+- A `SymOffExp` that names variable storage does not always have a pointer
+  type. DMD can give it the final cast-result type while it still denotes the
+  declaration's address. When this happens, derive the physical pointer place
+  from the declaration type before adapting it to the result destination.

@@ -2808,6 +2808,30 @@ private struct Walker {
         scope(exit) endFullExpression(full);
 
         if (!constructInto(expression, destination)) {
+            if (auto symbol = expression.isSymOffExp) {
+                if (auto pointerType = variableSymbolOffsetPointerType(symbol)) {
+                    auto pointerDestination = Place(
+                        _activationFrame.temporaryAddress(expression, pointerType),
+                        pointerType,
+                    );
+                    const constructed = constructPointerExpressionInto(
+                        expression,
+                        pointerDestination,
+                    );
+                    if (!constructed)
+                        throw new Exception("Variable symbol offset did not construct.");
+                    writeStoredValue(
+                        destination.place,
+                        storageValue(
+                            destination.place.type,
+                            readStoredValue(pointerDestination),
+                        ),
+                    );
+                    destination.markConstructed;
+                    return;
+                }
+            }
+
             if (constructScalarExpressionInto(expression, destination.place)) {
                 destination.markConstructed;
                 return;
@@ -2981,6 +3005,19 @@ private struct Walker {
                 ),
             ))
                 return;
+        }
+
+        if (auto symbol = expression.isSymOffExp) {
+            if (auto pointerType = variableSymbolOffsetPointerType(symbol)) {
+                if (constructPointerExpressionInto(
+                    symbol,
+                    Place(
+                        _activationFrame.temporaryAddress(expression, pointerType),
+                        pointerType,
+                    ),
+                ))
+                    return;
+            }
         }
 
         cast(void) runExpressionImpl(expression);
@@ -3578,8 +3615,6 @@ newExpression:
 
 symbolOffsetExpression:
         if (auto symbol = expression.isSymOffExp) {
-            if (auto variable = symbol.var.isVarDeclaration)
-                return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
                 return functionPointerValue(function_);
         }
@@ -3848,8 +3883,8 @@ unsupportedExpression:
         import std.conv: text;
 
         if (auto symbol = e1.isSymOffExp) {
-            if (auto variable = symbol.var.isVarDeclaration)
-                return symbolOffsetLocalValue(symbol, variable);
+            if (symbol.var.isVarDeclaration !is null)
+                return constructedExpressionValue(symbol);
             if (auto function_ = symbol.var.isFuncDeclaration)
                 return functionPointerValue(function_);
         }
@@ -5243,27 +5278,6 @@ unsupportedExpression:
         return ExpressionResult.pointerValue(
             bindingPlace(variable).index(cast(size_t) offset).address,
         );
-    }
-
-    // `&local`, and `&buf[constantIndex]` which DMD folds to
-    // SymOffExp(buf, byteOffset): a pointer into a static array's elements
-    // mirrors the unfolded `&buf[i]` IndexExp shape; anything else points at
-    // the local's slot.
-    private ExpressionResult symbolOffsetLocalValue(
-        imported!"dmd.expression".SymOffExp symbol,
-        VarDeclaration variable,
-    ) {
-        import quickbite.frontend.dmd.types: isStaticArrayType;
-
-        materializeDatasegInitializer(variable);
-
-        if (!hasBindingPlace(variable))
-            throw new Exception("Symbol offset has no native binding place.");
-        if (isStaticArrayType(variable.type) &&
-            isStaticArrayType(symbol.type.toBasetype.nextOf))
-            return ExpressionResult.pointerValue(bindingPlace(variable).address);
-        return ExpressionResult.pointerValue(bindingPlace(variable).address)
-            .pointerOffsetBy(cast(long) symbol.offset);
     }
 
     private ExpressionResult bindingPointerValue(VarDeclaration variable) {
@@ -15524,6 +15538,17 @@ destinationFallback:
         import dmd.tokens: EXP;
         import quickbite.frontend.dmd.types: isPointerType;
 
+        if (auto symbol = expression.isSymOffExp) {
+            auto pointerType = variableSymbolOffsetPointerType(symbol);
+            if (
+                pointerType is null ||
+                destination.type.toBasetype.isTypePointer is null ||
+                !destination.type.toBasetype.equals(pointerType.toBasetype)
+            )
+                return false;
+            return constructVariableSymbolOffsetInto(symbol, destination);
+        }
+
         if (
             expression.type is null ||
             destination.type.toBasetype.isTypePointer is null ||
@@ -15623,6 +15648,53 @@ destinationFallback:
         }
 
         return false;
+    }
+
+    // `&local`, and `&buf[constantIndex]` which DMD folds to
+    // `SymOffExp(buf, byteOffset)`, stores the binding's host address directly
+    // in the pointer destination. A pointer to a whole static array retains
+    // the binding base because the pointee is the array, not one element.
+    private bool constructVariableSymbolOffsetInto(
+        imported!"dmd.expression".SymOffExp symbol,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        auto variable = symbol.var.isVarDeclaration;
+        if (variable is null)
+            return false;
+
+        materializeDatasegInitializer(variable);
+        if (!hasBindingPlace(variable))
+            throw new Exception("Symbol offset has no native binding place.");
+
+        auto base = bindingPlace(variable).address; // Offset arithmetic needs void*.
+        const pointsAtWholeStaticArray =
+            isStaticArrayType(variable.type) &&
+            isStaticArrayType(symbol.type.toBasetype.nextOf);
+        destination.storeReference(
+            pointsAtWholeStaticArray
+                ? base
+                : offsetPointerAddress(base, cast(long) symbol.offset),
+        );
+        return true;
+    }
+
+    // Most `SymOffExp` nodes have their address type. DMD can instead retype
+    // one to the final cast result, such as a class reference over raw static-
+    // array storage, although the node still denotes the declaration's
+    // address. Its physical destination is then a pointer to that declaration.
+    private imported!"dmd.mtype".Type variableSymbolOffsetPointerType(
+        imported!"dmd.expression".SymOffExp symbol,
+    ) {
+        import dmd.typesem: pointerTo;
+
+        auto variable = symbol.var.isVarDeclaration;
+        if (variable is null || symbol.type is null)
+            return null;
+        if (symbol.type.toBasetype.isTypePointer !is null)
+            return symbol.type;
+        return variable.type is null ? null : variable.type.pointerTo;
     }
 
     // DMD leaves pointer subtraction as a byte-address difference and emits

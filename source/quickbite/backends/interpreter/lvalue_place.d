@@ -351,8 +351,8 @@ private imported!"dmd.declaration".Declaration symOffExpDeclaration(
 
 // `symbol`'s own byte offset (`SymOffExp.offset`) -- DMD's own already-
 // computed byte offset from `symbol.var`'s storage (see `impl.d`'s
-// `symbolOffsetLocalValue`, which applies this exact same number straight
-// to a cell's address rather than re-deriving it as an element index).
+// `constructVariableSymbolOffsetInto`, which applies this exact same number
+// straight to a cell's address rather than re-deriving it as an element index).
 // Plain field, `@trusted` boundary as above.
 //
 // Read here rather than through `layout.d` on purpose. That module owns the
