@@ -2980,6 +2980,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `__gshared` static array LOCAL declared with no initializer at all
+// (`__gshared int[3] x;`, no `= ...`) is a third AST shape again: DMD
+// synthesizes a default `ExpInitializer` blit for a plain-storage local
+// (the `staticArray.declarationFromScalarBroadcastsToEveryElement` fixture
+// above covers that), but a dataseg (`__gshared`/`static`) local's
+// `VarDeclaration._init` stays entirely null instead -- DMD normally
+// defers a dataseg variable's default initializer to codegen, which never
+// runs while compiling under `-version=NoBackend`. SystemLinker is the
+// oracle: `x`'s storage still reads back as zero, the same as any other
+// default-initialized storage. `Ctfe` can never modify dataseg storage at
+// compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "variable `x` cannot be modified at compile time"),
+)) {
+    @("staticArray.gsharedLocalWithNoInitializerDefaultsToZero." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                __gshared int[3] x;
+                int index = 1;
+                x[index] += 5;
+
+                assert(x[0] == 0);
+                assert(x[1] == 5);
+                assert(x[2] == 0);
+            }
+        });
+    }
+}
+
 // Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
 // sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
 // DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts
