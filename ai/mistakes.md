@@ -703,53 +703,17 @@
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
 
-- Before deleting a fallback branch believed dead after a code change,
-  confirm it empirically: add a temporary probe (e.g. a stderr write) inside
-  the branch, run the full relevant test suite, and check for zero hits.
-  Reasoning from code structure alone ("the earlier branch now always
-  matches first") can miss edge cases (a distinct representation kind that
-  still declines storage for both mutable and immutable declarations).
-  Remove the probe once the branch is confirmed dead or confirmed still
-  needed.
+- Before deleting a fallback branch believed dead, add a temporary probe
+  and run the full relevant test sweep; do not infer dead code from
+  structural reasoning alone -- a distinct representation kind can still
+  reach it for both mutable and immutable declarations.
 
-- The bytecode core's module-storage literal writers
-  (`moduleStaticArrayLiteralInitializerBytes`, `moduleStructLiteralInitializerBytes`)
-  cover a narrower set of initializer shapes than frame storage's own
-  `compile*Declaration` functions -- they decline (return `null`, no
-  storage registered) for a static array or struct whose elements are
-  themselves non-scalar (an array, a struct, ...). Routing every dataseg
-  declaration through module storage unconditionally, with no fallback,
-  breaks any such declaration even though its representation is
-  otherwise supported. Druntime carries a live example: `core.internal.
-  switch_.__switch`'s own `static immutable T[][N] cases` lookup table
-  (used by every `switch` on a string), an array of dynamic-array
-  elements. A target-test-only run cannot catch this: it takes a full
-  `bin/ut @Bytecode` sweep, since the regression surfaces in unrelated
-  fixtures (any fixture whose assert diagnostic or `switch` on a string
-  reaches `__switch`), not in the fixture that motivated the change.
+- A path that routes declarations to module storage needs an explicit
+  fallback or refusal for a declined registration: the bytecode
+  module-storage literal writers decline non-scalar element shapes. A
+  "decline" helper must itself never throw on the shape it declines.
 
-- A "decline this shape, return `null`" helper is only actually graceful if
-  every line in it stays within that contract. `moduleStaticArrayLiteralInitializerBytes`
-  looked like it declined a nested static-array element (`int[2][2]`)
-  gracefully -- its final `return null` for a non-`IntegerExp`/`RealExp`
-  element reads that way -- but it called `scalarType(elementType)`
-  unconditionally before that per-element loop, and `scalarType` throws
-  `"Unsupported type in bytecode core: ..."` for any type it has no scalar
-  mapping for, `Tsarray` included. The actual behaviour for a nested array
-  was an uncaught exception, not a decline. Before trusting a `null`-decline
-  contract, check whether the helper calls anything that itself throws on
-  an unexpected shape, and guard that shape before reaching the call.
-
-- A third, independently-written site of the same bug class as the
-  `dynamicArrayDescriptor`/`rescaleReinterpretedSliceLength` entries above:
-  `emitCallArgument`'s (`compiler.d`) whole-static-array-slice fast path
-  manually strips every enclosing `CastExp` to find the underlying static
-  array's storage, then sized the passed slice's length from THAT stripped
-  (pre-cast) type's element instead of the argument's own (post-cast) type --
-  `cast(void[]) s[]` for `ulong[3] s` reported a 3-element slice instead of a
-  24-byte one. Any code that manually unwraps a cast chain to reach
-  underlying storage must still derive the resulting descriptor's element
-  size from the argument's own outermost type, not from whatever type the
-  unwrap lands on; reusing `dynamicArrayElementSize(argument.type)` (already
-  `Tvoid`-aware) rather than re-deriving element width from the stripped
-  type is the fix in all three sites.
+- When manually stripping a cast chain to find a source place, size the
+  result from the argument's own outermost (post-cast) type, not from
+  whatever type the unwrap lands on -- `cast(void[]) s[]` for `ulong[3]
+  s` must report 24 bytes, not a 3-element count.

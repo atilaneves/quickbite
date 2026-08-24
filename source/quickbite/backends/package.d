@@ -52,10 +52,8 @@ public abstract class TreeNodeBackend: Backend {
     }
 
     // Runs a module's `shared static this`/`static this` bodies before its
-    // first unittest, matching compiled D's startup order. Only a backend
-    // that models module-level dataseg state itself (Bytecode) needs to act;
-    // the default is a no-op, since e.g. Ctfe and Interpreter do not yet run
-    // module constructors at all (issue #543).
+    // first unittest, matching compiled D's startup order. The default is
+    // a no-op, pending #543.
     protected void ensureModuleConstructorsRun(Module module_) {
     }
 

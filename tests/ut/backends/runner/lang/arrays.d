@@ -2985,12 +2985,11 @@ static foreach (backend; Matrix!(
 // synthesizes a default `ExpInitializer` blit for a plain-storage local
 // (the `staticArray.declarationFromScalarBroadcastsToEveryElement` fixture
 // above covers that), but a dataseg (`__gshared`/`static`) local's
-// `VarDeclaration._init` stays entirely null instead -- DMD normally
-// defers a dataseg variable's default initializer to codegen, which never
-// runs while compiling under `-version=NoBackend`. SystemLinker is the
-// oracle: `x`'s storage still reads back as zero, the same as any other
-// default-initialized storage. `Ctfe` can never modify dataseg storage at
-// compile time.
+// `VarDeclaration._init` stays entirely null instead -- DMD leaves a
+// dataseg variable's `_init` null and expects the object writer to
+// zero-fill its storage. SystemLinker is the oracle: `x`'s storage still
+// reads back as zero, the same as any other default-initialized storage.
+// `Ctfe` can never modify dataseg storage at compile time.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "variable `x` cannot be modified at compile time"),
@@ -3042,13 +3041,12 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A dataseg local's own initializer is a compile-time constant, by D's
-// rules for `static`/`__gshared` storage, and runs once, at the
-// variable's first sight, not once per call: a second call sees the
-// first call's write, not the initializer value again. `Ctfe` cannot
-// read dataseg storage at compile time. `Interpreter` resets the local
-// on the second call; `LLVMJit` never applies the explicit initializer
-// at all.
+// A dataseg local's explicit initializer is a compile-time constant, by
+// D's rules for `static`/`__gshared` storage: it is baked into the data
+// segment, not executed, so a second call sees the first call's write,
+// not the initializer value again. `Ctfe` cannot read dataseg storage at
+// compile time. `Interpreter` resets the local on the second call;
+// `LLVMJit` never applies the explicit initializer at all.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `calls` cannot be read at compile time"),
@@ -6826,15 +6824,10 @@ static foreach (backend; Matrix!(
 // reinterpreting cast (`cast(void[]) s[]`) must report a byte length, not
 // the source array's element count: `void[]` has a one-byte element stride,
 // so `ulong[3]`'s 24 bytes become a 24-element `void[]`, not a 3-element one.
-// Ctfe omitted: dmd's own CTFE engine (verified directly with `pragma(msg,
-// ...)` inside an `enum`) evaluates this same reinterpreting cast to the
-// source element count, not the byte length -- a real dmd CTFE divergence
-// from compiled-code behaviour, not a quickbite backend bug.
+// dmd's own CTFE engine evaluates this same reinterpreting cast to the
+// source element count instead; see the sibling pin below.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "dmd's own CTFE engine reinterprets a whole static-array slice cast "
-        ~ "by element count, not by byte length (verified directly against "
-        ~ "dmd, independent of quickbite's Ctfe backend)"),
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
 )) {
     @("sliceArgument.reinterpretCastStaticArrayLengthIsBytes." ~
         backend.stringof)
@@ -6848,6 +6841,26 @@ static foreach (backend; Matrix!(
             unittest {
                 ulong[3] storage;
                 assert(byteLength(cast(void[]) storage[]) == 24);
+            }
+        });
+    }
+}
+
+// dmd CTFE reinterprets a whole static-array slice cast by element count,
+// not by byte length: `cast(void[]) storage[]` for `ulong[3] storage`
+// evaluates to a 3-element `void[]` at compile time.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthIsBytes." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t byteLength(void[] chunk) {
+                return chunk.length;
+            }
+
+            unittest {
+                ulong[3] storage;
+                assert(byteLength(cast(void[]) storage[]) == 3);
             }
         });
     }

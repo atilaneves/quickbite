@@ -2579,15 +2579,10 @@ package(quickbite.backends.bytecode) struct Compiler {
                 return Operand(offset, ScalarType.bool_);
             }
 
-            // An `immutable` declaration whose module registration declines
-            // (a literal shape none of the module literal writers cover,
-            // e.g. a static array of structs) has no module storage to read
-            // through; rematerialise its value straight from the AST
-            // instead, the same as before module storage existed for it.
-            // `storage != DeclarationStorage.module_` guards this so a
-            // successfully registered immutable (the common case) keeps
-            // reading through the module Place machinery above instead of
-            // recomputing its initializer on every read.
+            // An `immutable` whose module registration declined (no module
+            // storage) rematerialises its value straight from the AST
+            // instead. `storage != DeclarationStorage.module_` guards this
+            // so a registered immutable keeps reading through module Place.
             if (auto declaration = variable.var.isVarDeclaration)
                 if (isDeclarationNamed(declaration, "$") ||
                     (declaration.isImmutable &&
@@ -4770,36 +4765,20 @@ package(quickbite.backends.bytecode) struct Compiler {
             return;
         }
 
-        // A `static`/`__gshared` local (`variable.isDataseg`) exists once,
-        // for the module's whole lifetime, and every call to the enclosing
-        // function shares it -- frame storage would instead give it a fresh
-        // slot, and the frame-based compile*Declaration functions below
-        // would re-run its default-zero or literal initializer bytecode on
-        // every call, resetting it. Route it to module storage instead:
-        // `moduleDeclarationRecord` allocates that storage and writes its
-        // default-zero or literal initializer bytes once, right now, with
-        // no bytecode instruction to re-run later. `resolvePlace` and the
-        // scalar/struct/array read and write paths already fall back to
-        // module storage for a declaration with no frame storage
-        // registered.
+        // A dataseg (`static`/`__gshared`) local lives once for the whole
+        // module lifetime, not per frame. Route it to module storage:
+        // `moduleDeclarationRecord` allocates it and writes the initializer
+        // bytes once, here, not as a bytecode instruction re-run per call.
         if (variable.isDataseg &&
             moduleDeclarationRecord(variable).storage ==
                 DeclarationStorage.module_)
             return;
 
-        // Module registration can still decline an initializer shape its
-        // literal writers do not cover (e.g. a static array of structs).
-        // Falling through to ordinary frame compilation below is only safe
-        // for an `immutable`/`const` local: a dataseg initializer is always
-        // a compile-time constant, so recomputing it on every call is not
-        // observably different from computing it once, and this is the path
-        // `core.internal.switch_`'s own `static immutable cases` table
-        // needs. A *mutable* declined declaration (`static`/`__gshared`
-        // with no `immutable`/`const`) cannot take that shortcut: frame
-        // compilation would silently reset every mutation on the next call,
-        // since the "shares one slot across calls" promise `isDataseg`
-        // makes has no other storage to fall back on. Refuse it loudly
-        // instead of returning wrong results.
+        // Registration can decline an initializer shape its literal writers
+        // don't cover. Frame fallback is then safe only for `immutable`/
+        // `const` (constant, so recomputing it is unobservable --
+        // `core.internal.switch_`'s `cases` table needs this); refuse a
+        // declined mutable dataseg local instead of silently resetting it.
         if (variable.isDataseg &&
             !variable.isImmutable && !variable.isConst)
         {

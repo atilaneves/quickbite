@@ -63,8 +63,11 @@ private void foreachStaticCtorDeclaration(
     if (symbols is null)
         return;
 
-    // By index for the same reason as `foreachUnitTestDeclaration`: visiting
-    // a template instance's members can trigger further instantiation.
+    // By index, as in `foreachUnitTestDeclaration`. This walk only appends
+    // to the caller's array, so it cannot itself trigger the reentrant
+    // growth that walk guards against; a ctor compiled after this walk
+    // finishes can still instantiate a template whose ctors this walk
+    // never saw.
     for (size_t i = 0; i < symbols.length; ++i) {
         auto symbol = (*symbols)[i];
         if (auto ctor = symbol.isStaticCtorDeclaration) {
@@ -78,8 +81,8 @@ private void foreachStaticCtorDeclaration(
         }
 
         // A `shared static this` inside a template (e.g. tardy's `vtable`
-        // mixin template) only shows up here: `AttribDeclaration.include`
-        // does not reach into instantiated templates.
+        // template) only shows up here: `AttribDeclaration.include` does
+        // not reach into instantiated templates.
         if (auto templateInstance = symbol.isTemplateInstance) {
             foreachStaticCtorDeclaration(templateInstance.members, visit);
             continue;
