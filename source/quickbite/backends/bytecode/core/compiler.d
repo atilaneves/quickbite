@@ -2651,8 +2651,8 @@ package(quickbite.backends.bytecode) struct Compiler {
 
             // A captured enclosing local read inside a nested struct's method
             // (`return seed;`): resolve it through the hidden `this` block's
-            // context pointer (vthis at offset 0), which holds the enclosing
-            // frame's base index.
+            // context pointer (`vthis`, at the struct's own `vthis.offset`),
+            // which holds the enclosing frame's base index.
             if (_hasNestedContext)
                 if (auto declaration = variable.var.isVarDeclaration)
                     if (auto captured = declaration in _capturedOffsets)
@@ -3191,7 +3191,6 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ushort structLiteralReturnOffset(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
         zeroFrameBlock(offset, typeFacts(literal.type).byteWidth);
-        initializeNestedContext(offset, structDeclarationOf(literal.type));
         compileStructLiteralInto(offset, literal, true);
         return offset;
     }
@@ -5914,10 +5913,10 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         zeroFrameBlock(offset, typeFacts(variable.type).byteWidth);
 
-        // A nested struct carries a hidden context pointer (`vthis`) at offset 0
-        // recording the declaring function's frame, so its methods can read
-        // captured enclosing locals. The empty `S()` literal leaves it zero, so
-        // set it here.
+        // A nested struct carries a hidden context pointer (`vthis`, appended
+        // after every declared field by DMD) recording the declaring
+        // function's frame, so its methods can read captured enclosing
+        // locals. The empty `S()` literal leaves it zero, so set it here.
         initializeNestedContext(offset, declaration);
 
         auto initializer =
@@ -6184,12 +6183,19 @@ package(quickbite.backends.bytecode) struct Compiler {
     // `base + field.offset`. Omitted trailing fields keep their zeroed default;
     // a static-array field initialised from a scalar broadcasts that scalar to
     // every element, and a dynamic-array field copies its slice descriptor.
+    //
+    // Every materialisation of a nested-struct literal -- direct, a struct
+    // field, or an element of a static/dynamic array field -- goes through
+    // here, so initializing the hidden context field here covers all of
+    // them; a non-nested struct's `initializeNestedContext` call is a no-op.
     private void compileStructLiteralInto(
         in ushort base,
         StructLiteralExp literal,
         bool isReturnEscaping = false,
     ) {
         import dmd.astenums: TY;
+
+        initializeNestedContext(base, literal.sd);
 
         if (literal.elements is null)
             return;
@@ -6212,12 +6218,10 @@ package(quickbite.backends.bytecode) struct Compiler {
                 // to heap-escape as one at the top level (see the `Tdelegate`
                 // branch below).
                 if (auto inner = element.isStructLiteralExp) {
-                    // A nested-struct field needs its own hidden context field
-                    // initialized exactly like a top-level nested struct does
-                    // (`compileStructDeclaration`, `structLiteralReturnOffset`);
-                    // the field's own block was already zeroed as part of this
-                    // literal's containing block, above.
-                    initializeNestedContext(fieldOffset, structDeclarationOf(fieldType));
+                    // `compileStructLiteralInto` itself initializes the
+                    // nested field's own hidden context field exactly like a
+                    // top-level nested struct does (`compileStructDeclaration`,
+                    // `structLiteralReturnOffset`).
                     compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
                     continue;
                 }
@@ -6463,11 +6467,11 @@ package(quickbite.backends.bytecode) struct Compiler {
     }
 
     // The function that lexically declared a nested struct -- the frame its
-    // hidden context field (`vthis`, at the struct's own offset 0) must point
-    // at so a later method call can still resolve a captured local of that
-    // function. Mirrors `enclosingMethodOf` above, generalised from a nested
-    // function's own parent to a nested struct's.
-    private FuncDeclaration declaringFunctionOf(
+    // hidden context field (`vthis`, at the struct's own `vthis.offset`) must
+    // point at so a later method call can still resolve a captured local of
+    // that function. Mirrors `enclosingMethodOf` above, generalised from a
+    // nested function's own parent to a nested struct's.
+    private static FuncDeclaration declaringFunctionOf(
         imported!"dmd.dstruct".StructDeclaration declaration,
     ) {
         if (auto parent = declaration.toParent2)
@@ -6478,18 +6482,19 @@ package(quickbite.backends.bytecode) struct Compiler {
     // Initializes a nested struct instance's hidden context field to the live
     // frame of the function that lexically declared it (a no-op for a
     // non-nested struct). Every call site already zeroed the instance's block
-    // first, so a non-nested struct or one whose declaring function cannot be
-    // determined simply keeps that zero.
+    // first, so a non-nested struct simply keeps that zero.
     //
     // The declaring function is ordinarily the function currently being
     // compiled -- a struct default-constructed or returned directly by the
     // same function that declared it -- in which case that function's own
-    // live frame (`Op.frameBaseIndex`) is the context. It is a different,
-    // enclosing function when a nested helper constructs and returns a
-    // struct ITS enclosing function declared (the helper captures nothing
-    // itself, so the struct's method still needs the declaring function's
-    // frame, not the helper's); that frame is reached the same way a
-    // captured variable's owner frame is (`enclosingFrameBase`).
+    // live frame (`Op.frameBaseIndex`) is the context; a nested struct whose
+    // declaring function cannot be determined falls back to the same current
+    // frame. It is a different, enclosing function when a nested helper
+    // constructs and returns a struct ITS enclosing function declared (the
+    // helper captures nothing itself, so the struct's method still needs the
+    // declaring function's frame, not the helper's); that frame is reached
+    // the same way a captured variable's owner frame is
+    // (`enclosingFrameBase`).
     private void initializeNestedContext(
         in ushort offset,
         imported!"dmd.dstruct".StructDeclaration declaration,
@@ -6497,14 +6502,20 @@ package(quickbite.backends.bytecode) struct Compiler {
         if (!declaration.isNested)
             return;
 
+        // DMD appends `vthis` after every declared field
+        // (`AggregateDeclaration.makeNested`, "Append vthis field"), so the
+        // context pointer lands at the struct's OWN offset, not the
+        // instance's offset 0.
+        const vthisOffset = cast(ushort) (offset + declaration.vthis.offset);
+
         auto owner = declaringFunctionOf(declaration);
         if (owner is null || owner is _currentFunction) {
-            _code ~= Instruction(Op.frameBaseIndex, offset);
+            _code ~= Instruction(Op.frameBaseIndex, vthisOffset);
             return;
         }
 
         _code ~= Instruction(
-            Op.copy, offset, enclosingFrameBase(owner),
+            Op.copy, vthisOffset, enclosingFrameBase(owner),
             cast(ushort) size_t.sizeof,
         );
     }
@@ -6809,8 +6820,15 @@ package(quickbite.backends.bytecode) struct Compiler {
         if (_nestedContextOffset == ushort.max && _hasThis &&
             _thisLocal.declaration !is null &&
             _thisLocal.declaration.isNested)
+            // DMD appends `vthis` after every declared field, so it is not
+            // at the receiver's offset 0; `emitPointerLoad`'s index is
+            // scaled by `width` (`size_t.sizeof` here), so the byte offset
+            // is divided down to an element index.
             emitPointerLoad(
-                contextBase, _thisLocal.offset, compileSizeConstant(0),
+                contextBase, _thisLocal.offset,
+                compileSizeConstant(
+                    _thisLocal.declaration.vthis.offset / size_t.sizeof,
+                ),
                 cast(uint) size_t.sizeof,
             );
         else
