@@ -703,6 +703,26 @@
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
 
+- Do not use an existing task worktree only because its name matches the
+  current task. Treat every existing worktree as owned by another person or
+  agent unless ownership is explicit; create a new branch and worktree.
+
+- Don't gate a frame/closure lifetime extension on a type's shape (e.g. "is
+  this a nested struct?"). Every phobos/unit-threaded range built from a
+  local lambda is a nested struct, so a `preservesFrame` watermark keyed on
+  `isNested` fired for ordinary loops and pushed 32 MB of frames that were
+  never reused. Use DMD's own escape analysis (`needsClosure`) instead --
+  it answers the question the shape check was only approximating. Also: a
+  VM stack that can relocate under raw guest pointers is a correctness bug,
+  not a capacity-tuning problem, once any code holds `&local` across a
+  potential growth. Growing 32 MB past a fixed reservation relocated the
+  backing array and invalidated every live pointer guest code held (161
+  relocations in one run, each a wrong-answer or bounds-check failure
+  downstream). Reserve address space up front (e.g. `mmap` with
+  `MAP_NORESERVE`, committing pages on first touch) so the buffer never
+  moves, and fail loudly (throw) on genuine overflow instead of silently
+  reallocating.
+
 - A `try`/`catch` fixture with only an unconditional `return` may be
   simplified by DMD before bytecode compilation, leaving no runtime handler
   to test. Keep a runtime branch that can throw, and trigger the later throw
