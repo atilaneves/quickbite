@@ -39,8 +39,8 @@ cleared and no longer blocks the rest.
   fallback. Re-derive the remaining arms by diffing `runExpressionImpl`'s
   labeled dispatch against the `construct*Into` dispatches, and flip each to
   destination-passing (`runCallExpression(call, destination*)`), cheapest
-  first: (a) vector pair, `SymOffExp` variable case, pointer comparisons,
-  function literals;
+  first: (a) `SymOffExp` variable case, pointer comparisons, function
+  literals;
   (b) identity family, post-increment/decrement, scalar compound assign,
   concatenation family, typeid, null-literal aggregate residues,
   struct-literal type-mismatch residue, cast residues, `new` residues,

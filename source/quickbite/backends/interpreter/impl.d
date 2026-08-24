@@ -2961,6 +2961,28 @@ private struct Walker {
                 return;
         }
 
+        if (auto vector = expression.isVectorExp) {
+            if (constructVectorInto(
+                vector,
+                Place(
+                    _activationFrame.temporaryAddress(expression),
+                    expression.type,
+                ),
+            ))
+                return;
+        }
+
+        if (auto vectorArray = expression.isVectorArrayExp) {
+            if (constructVectorArrayInto(
+                vectorArray,
+                Place(
+                    _activationFrame.temporaryAddress(expression),
+                    expression.type,
+                ),
+            ))
+                return;
+        }
+
         cast(void) runExpressionImpl(expression);
     }
 
@@ -2998,6 +3020,70 @@ private struct Walker {
             default:
                 return false;
         }
+    }
+
+    private bool constructVectorInto(
+        imported!"dmd.expression".VectorExp vector,
+        Place destination,
+    ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
+        if (
+            vector.type is null ||
+            destination.type is null ||
+            !destination.type.toBasetype.equals(vector.type.toBasetype)
+        )
+            return false;
+
+        auto arrayType = vector.to.basetype; // DMD Type APIs are mutable.
+        auto staticArray = arrayType.toBasetype.isTypeSArray;
+        if (staticArray is null)
+            throw new Exception("Unsupported interpreter vector expression.");
+
+        const length = staticArrayLength(staticArray);
+        if (length == 0)
+            return true;
+
+        auto arrayDestination = Place(destination.address, arrayType);
+        auto first = ConstructionDestination(arrayDestination.index(0));
+        runExpression(vector.e1, first);
+        foreach (index; 1 .. length)
+            copyPlaceValue(first.place, arrayDestination.index(index));
+        return true;
+    }
+
+    private bool constructVectorArrayInto(
+        imported!"dmd.expression".VectorArrayExp vectorArray,
+        Place destination,
+    ) {
+        if (
+            vectorArray.type is null ||
+            vectorArray.e1.type is null ||
+            destination.type is null ||
+            !destination.type.toBasetype.equals(vectorArray.type.toBasetype)
+        )
+            return false;
+
+        auto vectorType = vectorArray.e1.type.toBasetype.isTypeVector;
+        if (
+            vectorType is null ||
+            !vectorType.basetype.toBasetype.equals(
+                vectorArray.type.toBasetype,
+            )
+        )
+            throw new Exception("Unsupported interpreter vector array expression.");
+
+        auto source = Place(
+            _activationFrame.temporaryAddress(vectorArray.e1),
+            vectorArray.e1.type,
+        );
+        auto sourceDestination = ConstructionDestination(source);
+        runExpression(vectorArray.e1, sourceDestination);
+
+        // A vector and its `.array` view have the same DMD-owned layout.
+        // Give those bytes the result's static type before the typed copy.
+        copyPlaceValue(Place(source.address, vectorArray.type), destination);
+        return true;
     }
 
     private void executeAssertExpression(AssertExp assert_) {
@@ -3203,10 +3289,6 @@ private struct Walker {
             goto addressExpression;
         case dotVariable:
             goto dotVariableExpression;
-        case vector:
-            goto vectorExpression;
-        case vectorArray:
-            goto vectorArrayExpression;
         case typeid_:
             goto typeidExpression;
         case variable:
@@ -3514,14 +3596,6 @@ addressExpression:
 dotVariableExpression:
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
-
-vectorExpression:
-        if (auto vector = expression.isVectorExp)
-            return runVectorExpression(vector);
-
-vectorArrayExpression:
-        if (auto vectorArray = expression.isVectorArrayExp)
-            return runVectorArrayExpression(vectorArray);
 
 typeidExpression:
         if (auto typeid_ = expression.isTypeidExp)
@@ -9280,48 +9354,6 @@ unsupportedExpression:
         return ExpressionResult.typeName(name);
     }
 
-    private ExpressionResult runVectorExpression(
-        imported!"dmd.expression".VectorExp vector,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.layout: staticArrayLength;
-        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-
-        auto staticArray = vector.to.basetype.toBasetype.isTypeSArray;
-        if (staticArray is null)
-            throw new Exception("Unsupported interpreter vector expression.");
-
-        const value = constructedExpressionValue(vector.e1);
-        const length = staticArrayLength(staticArray);
-
-        ExpressionResult[] elements;
-        foreach (_; 0 .. length)
-            elements ~= value;
-
-        const array = reconstructStoredArray(vector.to.basetype, elements);
-        auto native = AggregateValue.native(array);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
-            vector.type,
-            native.storage,
-            native.retained,
-        ));
-    }
-
-    private ExpressionResult runVectorArrayExpression(
-        imported!"dmd.expression".VectorArrayExp vectorArray,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-
-        const vector = constructedExpressionValue(vectorArray.e1);
-        auto native = AggregateValue.native(vector);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
-            vectorArray.type,
-            native.storage,
-            native.retained,
-        ));
-    }
-
     private ExpressionResult runAssignExpression(imported!"dmd.expression".BinExp assign) {
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
@@ -14970,6 +15002,18 @@ unsupportedExpression:
 
         if (auto dot = rvalue.isDotIdExp)
             if (constructComplexComponentInto(dot, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
+        if (auto vector = rvalue.isVectorExp)
+            if (constructVectorInto(vector, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
+        if (auto vectorArray = rvalue.isVectorArrayExp)
+            if (constructVectorArrayInto(vectorArray, place)) {
                 destination.markConstructed;
                 return true;
             }
