@@ -2,6 +2,8 @@ module ut.bin.benchmarks;
 
 
 import benchmarks.cli;
+import quickbite.backends.native.run_executor:
+    RunExecutorConfig, runExecutor;
 import quickbite.backends.runner: TestResult;
 import quickbite.backends.runner: Runner;
 import dmd.dmodule: Module;
@@ -225,6 +227,59 @@ unittest {
     assert(reporter.compileTime > Duration.zero);
     reporter.resetCompileTime;
     reporter.compileTime.should == Duration.zero;
+}
+
+@("runExecutorUsesRequestedWorkingDirectory")
+unittest {
+    import std.file: mkdirRecurse, readText, setAttributes;
+    import std.string: strip;
+
+    with(immutable Sandbox()) {
+        const executor = inSandboxPath("executor");
+        const workingDirectory = inSandboxPath("package");
+        const resultsFile = inSandboxPath("results");
+        writeFile("executor", `#!/bin/sh
+pwd > "$2"
+`);
+        setAttributes(executor, 0x1ED);
+        mkdirRecurse(workingDirectory);
+
+        runExecutor(
+            "unused-request",
+            resultsFile,
+            RunExecutorConfig(workingDirectory, executor),
+        );
+
+        readText(resultsFile).strip.should == workingDirectory;
+    }
+}
+
+@("runExecutorReportsStandardErrorOnFailure")
+unittest {
+    import std.file: setAttributes;
+
+    with(immutable Sandbox()) {
+        const executor = inSandboxPath("executor");
+        writeFile("executor", `#!/bin/sh
+echo 'Error: Cannot find reggae top dir using dub.json' >&2
+kill -ABRT $$
+`);
+        setAttributes(executor, 0x1ED);
+
+        void runFailure() {
+            runExecutor(
+                "unused-request",
+                inSandboxPath("unused-results"),
+                RunExecutorConfig("", executor),
+            );
+        }
+
+        runFailure.shouldThrowWithMessage(
+            "run executor exited with status -6 "
+            ~ "(a fixture may have crashed the process):\n"
+            ~ "Error: Cannot find reggae top dir using dub.json",
+        );
+    }
 }
 
 @("renderBenchmarkSectionShowsCompileTime")

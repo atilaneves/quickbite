@@ -65,6 +65,7 @@ public class SystemLinker:
                 dependencyImportPathsOutside(importPaths, packageRoot),
                 FrontendFlags(frontendFlags.compilerArguments.dup),
                 dubPackage,
+                packageRoot,
             ),
         );
     }
@@ -153,6 +154,9 @@ public struct SystemLinkerInputs {
     // no member pruning -- that apparatus is for the single-snippet path. See
     // emitObjectFilesForDubPackage.
     public DubPackage dubPackage;
+    // The executor mirrors `dub test`, including its package-root working
+    // directory. Empty for standalone fixtures, which inherit the host cwd.
+    public string workingDirectory;
 }
 
 // A codegen'd-and-linked shared library on disk. The caller owns dir, deleting
@@ -259,8 +263,13 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
         symbols,
     )));
 
-    import quickbite.backends.native.run_executor: runExecutor;
-    runExecutor(requestFile, resultsFile);
+    import quickbite.backends.native.run_executor:
+        RunExecutorConfig, runExecutor;
+    runExecutor(
+        requestFile,
+        resultsFile,
+        RunExecutorConfig(inputs.workingDirectory),
+    );
 
     TestResult[] cases;
     foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
