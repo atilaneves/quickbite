@@ -1887,7 +1887,11 @@ private struct Walker {
         if (!hasProjectionPlace(expression))
             return false;
 
-        if (expression.isVarExp !is null)
+        if (
+            expression.isVarExp !is null ||
+            expression.isThisExp !is null ||
+            expression.isSuperExp !is null
+        )
             return true;
         if (auto dot = expression.isDotVarExp)
             return hasDirectWriteProjectionPlace(dot.e1);
@@ -1952,7 +1956,9 @@ private struct Walker {
             return collectDirectWriteProjectionIndexes(dot.e1, indexes, count);
         if (auto cast_ = expression.isCastExp)
             return collectDirectWriteProjectionIndexes(cast_.e1, indexes, count);
-        return expression.isVarExp !is null;
+        return expression.isVarExp !is null ||
+            expression.isThisExp !is null ||
+            expression.isSuperExp !is null;
     }
 
     // Compose the addressable expression once.
@@ -2790,16 +2796,11 @@ private struct Walker {
         loopControlLabel = null;
     }
 
-    // Construct an rvalue in caller-owned typed storage. `runExpressionImpl`'s
-    // per-arm dispatch is used only as a bridge for expression kinds
-    // `constructInto`/`constructScalarExpressionInto` do not yet construct
-    // directly; each bridged arm retires once its own construction arm
-    // lands. The bridged value is adapted to the destination's own type
-    // before it is written -- `storageValue`'s existing byte-reinterpreting
-    // view for a `void[]` destination (e.g. `__traits(initSymbol, T)`, whose
-    // evaluated value is `T`-shaped even though the expression's static type
-    // is `void[]`) and its scalar-cast fallback both apply here exactly as
-    // they do at every other caller-owned-storage site.
+    // Construct an rvalue in caller-owned typed storage. Every expression
+    // kind dispatches through `constructInto`; no value-returning expression
+    // walk exists beside it. A conversion between the expression's static
+    // type and the destination type is applied by the destination arm that
+    // needs it.
     private void runExpression(
         imported!"dmd.expression".Expression expression,
         ref ConstructionDestination destination,
@@ -2807,42 +2808,9 @@ private struct Walker {
         const full = beginFullExpression;
         scope(exit) endFullExpression(full);
 
-        if (!constructInto(expression, destination)) {
-            if (auto symbol = expression.isSymOffExp) {
-                if (auto pointerType = variableSymbolOffsetPointerType(symbol)) {
-                    auto pointerDestination = Place(
-                        _activationFrame.temporaryAddress(expression, pointerType),
-                        pointerType,
-                    );
-                    const constructed = constructPointerExpressionInto(
-                        expression,
-                        pointerDestination,
-                    );
-                    if (!constructed)
-                        throw new Exception("Variable symbol offset did not construct.");
-                    writeStoredValue(
-                        destination.place,
-                        storageValue(
-                            destination.place.type,
-                            readStoredValue(pointerDestination),
-                        ),
-                    );
-                    destination.markConstructed;
-                    return;
-                }
-            }
-
-            if (constructScalarExpressionInto(expression, destination.place)) {
-                destination.markConstructed;
-                return;
-            }
-            const value = storageValue(
-                destination.place.type,
-                runExpressionImpl(expression),
-            );
-            writeStoredValue(destination.place, value);
-            destination.markConstructed;
-        }
+        const constructed = constructInto(expression, destination);
+        if (!constructed)
+            throwUnsupportedExpression(expression);
     }
 
     // The typed place an assert-diagnostic operand evaluates into --
@@ -2908,10 +2876,9 @@ private struct Walker {
         executeForEffectImpl(expression);
     }
 
-    // The no-result walk itself, inside an already-open full expression --
-    // an arm here exists only where the discarded value is what a whole
-    // sub-walk was for. Everything else evaluates through the value path and
-    // drops the result, which is what an arm for it would replace.
+    // The no-result walk itself, inside an already-open full expression.
+    // An arm exists where discarding the result can avoid temporary storage;
+    // every other non-void expression constructs into a typed temporary.
     private void executeForEffectImpl(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
 
@@ -3041,6 +3008,43 @@ private struct Walker {
             return;
         }
 
+        if (auto assign = expression.isAssignExp) {
+            cast(void) runAssignExpression(assign);
+            return;
+        }
+
+        if (auto construct = expression.isConstructExp) {
+            cast(void) runAssignExpression(construct);
+            return;
+        }
+
+        if (auto blit = expression.isBlitExp) {
+            cast(void) runAssignExpression(blit);
+            return;
+        }
+
+        if (auto lowered = expression.isLoweredAssignExp) {
+            cast(void) runLoweredAssignExpression(lowered);
+            return;
+        }
+
+        import dmd.tokens: EXP;
+        if (expression.op == EXP.concatenateAssign) {
+            cast(void) runArrayConcatenateAssignExpression(
+                cast(imported!"dmd.expression".BinExp) expression,
+            );
+            return;
+        }
+        if (
+            expression.op == EXP.concatenateElemAssign ||
+            expression.op == EXP.concatenateDcharAssign
+        ) {
+            cast(void) runArrayAppendAssignExpression(
+                cast(imported!"dmd.expression".BinExp) expression,
+            );
+            return;
+        }
+
         if (auto identity = expression.isIdentityExp) {
             executeForEffectImpl(identity.e1);
             executeForEffectImpl(identity.e2);
@@ -3053,7 +3057,49 @@ private struct Walker {
             return;
         }
 
-        cast(void) runExpressionImpl(expression);
+        if (auto conditional = expression.isCondExp) {
+            if (conditionTruthy(conditional.econd))
+                executeForEffectImpl(conditional.e1);
+            else
+                executeForEffectImpl(conditional.e2);
+            return;
+        }
+
+        if (auto cast_ = expression.isCastExp)
+            if (cast_.type.toBasetype.ty == TY.Tvoid) {
+                executeForEffectImpl(cast_.e1);
+                return;
+            }
+
+        if (auto declaration = expression.isDeclarationExp) {
+            executeDeclaration(declaration);
+            return;
+        }
+
+        if (auto call = expression.isCallExp)
+            if (call.type.toBasetype.ty == TY.Tvoid) {
+                cast(void) runCallExpression(call, null);
+                return;
+            }
+
+        if (expression.type is null || expression.type.toBasetype.ty == TY.Tvoid)
+            throwUnsupportedExpression(expression);
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        const constructed = constructInto(expression, destination);
+        if (!constructed)
+            throwUnsupportedExpression(expression);
+    }
+
+    private void throwUnsupportedExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import std.conv: text;
+
+        throw new Exception(text("Unsupported eval expression: ", expression.op));
     }
 
     private imported!"dmd.expression".CmpExp relationalComparisonOrNull(
@@ -3245,452 +3291,6 @@ private struct Walker {
         }
     }
 
-    private ExpressionResult runExpressionImpl(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-        import dmd.tokens: EXP;
-
-        // DMD's `isX` helpers each test this same
-        // discriminator. Jump straight to the one existing handler selected
-        // by it instead of repeating that test for every preceding AST kind.
-        switch (expression.op) with (EXP) {
-        case int64:
-            goto integerExpression;
-        case float64:
-            goto realExpression;
-        case null_:
-            goto nullExpression;
-        case string_:
-            goto stringExpression;
-        case arrayLiteral:
-            goto arrayLiteralExpression;
-        case assocArrayLiteral:
-            goto assocArrayLiteralExpression;
-        case structLiteral:
-            goto structLiteralExpression;
-        case not:
-            goto notExpression;
-        case andAnd:
-        case orOr:
-            goto logicalExpression;
-        case cast_:
-            goto castExpression;
-        case equal:
-        case notEqual:
-            goto equalExpression;
-        case question:
-            goto conditionalExpression;
-        case add:
-            goto addExpression;
-        case min:
-            goto minExpression;
-        case mul:
-            goto mulExpression;
-        case div:
-            goto divExpression;
-        case mod:
-            goto modExpression;
-        case leftShift:
-            goto leftShiftExpression;
-        case rightShift:
-            goto rightShiftExpression;
-        case unsignedRightShift:
-            goto unsignedRightShiftExpression;
-        case negate:
-            goto negExpression;
-        case tilde:
-            goto complementExpression;
-        case pow:
-            goto powExpression;
-        case concatenate:
-            goto catExpression;
-        case assign:
-            goto assignExpression;
-        case loweredAssignExp:
-            goto loweredAssignExpression;
-        case construct:
-            goto constructExpression;
-        case blit:
-            goto blitExpression;
-        case concatenateAssign:
-            goto concatenateAssignExpression;
-        case concatenateElemAssign:
-            goto concatenateElemAssignExpression;
-        case concatenateDcharAssign:
-            goto concatenateDcharAssignExpression;
-        case or:
-            goto bitOrExpression;
-        case and:
-            goto bitAndExpression;
-        case xor:
-            goto bitXorExpression;
-        case comma:
-            goto commaExpression;
-        case declaration:
-            goto declarationExpression;
-        case call:
-            goto callExpression;
-        case delegate_:
-            goto delegateExpression;
-        case arrayLength:
-            goto arrayLengthExpression;
-        case slice:
-            goto sliceExpression;
-        case index:
-            goto indexExpression;
-        case new_:
-            goto newExpression;
-        case symbolOffset:
-            goto symbolOffsetExpression;
-        case star:
-            goto pointerExpression;
-        case address:
-            goto addressExpression;
-        case dotVariable:
-            goto dotVariableExpression;
-        case typeid_:
-            goto typeidExpression;
-        case variable:
-            goto variableExpression;
-        default:
-            goto unsupportedExpression;
-        }
-
-integerExpression:
-        if (auto integer = expression.isIntegerExp) {
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.runtime_values: integerValue;
-
-            auto destination = Place(
-                _activationFrame.temporaryAddress(expression),
-                expression.type,
-            );
-            integerValue(integer, destination);
-            return readStoredValue(destination);
-        }
-
-realExpression:
-        if (auto real_ = expression.isRealExp)
-            return scalarExpressionValue(real_);
-
-nullExpression:
-        if (auto null_ = expression.isNullExp) {
-            import dmd.astenums: TY;
-
-            // A `null` literal typed as a dynamic array is a null array, whose
-            // `.length` is 0 and which renders as `[]` — the same
-            // representation as a default-initialised array field
-            // (`defaultValue`).  `new S` of a struct with an array field passes
-            // this literal as the field's initialiser.
-            if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
-                return reconstructStoredArray(null_.type, []);
-
-            return ExpressionResult.null_;
-        }
-
-stringExpression:
-        if (auto string_ = expression.isStringExp)
-            return constructedExpressionValue(string_);
-
-arrayLiteralExpression:
-        if (auto array = expression.isArrayLiteralExp)
-            return constructedExpressionValue(array);
-
-assocArrayLiteralExpression:
-        // DMD's `AssocArrayLiteralExp::semantic` (`tryLowerAALiteral`,
-        // expressionsem.d) always rewrites the literal into a call to
-        // `object._d_assocarrayliteralTX!(K, V)(keys, values)` and records it
-        // on `.lowering`; running that lowered call interprets druntime's own
-        // literal construction instead of reconstructing one here.
-        if (auto assocArray = expression.isAssocArrayLiteralExp)
-            return constructedExpressionValue(assocArray.lowering);
-
-structLiteralExpression:
-        if (auto struct_ = expression.isStructLiteralExp)
-            return structLiteralValue(struct_);
-
-notExpression:
-        if (auto not = expression.isNotExp)
-            return scalarExpressionValue(not);
-
-logicalExpression:
-        if (auto logical = expression.isLogicalExp)
-            return scalarExpressionValue(logical);
-
-castExpression:
-        if (auto cast_ = expression.isCastExp) {
-            log("cast expression: ", cast_);
-            return castValue(cast_);
-        }
-
-equalExpression:
-        if (auto equal = expression.isEqualExp)
-            return runEqualExpression(equal);
-
-conditionalExpression:
-        if (auto conditional = expression.isCondExp)
-            return conditional.type.toBasetype.ty == TY.Tvoid
-                ? runConditionalExpression(conditional)
-                : constructedExpressionValue(conditional);
-
-addExpression:
-        if (auto add = expression.isAddExp)
-            return isPointerArithmeticExpression(add)
-                ? constructedExpressionValue(add)
-                : scalarExpressionValue(add);
-
-minExpression:
-        if (auto sub = expression.isMinExp)
-            return isPointerArithmeticExpression(sub)
-                ? constructedExpressionValue(sub)
-                : scalarExpressionValue(sub);
-
-mulExpression:
-        if (auto mul = expression.isMulExp)
-            return scalarExpressionValue(mul);
-
-divExpression:
-        if (auto div = expression.isDivExp)
-            return scalarExpressionValue(div);
-
-modExpression:
-        if (auto mod = expression.isModExp)
-            return scalarExpressionValue(mod);
-
-leftShiftExpression:
-        if (auto leftShift = expression.isShlExp)
-            return scalarExpressionValue(leftShift);
-
-rightShiftExpression:
-        if (auto rightShift = expression.isShrExp)
-            return scalarExpressionValue(rightShift);
-
-unsignedRightShiftExpression:
-        if (auto unsignedRightShift = expression.isUshrExp)
-            return scalarExpressionValue(unsignedRightShift);
-
-negExpression:
-        if (auto neg = expression.isNegExp)
-            return scalarExpressionValue(neg);
-
-complementExpression:
-        if (auto complement = expression.isComExp)
-            return scalarExpressionValue(complement);
-
-powExpression:
-        if (auto pow = expression.isPowExp)
-            return scalarExpressionValue(pow);
-
-catExpression:
-        if (auto cat = expression.isCatExp)
-            return runConcatenateExpression(cat);
-
-assignExpression:
-        if (auto assign = expression.isAssignExp)
-            return runAssignExpression(assign);
-
-loweredAssignExpression:
-        if (auto lowered = expression.isLoweredAssignExp)
-            return runLoweredAssignExpression(lowered);
-
-constructExpression:
-        if (auto construct = expression.isConstructExp)
-            return runAssignExpression(construct);
-
-blitExpression:
-        if (auto blit = expression.isBlitExp)
-            return runAssignExpression(blit);
-
-concatenateAssignExpression:
-        if (expression.op == EXP.concatenateAssign) {
-            auto assign = cast(imported!"dmd.expression".BinExp) expression;
-            if (assign is null)
-                assert(0, "concatenateAssign expression was not a BinExp");
-
-            return runArrayConcatenateAssignExpression(assign);
-        }
-
-concatenateElemAssignExpression:
-        if (expression.op == EXP.concatenateElemAssign) {
-            auto assign = cast(imported!"dmd.expression".BinExp) expression;
-            if (assign is null)
-                assert(0, "concatenateElemAssign expression was not a BinExp");
-
-            return runArrayAppendAssignExpression(assign);
-        }
-
-concatenateDcharAssignExpression:
-        if (expression.op == EXP.concatenateDcharAssign) {
-            auto assign = cast(imported!"dmd.expression".BinExp) expression;
-            if (assign is null)
-                assert(0, "concatenateDcharAssign expression was not a BinExp");
-
-            return runArrayAppendAssignExpression(assign);
-        }
-
-bitOrExpression:
-        if (auto bitOr = expression.isOrExp)
-            return scalarExpressionValue(bitOr);
-
-bitAndExpression:
-        if (auto bitAnd = expression.isAndExp)
-            return scalarExpressionValue(bitAnd);
-
-bitXorExpression:
-        if (auto bitXor = expression.isXorExp)
-            return scalarExpressionValue(bitXor);
-
-commaExpression:
-        if (auto comma = expression.isCommaExp) {
-            executeForEffect(comma.e1);
-            if (comma.type.toBasetype.ty == TY.Tvoid) {
-                executeForEffect(comma.e2);
-                return ExpressionResult.void_;
-            }
-            return constructedExpressionValue(comma.e2);
-        }
-
-declarationExpression:
-        // DMD's own semantic analysis types a `DeclarationExp` `void`:
-        // declaring a variable initialises its storage and yields nothing.
-        // Decision 7's no-result operation is therefore the only operation a
-        // declaration needs, in a discarding position or not.
-        if (auto declaration = expression.isDeclarationExp) {
-            executeDeclaration(declaration);
-            return ExpressionResult.void_;
-        }
-
-callExpression:
-        if (auto call = expression.isCallExp)
-            return call.type.toBasetype.ty == TY.Tvoid
-                ? runCallExpression(call, null)
-                : constructedExpressionValue(call);
-
-delegateExpression:
-        if (auto delegate_ = expression.isDelegateExp)
-            return runDelegateExpression(delegate_);
-
-arrayLengthExpression:
-        if (auto arrayLength = expression.isArrayLengthExp) {
-            // An addressable receiver already
-            // has authoritative typed storage. Read only its header/fixed
-            // length instead of allocating a by-value receiver snapshot.
-            if (hasArrayProjectionPlace(arrayLength.e1))
-                return ExpressionResult(
-                    projectionPlace(arrayLength.e1).arrayLength,
-                );
-            return ExpressionResult(
-                AggregateValue.length(AggregateValue.native(constructedExpressionValue(arrayLength.e1))),
-            );
-        }
-
-sliceExpression:
-        if (auto slice = expression.isSliceExp)
-            return runSliceExpression(slice);
-
-indexExpression:
-        if (auto index = expression.isIndexExp)
-            return runIndexExpression(index);
-
-newExpression:
-        if (auto new_ = expression.isNewExp)
-            return runNewExpression(new_);
-
-symbolOffsetExpression:
-        if (auto symbol = expression.isSymOffExp) {
-            if (auto function_ = symbol.var.isFuncDeclaration)
-                return functionPointerValue(function_);
-        }
-        goto unsupportedExpression;
-
-pointerExpression:
-        if (auto pointer = expression.isPtrExp)
-            return runPointerExpression(pointer);
-
-addressExpression:
-        if (auto address = expression.isAddrExp)
-            return runAddressExpression(address);
-
-dotVariableExpression:
-        if (auto dot = expression.isDotVarExp)
-            return runDotVarExpression(dot);
-
-typeidExpression:
-        if (auto typeid_ = expression.isTypeidExp)
-            return runTypeidExpression(typeid_);
-
-variableExpression:
-        if (auto var = expression.isVarExp) {
-            import dmd.id: Id;
-
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null)
-                return runSymbolDeclarationVarExpression(var);
-
-            // The Interpreter runs a compiled-D-equivalent runtime, not
-            // DMD's own CTFE engine (that is the separate `Ctfe` backend,
-            // `backends/ctfe/dmd_ctfe.d`, which invokes DMD's real CTFE
-            // interpreter and legitimately observes `true`); the magic
-            // `__ctfe` flag must therefore read `false` here, matching
-            // `SystemLinker`.
-            if (variable.ident is Id.ctfe)
-                return ExpressionResult(false);
-
-            if (isManifestVariable(variable)) {
-                if (auto initializer = variable._init.isExpInitializer)
-                    return constructedExpressionValue(initializer.exp);
-                return defaultValueResult(variable.type);
-            }
-
-            if (
-                auto length = cast(const(void)*) variable
-                    in _syntheticDollarValues
-            )
-                return ExpressionResult(*length);
-
-            if (isUninitializedBinding(variable)) {
-                import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
-                import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
-
-                // DMD's void diagnostic is field-granular: reading a whole
-                // void-initialized aggregate (as `S res = void; return res;`
-                // does) materialises a default value; only a still-void scalar
-                // read is reported. Match that so patterns like Phobos
-                // `trustedVoidInit` evaluate up to any real libc call.
-                if (isStructType(variable.type) || isStaticArrayType(variable.type)) {
-                    defaultLocalValue(variable);
-                    clearUninitializedBindingAddress(bindingPlace(variable).address);
-                    return readBindingValue(variable);
-                }
-
-                throw new Exception(uninitializedVariableMessage(variable, currentFunction));
-            }
-
-            // A module-level or static variable read before any write (e.g.
-            // std.encoding's immutable bomTable) is `readBindingValue`'s own
-            // `materializeDatasegInitializer` call: it seeds the module-table
-            // binding before that function's own `hasBindingPlace` check --
-            // unconditionally true for any dataseg variable -- so every
-            // dataseg read resolves through the ordinary bound-value path.
-            return readBindingValue(variable);
-        }
-
-unsupportedExpression:
-        import std.conv: text;
-        throw new Exception(text("Unsupported eval expression: ", expression.op));
-    }
-
-    // A module-scope variable of an imported (non-root) module only gets
-    // semantic1: DMD runs semantic2 over root modules alone (compiler.d
-    // parseRootModulesLocked), so the variable's initializer expression can
-    // still be an unresolved IdentifierExp (e.g. std.internal.entropy's
-    // `_entropySource = defaultEntropySource`, read via std.random's
-    // unpredictableSeed). Run semantic2 on the variable in its own module's
-    // global scope on demand — the semantic2 analogue of the functionSemantic3
-    // calls that resolve imported function bodies — so the initializer resolves
-    // before we evaluate it. semantic2 may replace `variable._init`, so callers
-    // re-read it afterwards.
     private void resolveNonRootInitializer(VarDeclaration variable) {
         import dmd.dsymbol: PASS;
 
@@ -3746,6 +3346,47 @@ unsupportedExpression:
         assert(0, "SymbolDeclaration VarExp was not an aggregate initializer");
     }
 
+    private ExpressionResult runVariableExpression(
+        imported!"dmd.expression".VarExp var,
+    ) {
+        import dmd.id: Id;
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            return runSymbolDeclarationVarExpression(var);
+
+        if (variable.ident is Id.ctfe)
+            return ExpressionResult(false);
+
+        if (isManifestVariable(variable)) {
+            if (auto initializer = variable._init.isExpInitializer)
+                return constructedExpressionValue(initializer.exp);
+            return defaultValueResult(variable.type);
+        }
+
+        if (auto length = cast(const(void)*) variable in _syntheticDollarValues)
+            return ExpressionResult(*length);
+
+        if (isUninitializedBinding(variable)) {
+            import quickbite.backends.interpreter.messages:
+                uninitializedVariableMessage;
+            import quickbite.frontend.dmd.types:
+                isStaticArrayType, isStructType;
+
+            if (isStructType(variable.type) || isStaticArrayType(variable.type)) {
+                defaultLocalValue(variable);
+                clearUninitializedBindingAddress(bindingPlace(variable).address);
+                return readBindingValue(variable);
+            }
+
+            throw new Exception(
+                uninitializedVariableMessage(variable, currentFunction),
+            );
+        }
+
+        return readBindingValue(variable);
+    }
+
     // Mirrors `e2ir.d`'s `visitLogical`: DMD lowers `&&`/`||`'s left operand
     // with `toElem` but its evaluated right operand with `toElemDtor` -- the
     // only expression-internal destructor boundary; a `?:` arm gets none.
@@ -3760,31 +3401,9 @@ unsupportedExpression:
         return conditionTruthy(operand);
     }
 
-    // These operations have scalar results only. Construct the result in the
-    // expression's typed activation slot so both operands and the result stay
-    // outside the value carrier.
-    private ExpressionResult scalarExpressionValue(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import quickbite.backends.interpreter.place: Place;
-
-        auto destination = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(expression),
-            expression.type,
-        ));
-        if (!constructScalarExpressionInto(expression, destination.place))
-            throw new Exception(
-                "expression did not construct into its scalar destination",
-            );
-        return readStoredValue(destination.place);
-    }
-
-    // A general fallback for call sites whose remaining operand kind is not
-    // fixed to one family (e.g. a conditional expression's arms, or pointer
-    // arithmetic's mixed pointer/integer operands): construct through the
-    // full `runExpression` pipeline, which already tries the typed
-    // construction arms before falling back to the carrier, then read the
-    // typed result back.
+    // Construct an expression in its typed activation slot and read that
+    // stored value for older helper interfaces that still accept a boxed
+    // value. Expression dispatch itself remains destination-passing.
     private ExpressionResult constructedExpressionValue(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -5669,21 +5288,6 @@ unsupportedExpression:
         return offset;
     }
 
-    // A void-typed conditional has no result to construct: each arm runs for
-    // its own effect only, like `executeVoidLogicalExpression`. A non-void
-    // conditional goes through `constructedExpressionValue` instead
-    // (`constructInto`'s `CondExp` arm recurses into whichever arm is
-    // selected, so it already covers every result type family).
-    private ExpressionResult runConditionalExpression(
-        imported!"dmd.expression".CondExp conditional,
-    ) {
-        if (conditionTruthy(conditional.econd))
-            executeForEffect(conditional.e1);
-        else
-            executeForEffect(conditional.e2);
-        return ExpressionResult.void_;
-    }
-
     // `is`/`!is` never rewrites for operator overloading the way `==` does
     // (`opover.d` has no `opOverloadIdentity`), so every static operand
     // shape -- scalar, pointer, associative-array handle, class reference,
@@ -6609,10 +6213,9 @@ unsupportedExpression:
     // DMD lowers a user-constructor receiver to `((S __t = <placeholder>;) ,
     // __t).__ctor(args)`, where `<placeholder>` is `__t`'s type's own
     // default value -- never the constructor's real arguments. Evaluating
-    // that declaration (`executeDeclaration`, reached through
-    // `executeForEffect`'s `runExpressionImpl` fallback, whether from
+    // that declaration (`executeDeclaration`, whether reached from
     // `addressOfExpression`'s `CommaExp` handling or the receiver's own
-    // value evaluation) arms
+    // evaluation) arms
     // `__t`'s destructor as soon as the placeholder assignment succeeds,
     // which is correct once `__t` is a complete value but wrong here: when
     // `call` is that same `__ctor`, `__t` is still just reserved storage,
@@ -8550,17 +8153,6 @@ unsupportedExpression:
         return (parameter.storage_class & STC.lazy_) != STC.none;
     }
 
-    private ExpressionResult runEqualExpression(imported!"dmd.expression".EqualExp equal) {
-        import dmd.tokens: EXP;
-
-        const same = hasScalarEqualityOperands(equal)
-            ? scalarEquality(equal)
-            : equalOperands(equal);
-        if (equal.op == EXP.notEqual)
-            return ExpressionResult(!same);
-        return ExpressionResult(same);
-    }
-
     // DMD has already reconciled `==`'s non-scalar operand shapes by the
     // time this walks the AST (`dcast.d`'s `typeCombine`), and its own
     // operator-overload rewriting (`opover.d`'s `opOverloadEqual`) means a
@@ -8983,6 +8575,16 @@ unsupportedExpression:
                 const arrayIndex = scalarOperand!size_t(index.e2);
                 return Place(pointer.index(arrayIndex).address, targetType);
             }
+
+        // Class-rooted and other non-binding array projections do not pass
+        // the direct-place predicate above. Their address walk still selects
+        // the complete lvalue once, including every nested index.
+        if (expression.isIndexExp !is null) {
+            const address = addressOfExpression(expression, EXP.address);
+            if (!address.isPointer)
+                throw new Exception("Compound assignment target has no address.");
+            return Place(address.pointerAddress, targetType);
+        }
 
         if (auto call = expression.isCallExp)
             if (call.f !is null && returnsRef(call.f)) {
@@ -12305,8 +11907,17 @@ unsupportedExpression:
         return lengthValue;
     }
 
-    private ExpressionResult runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
-        return concatenatedArray(cat.type, cat.e1, cat.e2);
+    private void constructConcatenationInto(
+        imported!"dmd.expression".CatExp cat,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        auto left = concatenationOperand(cat.type, cat.e1);
+        auto right = concatenationOperand(cat.type, cat.e2);
+        AggregateValue.initializeArray(destination, left.count + right.count);
+        writeConcatenationOperand(destination, 0, left);
+        writeConcatenationOperand(destination, left.count, right);
     }
 
     // A `~`/`~=` result array. Both operands are read once each, then their
@@ -14120,9 +13731,9 @@ unsupportedExpression:
     }
 
     // `new` first establishes its typed allocation, then writes only its
-    // pointer, reference, or slice header into the caller's fresh place.
-    // The old value path remains for native constructors, whose FFI result is
-    // not address-only yet.
+    // pointer, reference, or slice header into the caller's fresh place. The
+    // native-constructor residue adapts its FFI result at the destination
+    // boundary because that result is not address-only yet.
     private bool constructNewExpression(
         imported!"dmd.expression".NewExp new_,
         imported!"quickbite.backends.interpreter.place".Place destination,
@@ -14697,8 +14308,7 @@ unsupportedExpression:
     }
 
     // Decision 7's no-result operation for a declaration: the initializer
-    // constructs the variable's own storage and there is no value left over
-    // to hand back (`runExpressionImpl`'s `declarationExpression` arm).
+    // constructs the variable's own storage and there is no value left over.
     //
     // Mirrors `Dsymbol_toElem` in DMD's `e2ir.d`: once construction succeeds,
     // arm the variable's destructor (`vd.edtor`) so it runs at a later
@@ -15010,9 +14620,8 @@ unsupportedExpression:
 
     // Decision 7's construction operation: `rvalue` writes its value into
     // `destination`'s own storage, so no other storage is allocated to hold it
-    // and nothing is copied afterwards. Answers `false` for an expression
-    // family that has no destination arm yet, which leaves the caller's value
-    // path in charge of it (`value.md` item 10's queue).
+    // and nothing is copied afterwards. Answers `false` only when the
+    // expression has no supported destination arm.
     //
     // Only a caller whose destination is not yet live may ask for this. D
     // evaluates an assignment's right-hand side before the assignment itself,
@@ -15159,8 +14768,8 @@ unsupportedExpression:
             // `emplace`) have a scalar destination but a pointer or class
             // source, which `castValue` cannot handle. Require the source
             // type to pass the same check before committing to this arm, so
-            // an unsupported source falls through to the fallback path that
-            // already reinterprets pointer and class references as scalars.
+            // an unsupported source reaches the later destination adapter,
+            // which reinterprets pointer and class references as scalars.
             //
             // `target` must come from `cast_.to`, not `place.type`: they
             // normally agree, but DMD's `.im` property lowering
@@ -15242,8 +14851,11 @@ unsupportedExpression:
         if (auto call = rvalue.isCallExp) {
             import dmd.astenums: TY;
 
-            if (call.type.toBasetype.ty == TY.Tvoid)
-                return false;
+            if (call.type.toBasetype.ty == TY.Tvoid) {
+                cast(void) runCallExpression(call, null);
+                destination.markConstructed;
+                return true;
+            }
 
             const result = runCallExpression(call, &destination);
             if (!destination.isConstructed) {
@@ -15262,8 +14874,7 @@ unsupportedExpression:
         // A delegate literal and a bare `&function` mint interpreter-only
         // callable identity with no native ABI address of their own.
         // Construct straight into the destination's `nativeDelegateSlots`/
-        // `nativeFunctionPointerSlots` entry via `writeStoredValue` instead
-        // of falling through to the general carrier-returning walk.
+        // `nativeFunctionPointerSlots` entry via `writeStoredValue`.
         if (auto delegate_ = rvalue.isDelegateExp) {
             writeStoredValue(place, runDelegateExpression(delegate_));
             destination.markConstructed;
@@ -15330,7 +14941,212 @@ unsupportedExpression:
         }
 
 destinationFallback:
+        if (constructScalarExpressionInto(rvalue, place)) {
+            destination.markConstructed;
+            return true;
+        }
+
+        // A declaration destination can add qualification or otherwise
+        // require a representation conversion. Construct first at the
+        // expression's own static type, then adapt that complete value to the
+        // caller's place. The exact-type recursive call cannot return here.
+        if (constructAtExpressionType(rvalue, destination))
+            return true;
+
+        if (auto symbol = rvalue.isSymOffExp) {
+            if (auto pointerType = variableSymbolOffsetPointerType(symbol)) {
+                import quickbite.backends.interpreter.place: Place;
+
+                auto pointerDestination = Place(
+                    _activationFrame.temporaryAddress(rvalue, pointerType),
+                    pointerType,
+                );
+                if (!constructPointerExpressionInto(rvalue, pointerDestination))
+                    throw new Exception("Variable symbol offset did not construct.");
+                return storeConstructionResult(
+                    destination,
+                    readStoredValue(pointerDestination),
+                );
+            }
+        }
+
+        if (auto null_ = rvalue.isNullExp) {
+            import dmd.astenums: TY;
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+            if (place.type.toBasetype.ty == TY.Tarray) {
+                AggregateValue.initializeArray(place, 0);
+                destination.markConstructed;
+                return true;
+            }
+            return storeConstructionResult(destination, ExpressionResult.null_);
+        }
+
+        if (auto array = rvalue.isArrayLiteralExp)
+            if (constructAtExpressionType(array, destination))
+                return true;
+
+        if (auto struct_ = rvalue.isStructLiteralExp)
+            if (constructAtExpressionType(struct_, destination))
+                return true;
+
+        if (auto assocArray = rvalue.isAssocArrayLiteralExp) {
+            if (assocArray.lowering is null)
+                throwUnsupportedExpression(rvalue);
+            runExpression(assocArray.lowering, destination);
+            return true;
+        }
+
+        if (auto cast_ = rvalue.isCastExp)
+            return storeConstructionResult(destination, castValue(cast_));
+
+        if (auto equal = rvalue.isEqualExp) {
+            import dmd.tokens: EXP;
+
+            const same = equalOperands(equal);
+            place.storeNativeScalar(
+                equal.op == EXP.notEqual ? !same : same,
+            );
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto cat = rvalue.isCatExp) {
+            constructConcatenationInto(cat, place);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto assign = rvalue.isAssignExp)
+            return constructAssignmentInto(assign, destination);
+
+        if (auto lowered = rvalue.isLoweredAssignExp)
+            return storeConstructionResult(
+                destination,
+                runLoweredAssignExpression(lowered),
+            );
+
+        if (auto construct = rvalue.isConstructExp)
+            return constructAssignmentInto(construct, destination);
+
+        if (auto blit = rvalue.isBlitExp)
+            return constructAssignmentInto(blit, destination);
+
+        import dmd.tokens: EXP;
+        if (rvalue.op == EXP.concatenateAssign)
+            return storeConstructionResult(
+                destination,
+                runArrayConcatenateAssignExpression(
+                    cast(imported!"dmd.expression".BinExp) rvalue,
+                ),
+            );
+        if (
+            rvalue.op == EXP.concatenateElemAssign ||
+            rvalue.op == EXP.concatenateDcharAssign
+        )
+            return storeConstructionResult(
+                destination,
+                runArrayAppendAssignExpression(
+                    cast(imported!"dmd.expression".BinExp) rvalue,
+                ),
+            );
+
+        if (auto comma = rvalue.isCommaExp) {
+            executeForEffectImpl(comma.e1);
+            if (comma.type.toBasetype.ty == TY.Tvoid) {
+                executeForEffectImpl(comma.e2);
+                destination.markConstructed;
+            } else {
+                runExpression(comma.e2, destination);
+            }
+            return true;
+        }
+
+        if (auto declaration = rvalue.isDeclarationExp) {
+            executeDeclaration(declaration);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto arrayLength = rvalue.isArrayLengthExp)
+            return storeConstructionResult(
+                destination,
+                ExpressionResult(AggregateValue.length(
+                    AggregateValue.native(constructedExpressionValue(arrayLength.e1)),
+                )),
+            );
+
+        if (auto slice = rvalue.isSliceExp)
+            return storeConstructionResult(destination, runSliceExpression(slice));
+
+        if (auto index = rvalue.isIndexExp)
+            return storeConstructionResult(destination, runIndexExpression(index));
+
+        if (auto new_ = rvalue.isNewExp)
+            return storeConstructionResult(destination, runNewExpression(new_));
+
+        if (auto pointer = rvalue.isPtrExp)
+            return storeConstructionResult(destination, runPointerExpression(pointer));
+
+        if (auto address = rvalue.isAddrExp)
+            return storeConstructionResult(destination, runAddressExpression(address));
+
+        if (auto dot = rvalue.isDotVarExp)
+            return storeConstructionResult(destination, runDotVarExpression(dot));
+
+        if (auto typeid_ = rvalue.isTypeidExp)
+            return storeConstructionResult(destination, runTypeidExpression(typeid_));
+
+        if (auto var = rvalue.isVarExp)
+            return storeConstructionResult(destination, runVariableExpression(var));
+
         return false;
+    }
+
+    private bool storeConstructionResult(
+        ref ConstructionDestination destination,
+        in ExpressionResult value,
+    ) {
+        writeStoredValue(
+            destination.place,
+            storageValue(destination.place.type, value),
+        );
+        destination.markConstructed;
+        return true;
+    }
+
+    private bool constructAtExpressionType(
+        Expression expression,
+        ref ConstructionDestination destination,
+    ) {
+        import dmd.astenums: TY;
+
+        if (
+            expression.type is null ||
+            expression.type.toBasetype.ty == TY.Tfunction ||
+            destination.place.type.toBasetype.equals(expression.type.toBasetype)
+        )
+            return false;
+
+        auto source = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression, expression.type),
+            expression.type,
+        ));
+        runExpression(expression, source);
+        return storeConstructionResult(
+            destination,
+            readStoredValue(source.place),
+        );
+    }
+
+    private bool constructAssignmentInto(
+        imported!"dmd.expression".BinExp assignment,
+        ref ConstructionDestination destination,
+    ) {
+        return storeConstructionResult(
+            destination,
+            runAssignExpression(assignment),
+        );
     }
 
     private void constructTupleInto(

@@ -14,18 +14,9 @@ carrier; timings follow `overview.md`'s measurement contract.
 
 ## Remaining work
 
-The remaining value-track work is the carrier deletion (items 9-10) and the
+The remaining value-track work is the carrier deletion (item 10) and the
 language-surface tasks below. Item numbers remain stable for existing
 cross-references.
-
-### Item 9 — Assignment through construction
-
-Assignment evaluates its live place once, then evaluates the right-hand side
-into separate fresh typed temporary storage. Only after that construction is
-complete does it apply D-defined assignment, move, postblit, and destruction
-semantics to the already-evaluated live place. Never directly construct the
-right-hand side into that live place: an alias could otherwise observe a
-partially constructed value.
 
 ### Item 10 — Carrier deletion
 
@@ -34,16 +25,15 @@ source/quickbite/backends/interpreter/*.d`. `Walker._returnDestination` is
 already destination-typed, not carrier-typed — that former bottleneck is
 cleared and no longer blocks the rest.
 
-- **Walk-arm retirement.** `runExpressionImpl` is reached only through
-  `runExpression`'s construction fallback and `executeForEffectImpl`'s
-  fallback. Re-derive the remaining arms by diffing `runExpressionImpl`'s
-  labeled dispatch against the `construct*Into` dispatches, and flip each to
-  destination-passing (`runCallExpression(call, destination*)`), cheapest
-  first: concatenation family, typeid, null-literal aggregate residues,
-  struct-literal type-mismatch residue, cast residues, `new` residues,
-  slice/index non-projection residues, `DotVarExp` reads, non-scalar equality
-  internals; then the assign/construct/blit cluster, shared with the statement
-  path's `writeLocation` machinery.
+Expression evaluation has one dispatch: `constructInto` for an observed result
+and `executeForEffectImpl` for a discarded result. Arm-local adapters can still
+return `ExpressionResult`, but no separate result-returning expression walk
+exists. Assignment evaluates its live place once, constructs its right-hand
+side in separate fresh typed temporary storage, then applies D-defined
+assignment, move, postblit, and destruction semantics to that place. Never
+construct the right-hand side directly in a live target: an alias could observe
+a partially constructed value.
+
 - **Argument-channel residue**, dying with the signature flips: the binder's
   arity check and `setLocal`/synthetic-carrier fallbacks; the places-less
   `bindFunctionParameters` callers (the ref-returning call trio, the FFI

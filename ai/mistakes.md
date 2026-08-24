@@ -715,3 +715,14 @@
   type. DMD can give it the final cast-result type while it still denotes the
   declaration's address. When this happens, derive the physical pointer place
   from the declaration type before adapting it to the result destination.
+
+- A function declaration used as a value can retain `Tfunction` as the AST
+  expression type while its destination is a function-pointer place. Do not
+  allocate an expression-type temporary for this conversion: function types
+  have no value-storage size. Send the symbolic callable identity directly to
+  the pointer destination.
+
+- A projection-place eligibility check and its lvalue-tree collector must
+  accept the same roots. Adding struct `this`/`super` to only the first check
+  still rejects `this.arrayField[index]` when the collector reaches the root;
+  compound assignment then loses the live place that it must select once.
