@@ -2950,7 +2950,54 @@ private struct Walker {
             return;
         }
 
+        if (auto dot = expression.isDotIdExp) {
+            if (constructComplexComponentInto(
+                dot,
+                Place(
+                    _activationFrame.temporaryAddress(expression),
+                    expression.type,
+                ),
+            ))
+                return;
+        }
+
         cast(void) runExpressionImpl(expression);
+    }
+
+    private bool constructComplexComponentInto(
+        imported!"dmd.expression".DotIdExp dot,
+        Place destination,
+    ) {
+        import dmd.astenums: TY;
+
+        if (
+            dot.type is null ||
+            dot.e1.type is null ||
+            destination.type is null ||
+            !destination.type.toBasetype.equals(dot.type.toBasetype)
+        )
+            return false;
+
+        const name = dot.ident is null ? "" : dot.ident.toString;
+        if (name != "re" && name != "im")
+            return false;
+
+        switch (dot.e1.type.toBasetype.ty) with (TY) {
+            case Tcomplex32:
+                const value = scalarOperand!cfloat(dot.e1);
+                destination.storeNativeScalar(name == "re" ? value.re : value.im);
+                return true;
+            case Tcomplex64:
+                const value = scalarOperand!cdouble(dot.e1);
+                destination.storeNativeScalar(name == "re" ? value.re : value.im);
+                return true;
+            case Tcomplex80:
+                const value = scalarOperand!creal(dot.e1);
+                destination.storeNativeScalar(name == "re" ? value.re : value.im);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private void executeAssertExpression(AssertExp assert_) {
@@ -3154,8 +3201,6 @@ private struct Walker {
             goto pointerExpression;
         case address:
             goto addressExpression;
-        case dotIdentifier:
-            goto dotIdentifierExpression;
         case dotVariable:
             goto dotVariableExpression;
         case vector:
@@ -3465,10 +3510,6 @@ pointerExpression:
 addressExpression:
         if (auto address = expression.isAddrExp)
             return runAddressExpression(address);
-
-dotIdentifierExpression:
-        if (auto dotIdentifier = expression.isDotIdExp)
-            return runDotIdentifierExpression(dotIdentifier);
 
 dotVariableExpression:
         if (auto dot = expression.isDotVarExp)
@@ -9162,19 +9203,6 @@ unsupportedExpression:
             return classInfoNameOwnerExpression(pointer.e1);
 
         return expression;
-    }
-
-    private ExpressionResult runDotIdentifierExpression(
-        imported!"dmd.expression".DotIdExp dot,
-    ) {
-        const receiver = constructedExpressionValue(dot.e1);
-        const name = dot.ident is null ? "" : dot.ident.toString;
-        if (name == "re")
-            return receiver.complexRealPart;
-        if (name == "im")
-            return receiver.complexImaginaryPart;
-
-        throw new Exception("Unsupported interpreter property read.");
     }
 
     private ExpressionResult delegateProperty(
@@ -14939,6 +14967,12 @@ unsupportedExpression:
             destination.markConstructed;
             return true;
         }
+
+        if (auto dot = rvalue.isDotIdExp)
+            if (constructComplexComponentInto(dot, place)) {
+                destination.markConstructed;
+                return true;
+            }
 
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
