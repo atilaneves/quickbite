@@ -11,6 +11,7 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     import quickbite.backends.bytecode.core.compiler: Compiler;
     import quickbite.backends.bytecode.core.machine: CompileFunction;
     import core.time: Duration, MonoTime;
+    import dmd.dmodule: Module;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     private Duration _compileTime;
@@ -20,6 +21,12 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     // unittest path reuses it -- see `compile`'s two-argument overload for
     // why eval must not.
     private Compiler* _compiler;
+    // A module constructor must run exactly once per (Bytecode instance,
+    // module), not once per `runTests` call: the benchmark harness calls
+    // `runTests` repeatedly on the same instance and module (warmup plus
+    // measured runs), and `_compiler` -- and the dataseg state its module
+    // constructors write to -- persists across those calls.
+    private bool[Module] _moduleConstructorsRun;
 
     public alias eval = Evaluator.eval;
 
@@ -72,6 +79,48 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
                 compilation.entryIndex,
             );
         });
+    }
+
+    protected override void ensureModuleConstructorsRun(Module module_) {
+        import quickbite.frontend.util: foreachStaticCtorDeclaration;
+
+        if (module_ in _moduleConstructorsRun)
+            return;
+        _moduleConstructorsRun[module_] = true;
+
+        FuncDeclaration[] sharedCtors;
+        FuncDeclaration[] plainCtors;
+
+        foreachStaticCtorDeclaration(module_, (ctor) {
+            if (ctor.isSharedStaticCtorDeclaration)
+                sharedCtors ~= ctor;
+            else
+                plainCtors ~= ctor;
+        });
+
+        // `shared static this` bodies run before `static this` bodies,
+        // matching compiled D's startup order; a thrown/asserted ctor
+        // propagates like any other host exception -- it is not caught and
+        // turned into a diagnostic here, since a module constructor failure
+        // is fatal, not attributable to a single unittest.
+        foreach (ctor; sharedCtors)
+            runModuleConstructor(ctor);
+        foreach (ctor; plainCtors)
+            runModuleConstructor(ctor);
+    }
+
+    private void runModuleConstructor(FuncDeclaration ctor) {
+        import quickbite.backends.bytecode.core.compiler: compile;
+        import quickbite.backends.bytecode.core.machine: run;
+
+        const start = MonoTime.currTime;
+        auto compilation = compile(ctor, _compiler);
+        _compileTime += MonoTime.currTime - start;
+        run(
+            *compilation.program,
+            timed(compilation.compileFunction),
+            compilation.entryIndex,
+        );
     }
 
     public override Duration compileTime() @safe @nogc nothrow pure const scope {

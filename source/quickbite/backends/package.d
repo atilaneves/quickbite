@@ -40,6 +40,8 @@ public abstract class TreeNodeBackend: Backend {
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
+        ensureModuleConstructorsRun(module_);
+
         TestResult[] cases;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
@@ -47,6 +49,14 @@ public abstract class TreeNodeBackend: Backend {
         });
 
         return cases;
+    }
+
+    // Runs a module's `shared static this`/`static this` bodies before its
+    // first unittest, matching compiled D's startup order. Only a backend
+    // that models module-level dataseg state itself (Bytecode) needs to act;
+    // the default is a no-op, since e.g. Ctfe and Interpreter do not yet run
+    // module constructors at all (issue #543).
+    protected void ensureModuleConstructorsRun(Module module_) {
     }
 
     // Turn one backend execution result into the runner's public result.

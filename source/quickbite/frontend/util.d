@@ -38,3 +38,49 @@ private void foreachUnitTestDeclaration(
             foreachUnitTestDeclaration(attributes.include(null), visit);
     }
 }
+
+// Visits every `shared static this()`/`static this()` declaration in a
+// module, in source order, regardless of nesting under attributes (`static
+// if`, `version`, ...) or inside a template instance's members. The visitor
+// tells the two kinds apart with `isSharedStaticCtorDeclaration`: DMD's
+// `isStaticCtorDeclaration` matches both.
+public void foreachStaticCtorDeclaration(
+    imported!"dmd.dmodule".Module module_,
+    scope void delegate(imported!"dmd.func".FuncDeclaration) visit,
+) @safe {
+    if (module_.members is null)
+        return;
+
+    foreachStaticCtorDeclaration(module_.members, visit);
+}
+
+private void foreachStaticCtorDeclaration(
+    imported!"dmd.arraytypes".Dsymbols* symbols,
+    scope void delegate(imported!"dmd.func".FuncDeclaration) visit,
+) @trusted {
+    import dmd.dsymbolsem: include;
+
+    if (symbols is null)
+        return;
+
+    // By index for the same reason as `foreachUnitTestDeclaration`: visiting
+    // a template instance's members can trigger further instantiation.
+    for (size_t i = 0; i < symbols.length; ++i) {
+        auto symbol = (*symbols)[i];
+        if (auto ctor = symbol.isStaticCtorDeclaration) {
+            visit(ctor);
+            continue;
+        }
+
+        if (auto attributes = symbol.isAttribDeclaration) {
+            foreachStaticCtorDeclaration(attributes.include(null), visit);
+            continue;
+        }
+
+        // A `shared static this` inside a template (e.g. tardy's `vtable`
+        // mixin template) only shows up here: `AttribDeclaration.include`
+        // does not reach into instantiated templates.
+        if (auto templateInstance = symbol.isTemplateInstance)
+            foreachStaticCtorDeclaration(templateInstance.members, visit);
+    }
+}
