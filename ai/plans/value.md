@@ -7,20 +7,16 @@ evidence behind the settled representation — native-layout storage as the
 only value authority, destination-passing evaluation into typed places,
 a typed-address-only FFI boundary — live in `ai/research/interpreter.md`.
 
-Two independent completion markers close the track: deleting
-`source/quickbite/backends/interpreter/expression_result.d` (the
-Interpreter's boxed carrier, item 10) and deleting the shared
-`quickbite.lang.Value` once the IR and Bytecode formatter migrations leave
-it without consumers (items 2-3). Neither marker waits for the other.
+The completion marker closes the track: deleting
+`source/quickbite/backends/interpreter/expression_result.d` (item 10).
 Production Interpreter optimisation begins only after item 10 deletes the
 carrier; timings follow `overview.md`'s measurement contract.
 
 ## Remaining work
 
-The remaining value-track work is the carrier deletion (items 9-10), the
-IR and Bytecode formatter migration followed by shared-`Value` deletion
-(items 2-3), and the language-surface tasks below. Item numbers remain
-stable for existing cross-references.
+The remaining value-track work is the carrier deletion (items 9-10) and the
+language-surface tasks below. Item numbers remain stable for existing
+cross-references.
 
 ### Item 9 — Assignment through construction
 
@@ -153,30 +149,6 @@ recovered by peeling.
   chaining through `Throwable`'s real code instead of direct
   `_nextInChainPtr` writes; real `TypeInfo` objects where `TypeName`
   display tags fall short.
-
-### Item 2 — Unittest/expression split
-
-All four tree-node backends execute unittest bodies directly and return only
-success/diagnostic; their unittest paths neither reify nor render a result.
-The Interpreter's REPL and direct-expression convenience API execute the
-prelude formatter and consume its guest-produced string without a host-side
-display model. IR and Bytecode still need their backend-owned formatter
-execution slices before their expression paths can complete the split. As each
-gains the formatter, delete its private reify -> `Value` -> `toString`
-scaffolding. Do not retain `Value` or render a dummy `void` result
-just to reuse the evaluator path.
-
-### Item 3 — Delete the shared value
-
-Delete the shared `quickbite.lang.Value` and its unit tests once per-backend
-formatter migrations leave no consumers. IR and Bytecode formatter
-execution are its remaining prerequisites; the Interpreter-side carrier
-deletion (items 9-10) proceeds independently. The Interpreter no longer consumes or aliases the
-shared type. `FrameBlock`, `ModuleTable`, and typed `Place` composition are
-the binding authority. Address-keyed callable and symbolic-reference
-metadata may accompany native byte ranges, but may not become a second
-binding store. A class expression is only a native aggregate owner or its
-object-body address.
 
 ### Item 6 — Open design questions
 
