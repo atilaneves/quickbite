@@ -6536,6 +6536,31 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Module-level (dataseg) state is process state: `dmd -unittest` runs a
+// module's unittests in declaration order in one process, so a later
+// unittest observes an earlier unittest's write. `Ctfe` cannot read or
+// write dataseg (__gshared/static) storage at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleScalarPersistsAcrossUnittests." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int witness = 1;
+
+            unittest {
+                witness = witness + 41;
+            }
+
+            unittest {
+                assert(witness == 42);
+            }
+        });
+    }
+}
+
 // A module-level fixed-size static array (`int[3] arr;`) fell through
 // `moduleScalarVariableOrNull`'s decline list outright ("Tsarray/Taarray/
 // Tdelegate ... variables remain entirely unsupported"). Scoped to a

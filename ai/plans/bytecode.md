@@ -105,14 +105,10 @@ Work queue:
    in batches rather than release-mode segfaults. bench.sh deliberately
    refuses non-optimised builds, so discovery needs its own entry point
    driving the same dub-package preparation machinery from the debug build.
-3. First known blocker: `bin/bench.sh -b bytecode -b system-linker --dub
-   cerealed -w 0 -r 1` currently dies with SIGSEGV inside
-   `Compiler.compileFunctionBody` while lazily compiling a function reached
-   from a cerealed unittest (preparation itself succeeds). Diagnose under
-   item 2's debug entry; the release build has asserts off, so whatever
-   diagnostic this would be surfaces as a raw crash.
-4. The failure stream from items 2–3: one work item per discovered gap,
-   handled per the rules above, until the acceptance gate is green.
+3. The failure stream from item 2: one work item per discovered gap,
+   handled per the rules above, until the acceptance gate is green. No
+   known blocker: the cerealed run currently passes 156/156 in agreement
+   with SystemLinker.
 
 ## Milestone 3 — broad language coverage
 

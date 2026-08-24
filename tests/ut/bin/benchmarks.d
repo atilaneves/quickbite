@@ -188,6 +188,45 @@ unittest {
     reporter.compileTime.should == Duration.zero;
 }
 
+@("bytecodeDoesNotRecompileARerunEntry")
+unittest {
+    import core.time: msecs;
+    import quickbite.backends.bytecode: Bytecode;
+    import quickbite.backends.runner: CompileTimeReporter;
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.conv: text;
+
+    auto bytecode = new Bytecode;
+    auto reporter = cast(CompileTimeReporter) bytecode;
+    auto moduleResult = parseSnippetWithCheckActionContext(
+        q{
+            unittest {
+                import std.conv: to;
+                assert(42.to!string == "42");
+            }
+        },
+        [],
+    );
+    bytecode.runTests(moduleResult.module_)[0].passed.should == true;
+    // The fixture must be expensive enough to discriminate: recompiling it
+    // costs milliseconds, so a re-run under one is a re-run that did not
+    // recompile.
+    assert(
+        reporter.compileTime > 1.msecs,
+        text("first compile too cheap to discriminate: ",
+            reporter.compileTime),
+    );
+
+    // A second run of an already-run module must not recompile it:
+    // benchmark iterations re-run the same modules many times.
+    reporter.resetCompileTime;
+    bytecode.runTests(moduleResult.module_)[0].passed.should == true;
+    assert(
+        reporter.compileTime < 1.msecs,
+        text("re-run recompiled: ", reporter.compileTime),
+    );
+}
+
 @("renderBenchmarkSectionShowsCompileTime")
 unittest {
     import benchmarks.harness: Result;

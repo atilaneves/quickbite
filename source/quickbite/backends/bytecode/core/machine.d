@@ -30,6 +30,7 @@ package(quickbite.backends.bytecode) struct RunResult {
 package(quickbite.backends.bytecode) RunResult run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
     scope CompileFunction compileFunction,
+    in size_t entryIndex,
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
@@ -44,7 +45,7 @@ package(quickbite.backends.bytecode) RunResult run(
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
     // struct field or heap and dereferenced later must stay valid across the
     // intervening calls that grow the stack.
-    auto stack = new ubyte[](program.functions[0].frameSize);
+    auto stack = new ubyte[](program.functions[entryIndex].frameSize);
     stack.reserve(stackCapacity);
     // Guest locals and temporaries -- including slice/class/struct pointers
     // a real druntime allocation hook returned -- live here as raw bytes;
@@ -67,7 +68,7 @@ package(quickbite.backends.bytecode) RunResult run(
     // `throwString` with any handler active redirects to the innermost one
     // (popping it) instead of propagating as a host exception.
     Handler[] handlers;
-    size_t functionIndex = 0;
+    size_t functionIndex = entryIndex;
     size_t base = 0;
     size_t ip;
 

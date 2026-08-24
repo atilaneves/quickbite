@@ -1048,7 +1048,9 @@ package(quickbite.backends.bytecode) struct CatchClause {
 }
 
 package(quickbite.backends.bytecode) struct Program {
-    CompiledFunction[] functions; // index 0 is the entry function
+    CompiledFunction[] functions; // the machine starts at a caller-chosen
+                                  // entry index; with a reused compiler,
+                                  // each entry lands at the next free index
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
