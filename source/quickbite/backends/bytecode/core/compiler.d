@@ -853,9 +853,9 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         const destination = asmPointerLocal("dest");
         const value = asmLocal("value");
-        const isDword = destination.pointerElement == ScalarType.uint_;
-        const type = isDword ? ScalarType.uint_ : ScalarType.ulong_;
-        if (destination.pointerElement != type ||
+        const type = destination.pointerElement;
+        const isDword = type == ScalarType.int_ || type == ScalarType.uint_;
+        if ((!isDword && type != ScalarType.long_ && type != ScalarType.ulong_) ||
             value.type != type || functionResultType(asmOwner).scalar != type)
             throw new Exception(text(
                 "Unsupported inline asm atomic-fetch-add operand: dest type=",
@@ -1224,6 +1224,10 @@ package(quickbite.backends.bytecode) struct Compiler {
             return Operand(declarationRecord(declaration).scalar, ScalarType.uint_);
         if (type == TY.Tuns64)
             return Operand(declarationRecord(declaration).scalar, ScalarType.ulong_);
+        if (type == TY.Tint32)
+            return Operand(declarationRecord(declaration).scalar, ScalarType.int_);
+        if (type == TY.Tint64)
+            return Operand(declarationRecord(declaration).scalar, ScalarType.long_);
         throw new Exception(text(
             "Unsupported inline asm operand type: ",
             typeChars(declaration.type),
