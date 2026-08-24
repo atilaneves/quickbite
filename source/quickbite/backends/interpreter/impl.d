@@ -3031,6 +3031,12 @@ private struct Walker {
             }
         }
 
+        if (auto identity = expression.isIdentityExp) {
+            executeForEffectImpl(identity.e1);
+            executeForEffectImpl(identity.e2);
+            return;
+        }
+
         if (auto comparison = relationalComparisonOrNull(expression)) {
             executeForEffectImpl(comparison.e1);
             executeForEffectImpl(comparison.e2);
@@ -3263,9 +3269,6 @@ private struct Walker {
         case equal:
         case notEqual:
             goto equalExpression;
-        case identity:
-        case notIdentity:
-            goto identityExpression;
         case question:
             goto conditionalExpression;
         case plusPlus:
@@ -3430,10 +3433,6 @@ castExpression:
 equalExpression:
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
-
-identityExpression:
-        if (auto identity = expression.isIdentityExp)
-            return runIdentityExpression(identity);
 
 conditionalExpression:
         if (auto conditional = expression.isCondExp)
@@ -5708,31 +5707,13 @@ unsupportedExpression:
         return ExpressionResult.void_;
     }
 
-    private ExpressionResult runIdentityExpression(
-        imported!"dmd.expression".IdentityExp identity,
-    ) {
-        import dmd.tokens: EXP;
-
-        const same = identityOperands(identity);
-        if (identity.op == EXP.notIdentity)
-            return ExpressionResult(!same);
-
-        return ExpressionResult(same);
-    }
-
     // `is`/`!is` never rewrites for operator overloading the way `==` does
     // (`opover.d` has no `opOverloadIdentity`), so every static operand
     // shape -- scalar, pointer, associative-array handle, class reference,
     // struct, array, delegate, `typeid`/`.classinfo` -- can reach here
-    // directly, unlike `equalOperands`'s narrower set. Dispatch the two
-    // shapes with an unambiguous native-layout read straight to that read,
-    // on the STATIC type rather than a runtime tag off an
-    // already-evaluated carrier value: a scalar pair (`hasScalarEqualityOperands`,
-    // shared with `runEqualExpression`'s own scalar fast path) loads its
-    // host value directly, and a pointer or associative-array handle
-    // (`pointerLikeIdentityType`) is its own storage slot's stored address
-    // (`Place.deref`). Everything else keeps evaluating through the
-    // carrier, in `carrierIdentity`.
+    // directly, unlike `equalOperands`'s narrower set. Evaluate each operand
+    // in source order into its typed temporary, then select the comparison
+    // from those static types and their place metadata.
     private bool identityOperands(imported!"dmd.expression".IdentityExp identity) {
         if (hasScalarEqualityOperands(identity))
             return scalarEquality(identity);
@@ -5744,7 +5725,22 @@ unsupportedExpression:
             return pointerOperandPlace(identity.e1).deref.address ==
                 pointerOperandPlace(identity.e2).deref.address;
 
-        return carrierIdentity(identity);
+        auto left = identityOperandPlace(identity.e1);
+        auto right = identityOperandPlace(identity.e2);
+        return identityPlaces(left, right);
+    }
+
+    private imported!"quickbite.backends.interpreter.place".Place
+        identityOperandPlace(imported!"dmd.expression".Expression expression)
+    {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return destination.place;
     }
 
     // A pointer or associative-array handle is never `TypeName`-tagged --
@@ -5771,68 +5767,172 @@ unsupportedExpression:
         return base.nextOf.toBasetype.ty != TY.Tfunction;
     }
 
-    // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
-    // `is` expression (`IdentityExp`), since memberwise equality and
-    // bitwise identity coincide for such structs. Route that case through
-    // `equalValues` (the same field-recursive, numeric-scalar-coercing
-    // comparison a direct `==` uses) instead of a raw `ExpressionResult`
-    // compare: a native class aggregate and a pointer-valued class
-    // reference both normalize to their shared object-body address.
-    // Array-pointer snapshots can
-    // contain different element copies while still naming the same
-    // allocation and offset; those two fields are their identity. A
-    // function pointer or delegate compares its raw carrier representation
-    // (the same `FunctionPointer` id `functionPointerValue` caches per
-    // `FuncDeclaration`, or mints per closure literal): unlike `==`'s
-    // `equalDelegateValues`, `is` needs no `capturedAddresses` fallback,
-    // since two references to the very same closure activation always share
-    // one id.
-    private bool carrierIdentity(imported!"dmd.expression".IdentityExp identity) {
-        import quickbite.backends.interpreter.place: Place;
+    private bool identityPlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        import dmd.astenums: TY;
 
-        auto leftTemporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(identity.e1),
-            identity.e1.type,
-        ));
-        runExpression(identity.e1, leftTemporary);
-        const left = readStoredValue(leftTemporary.place);
-        auto rightTemporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(identity.e2),
-            identity.e2.type,
-        ));
-        runExpression(identity.e2, rightTemporary);
-        const right = readStoredValue(rightTemporary.place);
+        const leftKind = left.type.toBasetype.ty;
+        const rightKind = right.type.toBasetype.ty;
+        if (leftKind == TY.Tnull)
+            return identityPlaceIsNull(right);
+        if (rightKind == TY.Tnull)
+            return identityPlaceIsNull(left);
 
-        const aggregateValues =
-            AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
-            AggregateValue.isArray(left) && AggregateValue.isArray(right);
-        const nullPointerIdentity =
-            left.isPointer && left.pointerAddress is null &&
-                right == ExpressionResult.null_ ||
-            right.isPointer && right.pointerAddress is null &&
-                left == ExpressionResult.null_;
-        // A symbolic typeid/classinfo (no host `TypeInfo` for the type it
-        // names) never reaches here as a raw written slot: `runClassInfoExpression`/
-        // `runTypeidExpression` always answer with the resolved identity
-        // itself -- a real host address when one exists, the display name
-        // otherwise -- so comparing the two evaluated carriers directly
-        // already compares identities, not incidental storage. Two
-        // evaluations of the same guest-only type share one display name
-        // (`left == right` on `TypeName` compares that string); two of the
-        // same resolved native type share one host address (falls through
-        // to `classIdentityAddress`'s `isPointer` arm below, an ordinary
-        // address compare).
-        return
-            left.isTypeName || right.isTypeName
-            ? left == right
-            : identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
-            identity.e1.type.toBasetype.isTypeClass !is null
-            ? classIdentityAddress(left) == classIdentityAddress(right)
-            : aggregateValues
-            ? equalValues(left, right)
-            : nullPointerIdentity
-            ? true
-            : left == right;
+        switch (leftKind) with (TY) {
+            case Tsarray, Tarray:
+                return equalArrayValues(
+                    borrowedAggregate(left),
+                    borrowedAggregate(right),
+                );
+            case Tstruct:
+                return identityStructPlaces(left, right);
+            case Tclass:
+                return classPlacesAreIdentical(left, right);
+            case Tdelegate:
+                return delegatePlacesAreIdentical(left, right);
+            case Tpointer:
+                return functionPointerPlacesAreIdentical(left, right);
+            case Timaginary32:
+                return scalarPlacesAreEqual!ifloat(left, right);
+            case Timaginary64:
+                return scalarPlacesAreEqual!idouble(left, right);
+            case Timaginary80:
+                return scalarPlacesAreEqual!ireal(left, right);
+            case Tcomplex32:
+                return scalarPlacesAreEqual!cfloat(left, right);
+            case Tcomplex64:
+                return scalarPlacesAreEqual!cdouble(left, right);
+            case Tcomplex80:
+                return scalarPlacesAreEqual!creal(left, right);
+            case Tvector:
+                return borrowedAggregate(left).storage.bytes ==
+                    borrowedAggregate(right).storage.bytes;
+            default:
+                throw new Exception("Unsupported interpreter identity operands.");
+        }
+    }
+
+    private bool identityPlaceIsNull(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_call_adapter:
+            NativeOperand, nativeDelegateMetadata;
+
+        auto type = place.type.toBasetype;
+        switch (type.ty) with (TY) {
+            case Tnull:
+                return true;
+            case Tarray:
+                // Preserve the Interpreter's established element-based
+                // array identity: every empty slice is identical to null.
+                return place.arrayLength == 0;
+            case Tdelegate:
+                return place.address !in nativeDelegateSlots &&
+                    nativeDelegateMetadata(
+                        NativeOperand(place.type, place.address),
+                    ).isNull;
+            case Tclass:
+                if (place.address in nativeTypeInfoSlots)
+                    return false;
+                return place.deref.address is null;
+            case Taarray:
+                return place.deref.address is null;
+            case Tpointer:
+                if (
+                    type.nextOf.toBasetype.ty == Tfunction &&
+                    cast(const(void)*) place.address
+                        in nativeFunctionPointerSlots
+                )
+                    return false;
+                return place.deref.address is null;
+            default:
+                return false;
+        }
+    }
+
+    private bool identityStructPlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        auto structType = left.type.toBasetype.isTypeStruct;
+        if (structType.sym.xeq !is null)
+            return equalValues(
+                borrowedAggregateValue(left),
+                borrowedAggregateValue(right),
+            );
+        return equalStructValues(
+            borrowedAggregate(left),
+            borrowedAggregate(right),
+        );
+    }
+
+    private bool classPlacesAreIdentical(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        auto leftTypeInfo = left.address in nativeTypeInfoSlots;
+        auto rightTypeInfo = right.address in nativeTypeInfoSlots;
+        if (leftTypeInfo !is null || rightTypeInfo !is null)
+            return leftTypeInfo !is null && rightTypeInfo !is null &&
+                *leftTypeInfo == *rightTypeInfo;
+        return left.deref.address is right.deref.address;
+    }
+
+    private bool delegatePlacesAreIdentical(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        import quickbite.backends.interpreter.native_call_adapter:
+            NativeOperand, nativeDelegateMetadata;
+
+        auto leftSlot = left.address in nativeDelegateSlots;
+        auto rightSlot = right.address in nativeDelegateSlots;
+        if (leftSlot !is null || rightSlot !is null)
+            return leftSlot !is null && rightSlot !is null &&
+                delegateSlotsAreIdentical(*leftSlot, *rightSlot);
+
+        const leftNative = nativeDelegateMetadata(
+            NativeOperand(left.type, left.address),
+        );
+        const rightNative = nativeDelegateMetadata(
+            NativeOperand(right.type, right.address),
+        );
+        return leftNative.context is rightNative.context &&
+            leftNative.funcptr is rightNative.funcptr;
+    }
+
+    private bool delegateSlotsAreIdentical(
+        in DelegateSlot left,
+        in DelegateSlot right,
+    ) const {
+        if (left.isNative != right.isNative)
+            return false;
+        return left.isNative
+            ? left.context is right.context && left.funcptr is right.funcptr
+            : left.functionPointerId == right.functionPointerId;
+    }
+
+    private bool functionPointerPlacesAreIdentical(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        auto leftId = cast(const(void)*) left.address
+            in nativeFunctionPointerSlots;
+        auto rightId = cast(const(void)*) right.address
+            in nativeFunctionPointerSlots;
+        if (leftId !is null || rightId !is null)
+            return leftId !is null && rightId !is null && *leftId == *rightId;
+        return left.deref.address is right.deref.address;
+    }
+
+    private bool scalarPlacesAreEqual(T)(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        return left.loadNativeScalar!T == right.loadNativeScalar!T;
     }
 
     private void* classIdentityAddress(in ExpressionResult value) {
@@ -8595,7 +8695,7 @@ unsupportedExpression:
         // xopEquals` DMD's own semantic already resolved) instead of
         // reimplementing struct equality by hand: `equalStructValues`
         // remains correct only for a POD struct (no `xeq`), where DMD itself
-        // lowers `==` to `is` (`runIdentityExpression`'s own comment) and
+        // lowers `==` to `is` (`identityOperands` explains why) and
         // raw field/bitwise comparison is exactly right.
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right)) {
             auto structType = AggregateValue.native(left).type.toBasetype.isTypeStruct;
@@ -15458,7 +15558,20 @@ destinationFallback:
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import dmd.astenums: TY;
-        if (expression.type is null || destination.type is null ||
+        if (expression.type is null || destination.type is null)
+            return false;
+
+        // An identity result is always `bool`. A destination can add a
+        // qualifier while retaining that representation, such as the
+        // inferred `const` local initialized from `&this is null`.
+        if (
+            expression.isIdentityExp !is null &&
+            expression.type.toBasetype.ty == TY.Tbool &&
+            destination.type.toBasetype.ty == TY.Tbool
+        )
+            return constructScalar!bool(expression, destination);
+
+        if (
             !destination.type.toBasetype.equals(expression.type.toBasetype))
             return false;
 
@@ -15901,6 +16014,13 @@ destinationFallback:
             ));
             return true;
         }
+        if (auto identity = expression.isIdentityExp) {
+            const same = identityOperands(identity);
+            destination.storeNativeScalar(cast(T) (
+                identity.op == EXP.notIdentity ? !same : same
+            ));
+            return true;
+        }
         switch (expression.op) with (EXP) {
             case lessThan:
             case lessOrEqual:
@@ -16320,7 +16440,7 @@ destinationFallback:
     // decides both whether a fast typed compare applies and, in
     // `scalarEquality`, which host type to load it at. `is` never rewrites
     // for operator overloading the way `==` does, so this same check and
-    // load serve `runIdentityExpression` too.
+    // load serve `identityOperands` too.
     private bool hasScalarEqualityOperands(
         imported!"dmd.expression".BinExp binary,
     ) {

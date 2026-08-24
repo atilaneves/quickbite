@@ -39,7 +39,7 @@ cleared and no longer blocks the rest.
   fallback. Re-derive the remaining arms by diffing `runExpressionImpl`'s
   labeled dispatch against the `construct*Into` dispatches, and flip each to
   destination-passing (`runCallExpression(call, destination*)`), cheapest
-  first: identity family, post-increment/decrement, scalar compound assign,
+  first: post-increment/decrement, scalar compound assign,
   concatenation family, typeid, null-literal aggregate residues,
   struct-literal type-mismatch residue, cast residues, `new` residues,
   slice/index non-projection residues, `DotVarExp` reads, non-scalar equality
