@@ -3036,6 +3036,11 @@ private struct Walker {
                 return;
         }
 
+        if (auto assign = scalarCompoundAssignment(expression)) {
+            runScalarCompoundAssignment(assign, null);
+            return;
+        }
+
         if (auto identity = expression.isIdentityExp) {
             executeForEffectImpl(identity.e1);
             executeForEffectImpl(identity.e2);
@@ -3276,8 +3281,6 @@ private struct Walker {
             goto equalExpression;
         case question:
             goto conditionalExpression;
-        case addAssign:
-            goto addAssignExpression;
         case add:
             goto addExpression;
         case min:
@@ -3316,17 +3319,6 @@ private struct Walker {
             goto concatenateElemAssignExpression;
         case concatenateDcharAssign:
             goto concatenateDcharAssignExpression;
-        case minAssign:
-        case mulAssign:
-        case divAssign:
-        case modAssign:
-        case leftShiftAssign:
-        case rightShiftAssign:
-        case unsignedRightShiftAssign:
-        case andAssign:
-        case orAssign:
-        case xorAssign:
-            goto scalarCompoundAssignExpression;
         case or:
             goto bitOrExpression;
         case and:
@@ -3442,10 +3434,6 @@ conditionalExpression:
                 ? runConditionalExpression(conditional)
                 : constructedExpressionValue(conditional);
 
-addAssignExpression:
-        if (auto addAssign = expression.isAddAssignExp)
-            return runAddAssignExpression(addAssign);
-
 addExpression:
         if (auto add = expression.isAddExp)
             return isPointerArithmeticExpression(add)
@@ -3539,15 +3527,6 @@ concatenateDcharAssignExpression:
                 assert(0, "concatenateDcharAssign expression was not a BinExp");
 
             return runArrayAppendAssignExpression(assign);
-        }
-
-scalarCompoundAssignExpression:
-        if (isScalarCompoundAssignExpression(expression)) {
-            auto assign = cast(imported!"dmd.expression".BinExp) expression;
-            if (assign is null)
-                assert(0, "compound assignment expression was not a BinExp");
-
-            return runCompoundAssignExpression(assign);
         }
 
 bitOrExpression:
@@ -8864,12 +8843,15 @@ unsupportedExpression:
         return readStoredValue(AggregateValue.fieldAt(aggregate, index));
     }
 
-    private bool isScalarCompoundAssignExpression(
+    private imported!"dmd.expression".BinExp scalarCompoundAssignment(
         imported!"dmd.expression".Expression expression,
-    ) const {
+    ) {
         import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType;
 
         switch (expression.op) with (EXP) {
+            case addAssign:
             case minAssign:
             case mulAssign:
             case divAssign:
@@ -8880,228 +8862,264 @@ unsupportedExpression:
             case andAssign:
             case orAssign:
             case xorAssign:
-                return true;
-
+                break;
             default:
-                return false;
+                return null;
         }
-    }
 
-    private ExpressionResult runCompoundAssignExpression(
-        imported!"dmd.expression".BinExp assign,
-    ) {
-        // Compound assignment is one
-        // lvalue evaluation. Retaining its Place avoids both the aggregate
-        // receiver snapshot and the old second evaluation during writeback.
+        auto assignment = expression.isBinExp;
         if (
-            (assign.e1.isDotVarExp !is null || assign.e1.isIndexExp !is null) &&
-            isDirectProjectionWriteTarget(assign.e1)
-        ) {
-            auto destination = directWriteProjectionPlace(assign.e1);
-            const left = readStoredValue(destination);
-            const right = constructedExpressionValue(assign.e2);
-            const value = compoundAssignedValue(assign, left, right);
-            writeStoredValue(
-                destination,
-                castScalarToType(assign.e1.type, value),
-            );
-            clearProjectionRootUninitialized(assign.e1);
-            return readStoredValue(destination);
-        }
-
-        // A dereferenced native pointer (`*p += v`) has no storage-owned
-        // Place: `hasDirectWriteProjectionPlace` never accepts a `PtrExp`.
-        // `pointerOperandPlace` evaluates `pointer.e1` exactly once,
-        // matching `runPostExpression`'s identical `PtrExp` arm;
-        // reuse the resulting place for the old value, the write, and the
-        // result, instead of the fallback below, which re-evaluates
-        // `pointer.e1` in the initial read, `writeLocation`'s own `PtrExp`
-        // arm, and the closing read.
-        if (auto pointer = assign.e1.isPtrExp) {
-            import quickbite.backends.interpreter.place: Place;
-
-            auto destination = Place(
-                pointerOperandPlace(pointer.e1).deref.address,
-                assign.e1.type.toBasetype,
-            );
-            const left = readStoredValue(destination);
-            const right = constructedExpressionValue(assign.e2);
-            const value = compoundAssignedValue(assign, left, right);
-            writeStoredValue(destination, value);
-            return readStoredValue(destination);
-        }
-
-        // The pointer-index sibling of the above (`p[i] += v`, or `(*q)[i]
-        // += v` once `*q` is itself pointer-typed):
-        // `hasDirectWriteProjectionPlace`'s `IndexExp` arm excludes a
-        // pointer-typed `e1` outright, so this also has no storage-owned
-        // Place. Resolve the pointer once, then the index once, in the
-        // same order the read path (`runIndexExpression`) already
-        // evaluates them.
-        if (auto index = assign.e1.isIndexExp) {
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.frontend.dmd.types: isPointerType;
-
-            if (isPointerType(index.e1.type)) {
-                auto pointerPlace = pointerOperandPlace(index.e1);
-                const arrayIndex = scalarOperand!size_t(index.e2);
-                auto destination = Place(
-                    pointerPlace.index(arrayIndex).address,
-                    assign.e1.type.toBasetype,
-                );
-                const left = readStoredValue(destination);
-                const right = constructedExpressionValue(assign.e2);
-                const value = compoundAssignedValue(assign, left, right);
-                writeStoredValue(destination, value);
-                return readStoredValue(destination);
-            }
-        }
-
-        const left = constructedExpressionValue(assign.e1);
-        const right = constructedExpressionValue(assign.e2);
-        const value = compoundAssignedValue(assign, left, right);
-        writeLocation(assign.e1, value);
-        return constructedExpressionValue(assign.e1);
+            assignment is null ||
+            assignment.e1 is null ||
+            assignment.e1.type is null ||
+            (
+                !isNativeScalarType(assignment.e1.type) &&
+                assignment.e1.type.toBasetype.isTypePointer is null
+            )
+        )
+            return null;
+        return assignment;
     }
 
-    private ExpressionResult compoundAssignedValue(
+    // A scalar compound assignment selects its live place before it reads the
+    // old value or evaluates the RHS. The selected native place remains the
+    // result source after the write, so a caller either receives the new value
+    // in its typed destination or discards it without creating a boxed value.
+    private void runScalarCompoundAssignment(
         imported!"dmd.expression".BinExp assignment,
-        in ExpressionResult left,
-        in ExpressionResult right,
-    ) {
-        import dmd.tokens: EXP;
-
-        switch (assignment.op) {
-            // DMD's own `scaleFactor` already folds `p += n`/`p -= n`'s
-            // element delta into a byte offset scaled by the pointee's size
-            // at the frontend level (`dcast.d`'s `scaleFactor`, invoked from
-            // `BinAssignExp` semantic for a pointer lhs and integral rhs);
-            // `pointerOffsetBy` adds its argument as raw bytes, so `right`
-            // needs no further scaling here.
-            case EXP.addAssign:
-                if (left.isPointer)
-                    return left.pointerOffsetBy(right.asLong);
-                return left + right;
-
-            case EXP.minAssign:
-                if (left.isPointer)
-                    return left.pointerOffsetBy(-right.asLong);
-                return left - right;
-
-            case EXP.mulAssign:
-                return left * right;
-
-            case EXP.divAssign:
-                rejectIntMinMinusOneOverflow(left, right, "/");
-                return left / right;
-
-            case EXP.modAssign:
-                rejectIntMinMinusOneOverflow(left, right, "%");
-                return left % right;
-
-            case EXP.leftShiftAssign:
-                return runIntegerBinaryValue(assignment, left, right, "<<");
-
-            case EXP.rightShiftAssign:
-                return runIntegerBinaryValue(assignment, left, right, ">>");
-
-            case EXP.unsignedRightShiftAssign:
-                return runIntegerBinaryValue(assignment, left, right, ">>>");
-
-            case EXP.andAssign:
-                return runIntegerBinaryValue(assignment, left, right, "&");
-
-            case EXP.orAssign:
-                return runIntegerBinaryValue(assignment, left, right, "|");
-
-            case EXP.xorAssign:
-                return runIntegerBinaryValue(assignment, left, right, "^");
-
-            default:
-                throw new Exception("Unsupported eval compound assignment.");
-        }
-    }
-
-    private ExpressionResult runIntegerBinaryValue(
-        imported!"dmd.expression".BinExp expression,
-        in ExpressionResult leftValue,
-        in ExpressionResult rightValue,
-        in string operator,
-    ) {
-        import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget;
-
-        const left = leftValue.asLong;
-        const right = rightValue.asLong;
-        long result;
-        switch (operator) {
-            case "<<":
-                result = left << right;
-                break;
-
-            case ">>":
-                result = left >> right;
-                break;
-
-            case ">>>":
-                return castScalarResult(
-                    ExpressionResult(unsignedShiftRight(leftValue, expression.e1.type, right)),
-                    backendCastTarget(expression.type),
-                );
-
-            case "&":
-                result = left & right;
-                break;
-
-            case "|":
-                result = left | right;
-                break;
-
-            case "^":
-                result = left ^ right;
-                break;
-
-            default:
-                assert(0, "unsupported integer binary operator");
-        }
-
-        return castScalarResult(ExpressionResult(result), backendCastTarget(expression.type));
-    }
-
-    private ulong unsignedShiftRight(
-        in ExpressionResult value,
-        imported!"dmd.mtype".Type type,
-        in long shift,
+        imported!"quickbite.backends.interpreter.place".Place* destination,
     ) {
         import dmd.astenums: TY;
 
-        auto basetype = type is null ? null : type.toBasetype;
-        if (basetype is null)
-            return cast(ulong) value.asLong >> shift;
+        bool clearsProjectionRoot;
+        auto target = scalarCompoundAssignmentTarget(
+            assignment.e1,
+            assignment.type,
+            clearsProjectionRoot,
+        );
 
-        switch (basetype.ty) with (TY) {
-            case Tint8:
-            case Tuns8:
-            case Tchar:
-                return cast(ubyte) value.asLong >> shift;
-
-            case Tint16:
-            case Tuns16:
-            case Twchar:
-                return cast(ushort) value.asLong >> shift;
-
-            case Tint32:
-            case Tuns32:
-            case Tdchar:
-                return cast(uint) value.asLong >> shift;
-
-            case Tint64:
-            case Tuns64:
-                return cast(ulong) value.asLong >> shift;
-
-            default:
-                throw new Exception("Unsupported unsigned right shift operand.");
+        if (target.type.toBasetype.ty == TY.Tpointer) {
+            runPointerCompoundAssignment(assignment, target, destination);
+        } else {
+            // DMD merges both arithmetic operands before this point while it
+            // retains the lvalue's original storage type in assignment.type.
+            // Dispatch on that merged operation type, then cast the complete
+            // result back to the selected target place.
+            switch (assignment.e1.type.toBasetype.ty) with (TY) {
+                case Tbool: runScalarCompoundAssignmentAs!bool(assignment, target); break;
+                case Tint8: runScalarCompoundAssignmentAs!byte(assignment, target); break;
+                case Tuns8: runScalarCompoundAssignmentAs!ubyte(assignment, target); break;
+                case Tchar: runScalarCompoundAssignmentAs!char(assignment, target); break;
+                case Tint16: runScalarCompoundAssignmentAs!short(assignment, target); break;
+                case Tuns16: runScalarCompoundAssignmentAs!ushort(assignment, target); break;
+                case Twchar: runScalarCompoundAssignmentAs!wchar(assignment, target); break;
+                case Tint32: runScalarCompoundAssignmentAs!int(assignment, target); break;
+                case Tuns32: runScalarCompoundAssignmentAs!uint(assignment, target); break;
+                case Tdchar: runScalarCompoundAssignmentAs!dchar(assignment, target); break;
+                case Tint64: runScalarCompoundAssignmentAs!long(assignment, target); break;
+                case Tuns64: runScalarCompoundAssignmentAs!ulong(assignment, target); break;
+                case Tfloat32: runScalarCompoundAssignmentAs!float(assignment, target); break;
+                case Tfloat64: runScalarCompoundAssignmentAs!double(assignment, target); break;
+                case Tfloat80: runScalarCompoundAssignmentAs!real(assignment, target); break;
+                case Timaginary32: runScalarCompoundAssignmentAs!ifloat(assignment, target); break;
+                case Timaginary64: runScalarCompoundAssignmentAs!idouble(assignment, target); break;
+                case Timaginary80: runScalarCompoundAssignmentAs!ireal(assignment, target); break;
+                case Tcomplex32: runScalarCompoundAssignmentAs!cfloat(assignment, target); break;
+                case Tcomplex64: runScalarCompoundAssignmentAs!cdouble(assignment, target); break;
+                case Tcomplex80: runScalarCompoundAssignmentAs!creal(assignment, target); break;
+                default: throw new Exception("Unsupported eval compound assignment.");
+            }
+            copyScalarCompoundAssignmentResult(target, destination);
         }
+
+        if (clearsProjectionRoot)
+            clearProjectionRootUninitialized(assignment.e1);
+    }
+
+    private imported!"quickbite.backends.interpreter.place".Place
+    scalarCompoundAssignmentTarget(
+        imported!"dmd.expression".Expression expression,
+        imported!"dmd.mtype".Type targetType,
+        out bool clearsProjectionRoot,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.messages:
+            uninitializedVariableMessage;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (auto variableExpression = expression.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception("Unsupported eval compound assignment target.");
+
+            materializeDatasegInitializer(variable);
+            if (!hasBindingPlace(variable))
+                throw new Exception("Unsupported eval compound assignment target.");
+            if (isUninitializedBinding(variable))
+                throw new Exception(uninitializedVariableMessage(
+                    variable,
+                    currentFunction,
+                ));
+
+            clearsProjectionRoot = true;
+            return bindingPlace(variable);
+        }
+
+        if (isDirectProjectionWriteTarget(expression)) {
+            clearsProjectionRoot = true;
+            return directWriteProjectionPlace(expression);
+        }
+
+        if (auto pointer = expression.isPtrExp)
+            return Place(
+                pointerOperandPlace(pointer.e1).deref.address,
+                targetType,
+            );
+
+        if (auto index = expression.isIndexExp)
+            if (isPointerType(index.e1.type)) {
+                auto pointer = pointerOperandPlace(index.e1);
+                const arrayIndex = scalarOperand!size_t(index.e2);
+                return Place(pointer.index(arrayIndex).address, targetType);
+            }
+
+        if (auto call = expression.isCallExp)
+            if (call.f !is null && returnsRef(call.f)) {
+                const address = refReturningCallAddress(call, EXP.address);
+                if (!address.isPointer)
+                    throw new Exception("Ref-returning call has no native address.");
+                return Place(address.pointerAddress, targetType);
+            }
+
+        if (auto dot = expression.isDotVarExp) {
+            auto field = dot.var.isVarDeclaration;
+            if (field is null || dot.e1.type is null)
+                throw new Exception("Unsupported eval compound assignment target.");
+
+            if (hasProjectionPlace(dot)) {
+                clearsProjectionRoot = true;
+                return projectionPlace(dot, /* writeBounds */ true);
+            }
+            if (dot.e1.type.toBasetype.isTypeClass !is null) {
+                auto receiver = ConstructionDestination(Place(
+                    _activationFrame.temporaryAddress(dot.e1),
+                    dot.e1.type,
+                ));
+                runExpression(dot.e1, receiver);
+                auto bodyAddress = receiver.place.deref.address;
+                auto bodyType = dot.e1.type;
+                if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                    bodyType = (*metadata).type;
+                }
+                return Place(bodyAddress, bodyType).field(field);
+            }
+        }
+
+        throw new Exception("Unsupported eval compound assignment target.");
+    }
+
+    private void runPointerCompoundAssignment(
+        imported!"dmd.expression".BinExp assignment,
+        imported!"quickbite.backends.interpreter.place".Place target,
+        imported!"quickbite.backends.interpreter.place".Place* destination,
+    ) {
+        import dmd.tokens: EXP;
+
+        // DMD's scaleFactor has already converted the element delta to a byte
+        // delta by the time this AST reaches the interpreter.
+        auto oldAddress = target.deref.address; // Pointer arithmetic needs mutable void*.
+        const delta = pointerOffsetOperand(assignment.e2);
+        auto newAddress = assignment.op == EXP.addAssign // Stores need mutable void*.
+            ? offsetPointerAddress(oldAddress, delta)
+            : assignment.op == EXP.minAssign
+                ? offsetPointerAddress(oldAddress, -delta)
+                : null;
+        if (
+            assignment.op != EXP.addAssign &&
+            assignment.op != EXP.minAssign
+        )
+            throw new Exception("Unsupported eval compound assignment.");
+
+        target.storeReference(newAddress);
+        if (destination !is null) {
+            if (destination.type.toBasetype.isTypePointer is null)
+                throw new Exception("Unsupported eval compound assignment result.");
+            destination.storeReference(newAddress);
+        }
+    }
+
+    private void runScalarCompoundAssignmentAs(L)(
+        imported!"dmd.expression".BinExp assignment,
+        imported!"quickbite.backends.interpreter.place".Place target,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts:
+            backendCastTarget = castTarget,
+            castValue;
+
+        auto operation = Place(
+            _activationFrame.temporaryAddress(assignment.e1, assignment.e1.type),
+            assignment.e1.type,
+        );
+        castValue(target, backendCastTarget(operation.type), operation);
+        const left = operation.loadNativeScalar!L;
+        const right = scalarOperand!L(assignment.e2);
+        switch (assignment.op) with (EXP) {
+            case addAssign: operation.storeNativeScalar(compoundScalarOperation!"+"(left, right)); break;
+            case minAssign: operation.storeNativeScalar(compoundScalarOperation!"-"(left, right)); break;
+            case mulAssign: operation.storeNativeScalar(compoundScalarOperation!"*"(left, right)); break;
+            case divAssign: operation.storeNativeScalar(compoundScalarOperation!"/"(left, right)); break;
+            case modAssign: operation.storeNativeScalar(compoundScalarOperation!"%"(left, right)); break;
+            case leftShiftAssign: operation.storeNativeScalar(compoundScalarOperation!"<<"(left, right)); break;
+            case rightShiftAssign: operation.storeNativeScalar(compoundScalarOperation!">>"(left, right)); break;
+            case unsignedRightShiftAssign: operation.storeNativeScalar(compoundScalarOperation!">>>"(left, right)); break;
+            case andAssign: operation.storeNativeScalar(compoundScalarOperation!"&"(left, right)); break;
+            case orAssign: operation.storeNativeScalar(compoundScalarOperation!"|"(left, right)); break;
+            case xorAssign: operation.storeNativeScalar(compoundScalarOperation!"^"(left, right)); break;
+            default: throw new Exception("Unsupported eval compound assignment.");
+        }
+        castValue(operation, backendCastTarget(target.type), target);
+    }
+
+    private L compoundScalarOperation(string operator, L, R)(
+        in L left,
+        in R right,
+    ) {
+        static if (__traits(compiles, mixin("left " ~ operator ~ " right"))) {
+            static if (operator == "/" || operator == "%") {
+                alias OperationResult = typeof(mixin(
+                    "left " ~ operator ~ " right",
+                ));
+                static if (is(OperationResult == int))
+                    rejectIntMinMinusOneOverflow(
+                        cast(int) left,
+                        cast(int) right,
+                        operator,
+                    );
+            }
+            return cast(L) mixin("left " ~ operator ~ " right");
+        } else {
+            throw new Exception("Unsupported eval compound assignment.");
+        }
+    }
+
+    private void copyScalarCompoundAssignmentResult(
+        imported!"quickbite.backends.interpreter.place".Place target,
+        imported!"quickbite.backends.interpreter.place".Place* destination,
+    ) {
+        if (destination is null)
+            return;
+
+        import quickbite.backends.interpreter.runtime_casts:
+            CastTarget, castValue, tryCastTarget;
+
+        CastTarget castTarget;
+        if (!tryCastTarget(destination.type, castTarget))
+            throw new Exception("Unsupported eval compound assignment result.");
+        castValue(target, castTarget, *destination);
     }
 
     private ExpressionResult runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
@@ -10392,13 +10410,9 @@ unsupportedExpression:
         return castScalarToType(type, value);
     }
 
-    // `storageValue`'s scalar-cast fallback, factored out for callers whose
-    // value is already known -- by construction, not by this type's runtime
-    // tag -- to be a plain scalar or pointer: a compound-assignment result
-    // never carries a type-name or native-aggregate tag
-    // (`compoundAssignedValue` only ever answers a numeric, complex, or
-    // pointer variant, or throws), so that caller skips the two tag checks
-    // above and lands here directly.
+    // `storageValue`'s scalar-cast fallback is also used when a caller already
+    // knows that the value is a plain scalar and can skip the symbolic and
+    // aggregate checks above.
     private ExpressionResult castScalarToType(
         imported!"dmd.mtype".Type type,
         in ExpressionResult value,
@@ -15098,6 +15112,12 @@ unsupportedExpression:
                 return true;
             }
 
+        if (auto assign = scalarCompoundAssignment(rvalue)) {
+            runScalarCompoundAssignment(assign, &place);
+            destination.markConstructed;
+            return true;
+        }
+
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
                 runExpression(conditional.e1, destination);
@@ -16868,11 +16888,6 @@ destinationFallback:
         target.storeNativeScalar(cast(T) (oldValue + delta));
     }
 
-    private ExpressionResult runAddAssignExpression(
-        imported!"dmd.expression".BinExp assign,
-    ) {
-        return runCompoundAssignExpression(assign);
-    }
 }
 
 
