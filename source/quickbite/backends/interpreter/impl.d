@@ -2974,6 +2974,17 @@ private struct Walker {
             return;
         }
 
+        if (auto literal = expression.isFuncExp) {
+            constructFunctionLiteralInto(
+                literal,
+                Place(
+                    _activationFrame.temporaryAddress(expression),
+                    expression.type,
+                ),
+            );
+            return;
+        }
+
         if (auto dot = expression.isDotIdExp) {
             if (constructComplexComponentInto(
                 dot,
@@ -3325,8 +3336,6 @@ private struct Walker {
             goto callExpression;
         case delegate_:
             goto delegateExpression;
-        case function_:
-            goto functionExpression;
         case arrayLength:
             goto arrayLengthExpression;
         case slice:
@@ -3585,10 +3594,6 @@ callExpression:
 delegateExpression:
         if (auto delegate_ = expression.isDelegateExp)
             return runDelegateExpression(delegate_);
-
-functionExpression:
-        if (auto literal = expression.isFuncExp)
-            return runFunctionLiteralDeclaration(literal);
 
 arrayLengthExpression:
         if (auto arrayLength = expression.isArrayLengthExp) {
@@ -5497,17 +5502,34 @@ unsupportedExpression:
         return functionPointer;
     }
 
-    private ExpressionResult runFunctionLiteralDeclaration(
+    // A function literal's typed destination decides its D value shape. Both
+    // shapes use the same callable identity and runtime record, but a
+    // delegate owns a two-word delegate slot while a function pointer owns a
+    // one-word pointer slot. Keep that distinction in the address-keyed
+    // metadata instead of returning a common callable carrier.
+    private void constructFunctionLiteralInto(
         imported!"dmd.expression".FuncExp literal,
+        imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
+        import dmd.astenums: TY;
+
         if (literal.fd is null)
             throw new Exception("Unsupported eval expression: functionLiteral");
 
-        const functionPointer = newFunctionPointerValue(literal.fd);
+        const isDelegate = destination.type.toBasetype.ty == TY.Tdelegate;
+        // `TypeNext.nextOf` does not accept a const-qualified DMD type.
+        auto pointer = destination.type.toBasetype.isTypePointer;
+        const isFunctionPointer = pointer !is null &&
+            pointer.nextOf.toBasetype.isTypeFunction !is null;
+        if (!isDelegate && !isFunctionPointer)
+            throw new Exception("Function literal has no callable destination.");
+
+        const functionPointerId = ++nextFunctionPointerId;
+        functionPointers[functionPointerId] = literal.fd;
 
         RuntimeDelegate runtime;
         runtime.function_ = literal.fd;
-        runtime.functionPointerId = functionPointer.functionPointerId;
+        runtime.functionPointerId = functionPointerId;
         runtime.contextPointer = null;
         runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
@@ -5515,8 +5537,20 @@ unsupportedExpression:
             runtime.hasReceiver = true;
         }
 
-        _executionState.delegates[functionPointer.functionPointerId] = runtime;
-        return functionPointer;
+        _executionState.delegates[functionPointerId] = runtime;
+        clearPlaceValue(destination);
+
+        if (isDelegate) {
+            nativeDelegateSlots[destination.address] = DelegateSlot(
+                false,
+                null,
+                null,
+                functionPointerId,
+            );
+            return;
+        }
+
+        nativeFunctionPointerSlots[destination.address] = functionPointerId;
     }
 
     // Each of `function_`'s captured outer variables (`frame_layout.
@@ -8635,7 +8669,7 @@ unsupportedExpression:
     // function pointer) -- no separate receiver-identity tracking is
     // needed there. A CAPTURING closure literal is different: every
     // literal-created delegate shares the same `contextPointer` (`ExpressionResult.
-    // pointerValue(null)`, set in `runFunctionLiteralDeclaration`), so two
+    // pointerValue(null)`, set in `constructFunctionLiteralInto`), so two
     // closures of the identical lambda over two different activations
     // (`make(1)` and `make(2)` each returning `() => y`) would otherwise
     // compare equal despite closing over distinct per-activation frame
@@ -9465,12 +9499,7 @@ unsupportedExpression:
                     }
                 }
 
-        // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
-        // `FuncExp`; construct its callable before writing the destination.
-        auto literal = assign.e2.isFuncExp;
-        auto value = literal is null
-            ? constructedExpressionValue(assign.e2)
-            : runFunctionLiteralDeclaration(literal);
+        auto value = constructedExpressionValue(assign.e2);
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
                 if (variable.type.toBasetype.isTypeClass !is null)
@@ -9540,12 +9569,7 @@ unsupportedExpression:
             return value;
         }
 
-        // Mutable because function literal construction expects DMD's
-        // mutable AST node even though this helper does not modify it.
-        auto literal = rhs.isFuncExp;
-        const value = literal is null
-            ? constructedExpressionValue(rhs)
-            : runFunctionLiteralDeclaration(literal);
+        const value = constructedExpressionValue(rhs);
         writeStoredValue(
             destination,
             storageValue(target.type, value),
@@ -9569,7 +9593,7 @@ unsupportedExpression:
     private bool hasTypedTemporaryRhs(
         imported!"dmd.expression".Expression rhs,
     ) {
-        return rhs !is null && rhs.type !is null && rhs.isFuncExp is null;
+        return rhs !is null && rhs.type !is null;
     }
 
     private bool sameAssignmentType(
@@ -10945,10 +10969,7 @@ unsupportedExpression:
                     clearUninitializedBindingAddress(cast(void*) address);
                     return value;
                 }
-                auto literal = rhs.isFuncExp;
-                const value = literal is null
-                    ? constructedExpressionValue(rhs)
-                    : runFunctionLiteralDeclaration(literal);
+                const value = constructedExpressionValue(rhs);
                 storeNativePointerElement(
                     index.e1.type,
                     ExpressionResult.pointerValue(cast(void*) address),
@@ -11160,37 +11181,17 @@ unsupportedExpression:
         if (isStaticArrayType(index.e1.type))
             checkStaticArrayIndexInBounds(current, arrayIndex);
 
-        import dmd.astenums: TY;
-
         auto elementType = index.e1.type.toBasetype.nextOf;
-        // A live delegate element has no native ABI function address --
-        // `place_value.writeValue`'s Tdelegate arm only ever accepts
-        // `ExpressionResult.null_` -- so it cannot copy through a typed
-        // temporary; it keeps registering the live value out-of-band in
-        // `nativeDelegateSlots`, keyed by the element's own address,
-        // mirroring the append and struct/class-field write sites.
-        const isDelegateElement = elementType !is null
-            && elementType.toBasetype.ty == TY.Tdelegate;
         auto destination = bindingPlace(variable).index(arrayIndex);
 
-        if (!isDelegateElement && canAssignThroughTypedTemporary(destination, rhs)) {
+        if (canAssignThroughTypedTemporary(destination, rhs)) {
             const value = assignThroughTypedTemporary(destination, rhs);
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return value;
         }
 
-        // A fresh closure RHS (`dgs[0] = () => 1;`) is a bare `FuncExp`;
-        // construct its callable before writing the destination.
-        auto literal = rhs.isFuncExp;
-        const value = literal is null
-            ? constructedExpressionValue(rhs)
-            : runFunctionLiteralDeclaration(literal);
-
-        const isLiveDelegate = isDelegateElement && value != ExpressionResult.null_;
-        const storedValue = isLiveDelegate ? ExpressionResult.null_ : value;
-        writeStoredValue(destination, storageValue(elementType, storedValue));
-        if (isLiveDelegate)
-            nativeDelegateSlots[destination.address] = delegateSlotValue(value);
+        const value = constructedExpressionValue(rhs);
+        writeStoredValue(destination, storageValue(elementType, value));
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
     }
@@ -12287,10 +12288,7 @@ unsupportedExpression:
         // `writeLocation` -- neither needs the ref-array-parameter or
         // bounds-check handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
-            auto literal = assign.e2.isFuncExp;
-            const element = literal is null
-                ? constructedExpressionValue(assign.e2)
-                : runFunctionLiteralDeclaration(literal);
+            const element = constructedExpressionValue(assign.e2);
             const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
                 AggregateValue.native(constructedExpressionValue(assign.e1)),
                 element,
@@ -12312,10 +12310,7 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        auto literal = assign.e2.isFuncExp;
-        const value = literal is null
-            ? constructedExpressionValue(assign.e2)
-            : runFunctionLiteralDeclaration(literal);
+        const value = constructedExpressionValue(assign.e2);
         {
             import dmd.astenums: TY;
 
@@ -12478,10 +12473,7 @@ unsupportedExpression:
         const currentElement = readStoredValue(
             AggregateValue.elementAt(AggregateValue.native(current), arrayIndex),
         );
-        auto literal = rhs.isFuncExp;
-        const element = literal is null
-            ? constructedExpressionValue(rhs)
-            : runFunctionLiteralDeclaration(literal);
+        const element = constructedExpressionValue(rhs);
         const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
             AggregateValue.native(currentElement), element,
         ));
@@ -13026,17 +13018,6 @@ unsupportedExpression:
                 foreach (index; 1 .. length)
                     copyPlaceValue(first.place, destination.place.index(index));
             }
-            destination.markConstructed;
-            return;
-        }
-
-        // A fresh closure (`() => 42`) is a bare `FuncExp`, not a
-        // `DelegateExp`; construct the callable before storing it.
-        if (auto functionLiteral = expression.isFuncExp) {
-            writeStoredValue(
-                destination.place,
-                runFunctionLiteralDeclaration(functionLiteral),
-            );
             destination.markConstructed;
             return;
         }
@@ -15148,6 +15129,12 @@ unsupportedExpression:
             return true;
         }
 
+        if (auto literal = rvalue.isFuncExp) {
+            constructFunctionLiteralInto(literal, place);
+            destination.markConstructed;
+            return true;
+        }
+
         // A delegate literal and a bare `&function` mint interpreter-only
         // callable identity with no native ABI address of their own.
         // Construct straight into the destination's `nativeDelegateSlots`/
@@ -15387,15 +15374,7 @@ destinationFallback:
         foreach (index, element; *literal.elements) {
             auto source = element is null ? literal.basis : element;
             auto elementDestination = ConstructionDestination(destination.index(index));
-            if (auto functionLiteral = source.isFuncExp) {
-                writeStoredValue(
-                    elementDestination.place,
-                    runFunctionLiteralDeclaration(functionLiteral),
-                );
-                elementDestination.markConstructed;
-            } else {
-                runExpression(source, elementDestination);
-            }
+            runExpression(source, elementDestination);
         }
     }
 
@@ -17399,7 +17378,7 @@ private struct RuntimeDelegate {
     // A struct receiver's own native aggregate storage (owned or borrowed,
     // per whichever producer built it -- `runDelegateExpression`'s general
     // expression read for `&x.method` makes a fresh owned copy,
-    // `runFunctionLiteralDeclaration`'s `receiverValue` borrows the
+    // `constructFunctionLiteralInto`'s `receiverValue` borrows the
     // enclosing activation's live `this` for a captured nested literal); or,
     // for a class receiver, a borrowed view of its bare body address
     // (`nativeAggregateFrom`). Keeping the whole `NativeAggregate` here, not

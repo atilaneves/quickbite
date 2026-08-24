@@ -39,12 +39,11 @@ cleared and no longer blocks the rest.
   fallback. Re-derive the remaining arms by diffing `runExpressionImpl`'s
   labeled dispatch against the `construct*Into` dispatches, and flip each to
   destination-passing (`runCallExpression(call, destination*)`), cheapest
-  first: (a) function literals;
-  (b) identity family, post-increment/decrement, scalar compound assign,
+  first: identity family, post-increment/decrement, scalar compound assign,
   concatenation family, typeid, null-literal aggregate residues,
   struct-literal type-mismatch residue, cast residues, `new` residues,
   slice/index non-projection residues, `DotVarExp` reads, non-scalar equality
-  internals; (c) the assign/construct/blit cluster, shared with the statement
+  internals; then the assign/construct/blit cluster, shared with the statement
   path's `writeLocation` machinery.
 - **Argument-channel residue**, dying with the signature flips: the binder's
   arity check and `setLocal`/synthetic-carrier fallbacks; the places-less
