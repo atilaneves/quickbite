@@ -3020,7 +3020,29 @@ private struct Walker {
             }
         }
 
+        if (auto comparison = relationalComparisonOrNull(expression)) {
+            executeForEffectImpl(comparison.e1);
+            executeForEffectImpl(comparison.e2);
+            return;
+        }
+
         cast(void) runExpressionImpl(expression);
+    }
+
+    private imported!"dmd.expression".CmpExp relationalComparisonOrNull(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        switch (expression.op) with (EXP) {
+            case lessThan:
+            case lessOrEqual:
+            case greaterThan:
+            case greaterOrEqual:
+                return cast(imported!"dmd.expression".CmpExp) expression;
+            default:
+                return null;
+        }
     }
 
     private bool constructComplexComponentInto(
@@ -3233,11 +3255,6 @@ private struct Walker {
         case identity:
         case notIdentity:
             goto identityExpression;
-        case lessThan:
-        case lessOrEqual:
-        case greaterThan:
-        case greaterOrEqual:
-            goto comparisonExpression;
         case question:
             goto conditionalExpression;
         case plusPlus:
@@ -3408,20 +3425,6 @@ equalExpression:
 identityExpression:
         if (auto identity = expression.isIdentityExp)
             return runIdentityExpression(identity);
-
-comparisonExpression:
-        if (
-            expression.op == EXP.lessThan ||
-            expression.op == EXP.lessOrEqual ||
-            expression.op == EXP.greaterThan ||
-            expression.op == EXP.greaterOrEqual
-        ) {
-            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
-            if (comparison is null)
-                assert(0, "comparison expression was not a CmpExp");
-
-            return runComparisonExpression(comparison);
-        }
 
 conditionalExpression:
         if (auto conditional = expression.isCondExp)
@@ -3774,34 +3777,6 @@ unsupportedExpression:
         const first = _pendingTemporaryDestructors.length;
         scope(exit) runPendingTemporaryDestructors(first);
         return conditionTruthy(operand);
-    }
-
-    private ExpressionResult runComparisonExpression(
-        imported!"dmd.expression".CmpExp comparison,
-    ) {
-        import dmd.tokens: EXP;
-
-        if (hasScalarComparisonOperands(comparison))
-            return ExpressionResult(scalarComparison(comparison));
-
-        // D defines `<`/`<=`/`>`/`>=` only for arithmetic types and
-        // pointers; DMD's semantic pass lowers array and `opCmp` comparisons
-        // to `__cmp`/method calls before this point. Every operand reaching
-        // here is therefore a pointer. Read both through their own typed
-        // places rather than the carrier: a default-initialized pointer then
-        // reads as its real null address instead of needing a separate
-        // carrier tag to recognise.
-        const left = pointerOperandPlace(comparison.e1).deref.address;
-        const right = pointerOperandPlace(comparison.e2).deref.address;
-        const difference = pointerAddressDifference(left, right);
-
-        if (comparison.op == EXP.lessThan)
-            return ExpressionResult(difference < 0);
-        if (comparison.op == EXP.lessOrEqual)
-            return ExpressionResult(difference <= 0);
-        if (comparison.op == EXP.greaterThan)
-            return ExpressionResult(difference > 0);
-        return ExpressionResult(difference >= 0);
     }
 
     // These operations have scalar results only. Construct the result in the
@@ -15032,6 +15007,12 @@ unsupportedExpression:
                 return true;
             }
 
+        if (auto comparison = relationalComparisonOrNull(rvalue))
+            if (constructPointerComparisonInto(comparison, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
         if (auto conditional = rvalue.isCondExp) {
             if (conditionTruthy(conditional.econd))
                 runExpression(conditional.e1, destination);
@@ -15718,6 +15699,39 @@ destinationFallback:
         const right = pointerOperandPlace(subtract.e2).deref.address;
         storePointerDifference(destination, pointerAddressDifference(left, right));
         return true;
+    }
+
+    // D defines relational comparison for arithmetic values and pointers.
+    // DMD lowers arrays and overloaded comparisons before execution reaches
+    // this point. Construct each pointer operand in source order, compare its
+    // native address, and write the boolean result to its typed destination.
+    private bool constructPointerComparisonInto(
+        imported!"dmd.expression".CmpExp comparison,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (
+            comparison.type is null ||
+            destination.type is null ||
+            !destination.type.toBasetype.equals(comparison.type.toBasetype) ||
+            !isPointerType(comparison.e1.type) ||
+            !isPointerType(comparison.e2.type)
+        )
+            return false;
+
+        const left = pointerOperandPlace(comparison.e1).deref.address;
+        const right = pointerOperandPlace(comparison.e2).deref.address;
+        const difference = pointerAddressDifference(left, right);
+
+        switch (comparison.op) with (EXP) {
+            case lessThan: destination.storeNativeScalar(difference < 0); return true;
+            case lessOrEqual: destination.storeNativeScalar(difference <= 0); return true;
+            case greaterThan: destination.storeNativeScalar(difference > 0); return true;
+            case greaterOrEqual: destination.storeNativeScalar(difference >= 0); return true;
+            default: return false;
+        }
     }
 
     // A dereference reads the value at the pointed-to native address. The
