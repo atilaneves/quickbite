@@ -2423,19 +2423,23 @@ private struct Walker {
             );
     }
 
-    private ExpressionResult runThisConstructorCall(
+    private void runThisConstructorCall(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments,
+        ConstructionDestination* constructionDestination,
     ) {
         if (!hasThis)
             throw new Exception("Unsupported eval call.");
 
-        const receiverCarrier = receiverValue(thisValue);
-        if (dynamicClass(receiverCarrier) !is null && isThrowableConstructor(function_)) {
+        if (
+            dynamicClass(classObjectFromReceiverPlace(thisValue)) !is null &&
+            isThrowableConstructor(function_)
+        ) {
             applyThrowableConstructor(thisValue, argumentPlaces);
-            return receiverValue(thisValue);
+            storeReceiverCallResult(constructionDestination, thisValue);
+            return;
         }
 
         // A delegating constructor (`this(...)` forwarding to another
@@ -2455,7 +2459,12 @@ private struct Walker {
                 null,
                 &destination,
             );
-            return receiverValue(thisValue);
+            if (
+                constructionDestination !is null &&
+                constructionDestination.isFresh
+            )
+                storeReceiverCallResult(constructionDestination, thisValue);
+            return;
         }
 
         throw new Exception("Unsupported eval call.");
@@ -3870,8 +3879,7 @@ private struct Walker {
                 "function call through null class reference `null`",
             );
 
-        const receiverCarrier = receiverValue(receiver);
-        auto function_ = resolveMemberFunction(call.f, receiverCarrier);
+        auto function_ = resolveMemberFunction(call.f, receiver);
         ensureFunctionBodySemantic(function_);
         const native = hasNoInterpretableSource(function_);
 
@@ -4016,6 +4024,15 @@ private struct Walker {
     // struct receiver construction routes through it.
     private void bindStructReceiver(Place place) {
         thisValue = place;
+    }
+
+    // A class expression evaluates into a reference slot. Member dispatch
+    // borrows the referenced object body as its receiver; a struct expression
+    // already evaluates into the receiver bytes themselves.
+    private Place memberReceiverPlace(Place value) {
+        return value.type.toBasetype.isTypeClass !is null
+            ? value.deref
+            : value;
     }
 
     // The place a still-carrier-typed receiver value already names: a
@@ -5382,12 +5399,9 @@ private struct Walker {
         return null;
     }
 
-    // A construction caller supplies fresh storage. An ordinary non-void
-    // rvalue call gets a typed activation-owned temporary from
-    // `constructedExpressionValue` at its call site. Native and
-    // not-yet-migrated families still return a carrier, which that temporary
-    // is then written from.
-    private ExpressionResult runCallExpression(
+    // A non-void call writes into its caller-owned typed destination. A void
+    // call has no destination and produces no result object.
+    private void runCallExpression(
         imported!"dmd.expression".CallExp call,
         ConstructionDestination* constructionDestination,
     ) {
@@ -5395,8 +5409,6 @@ private struct Walker {
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
             interpreterBuiltinArgumentCount,
-            isStdConvText,
-            stdConvTextCall,
             tryInterpreterBuiltin,
             unaryBuiltinCall;
         import quickbite.backends.interpreter.frame_layout:
@@ -5434,15 +5446,10 @@ private struct Walker {
                 enforceInterceptionPolicy(call.f, "tryInterpreterBuiltin");
 
                 if (constructionDestination is null) {
-                    // A void call has no result destination. Evaluate each
-                    // argument for its effects, but do not materialize a
-                    // discarded builtin result.
                     foreach (argument; *call.arguments)
                         executeForEffect(argument);
                 } else with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
-                    case isInfinity:
-                    case signbit:
                     case sqrt:
                         auto argument = (*call.arguments)[0];
                         auto argumentDestination = ConstructionDestination(Place(
@@ -5480,72 +5487,7 @@ private struct Walker {
                         constructionDestination.markConstructed;
                         break;
                 }
-                return ExpressionResult.void_;
-            }
-        }
-
-        if (call.f !is null && isStdConvText(call.f)) {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-            import quickbite.backends.interpreter.place: Place;
-
-            enforceInterceptionPolicy(call.f, "isStdConvText");
-            if (constructionDestination is null) {
-                // A discarded `text` result has no observable value, but its
-                // arguments still run in source order for their effects.
-                if (call.arguments !is null)
-                    foreach (argument; *call.arguments)
-                        executeForEffect(argument);
-            } else {
-                Place[] argumentPlaces;
-                if (call.arguments !is null) {
-                    foreach (argument; *call.arguments) {
-                        auto argumentDestination = ConstructionDestination(Place(
-                            _activationFrame.temporaryAddress(argument),
-                            argument.type,
-                        ));
-                        runExpression(argument, argumentDestination);
-                        argumentPlaces ~= argumentDestination.place;
-                    }
-                }
-                stdConvTextCall(argumentPlaces, constructionDestination.place);
-                constructionDestination.markConstructed;
-            }
-            return ExpressionResult.void_;
-        }
-
-        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f)) {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
-            return runArrayOpAddAssignCall(call);
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                isBlitStructArrayDup;
-
-            if (isBlitStructArrayDup(call.f)) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "isBlitStructArrayDup");
-                return runBlitStructArrayDupCall(call);
-            }
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                AtomicHook, tryAtomicHook;
-
-            AtomicHook atomicHook;
-            if (tryAtomicHook(call.f, atomicHook)) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "tryAtomicHook");
-                return runAtomicHookCall(call, atomicHook);
+                return;
             }
         }
 
@@ -5563,7 +5505,12 @@ private struct Walker {
                 stringForeachApply,
                 "isStringForeachApplyCall",
             );
-            return runStringForeachApplyCall(call, stringForeachApply);
+            runStringForeachApplyCall(
+                call,
+                stringForeachApply,
+                constructionDestination,
+            );
+            return;
         }
 
         auto callArguments = CallArguments(
@@ -5624,7 +5571,7 @@ private struct Walker {
             // address rather than through a second independent evaluation.
             void* receiverPointerAddress;
             bool hasReceiverPointerAddress;
-            ExpressionResult receiver;
+            Place receiverValuePlace;
             if (
                 !nativeCall &&
                 dot.e1.type.toBasetype.isTypeStruct !is null &&
@@ -5636,30 +5583,23 @@ private struct Walker {
                 auto receiverPlace = directWriteProjectionPlace(dot.e1);
                 receiverPointerAddress = receiverPlace.address;
                 hasReceiverPointerAddress = true;
-                receiver = borrowedAggregateValue(receiverPlace);
+                receiverValuePlace = receiverPlace;
             } else if (auto pointerReceiver = dot.e1.isPtrExp) {
                 receiverPointerAddress =
                     pointerOperandPlace(pointerReceiver.e1).deref.address;
                 hasReceiverPointerAddress = true;
-                receiver = receiverPointerAddress is null
-                    ? ExpressionResult.null_
-                    : readStoredValue(Place(
-                        receiverPointerAddress,
-                        pointerReceiver.type,
-                    ));
+                receiverValuePlace = Place(
+                    receiverPointerAddress,
+                    pointerReceiver.type,
+                );
             } else if (
                 dot.e1.isIndexExp !is null &&
                 dot.e1.type.toBasetype.isTypeStruct !is null
             ) {
                 import dmd.tokens: EXP;
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue;
-
                 receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
                 hasReceiverPointerAddress = true;
-                receiver = readValue(
-                    Place(receiverPointerAddress, dot.e1.type),
-                );
+                receiverValuePlace = Place(receiverPointerAddress, dot.e1.type);
             } else if (
                 dot.e1.isCommaExp !is null &&
                 dot.e1.type.toBasetype.isTypeStruct !is null
@@ -5671,14 +5611,9 @@ private struct Walker {
                 // a detached copy and leave the temporary default-initialized
                 // for its later destructor.
                 import dmd.tokens: EXP;
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue;
-
                 receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
                 hasReceiverPointerAddress = true;
-                receiver = readValue(
-                    Place(receiverPointerAddress, dot.e1.type),
-                );
+                receiverValuePlace = Place(receiverPointerAddress, dot.e1.type);
             } else if (
                 dot.e1.isCallExp !is null &&
                 dot.e1.type.toBasetype.isTypeStruct !is null &&
@@ -5693,16 +5628,13 @@ private struct Walker {
                 // exactly once rather than the rebind re-running it via a
                 // second `addressOfExpression`.
                 import dmd.tokens: EXP;
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue;
-
                 receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
                 hasReceiverPointerAddress = true;
-                receiver = readValue(
-                    Place(receiverPointerAddress, dot.e1.type),
-                );
+                receiverValuePlace = Place(receiverPointerAddress, dot.e1.type);
             } else
-                receiver = constructedExpressionValue(dot.e1);
+                receiverValuePlace = constructedExpressionPlace(dot.e1);
+
+            auto receiver = memberReceiverPlace(receiverValuePlace);
 
             // When `call` is itself the constructor about to run against
             // this receiver, hold its premature arming until that call
@@ -5715,11 +5647,15 @@ private struct Walker {
                     queueTemporaryDestructor(deferredReceiverConstructorDestructor);
 
             queueConstructedReceiverDestructor(dot.e1);
-            if (dot.e1.type.toBasetype.isTypeClass !is null)
-                receiver = rootedNativeClassValue(dot.e1, receiver);
-            const interpreterAllocatedClass = receiver.isNativeAggregate &&
-                dot.e1.type.toBasetype.isTypeClass !is null;
-            if (receiver == ExpressionResult.null_)
+            const interpreterAllocatedClass =
+                dot.e1.type.toBasetype.isTypeClass !is null &&
+                receiver.address in nativeClassOwners;
+            auto receiverTypeInfoName = loadTypeInfoName(receiverValuePlace);
+            if (
+                dot.e1.type.toBasetype.isTypeClass !is null &&
+                receiver.address is null &&
+                receiverTypeInfoName is null
+            )
                 throw new Exception(
                     "function call through null class reference `null`",
                 );
@@ -5731,32 +5667,43 @@ private struct Walker {
                 // no resident body druntime could read that from, so build
                 // the instance image here.
                 if (
-                    receiver.isTypeName &&
+                    receiverTypeInfoName !is null &&
                     declarationName(call.f) == "initializer" &&
                     argumentPlaces.length == 0
-                )
-                    return typeInfoClassInitializer(
-                        receiver.asTypeNameString,
-                        call.type,
+                ) {
+                    typeInfoClassInitializer(
+                        *receiverTypeInfoName,
+                        constructionDestination,
                     );
+                    return;
+                }
 
                 // An interpreted-only TypeInfo has symbolic identity but no
                 // resident class body on which druntime's member can run.
                 // TypeInfo.opEquals defines equality by that identity (and
                 // accepts null), so answer it before native object dispatch.
                 if (
-                    receiver.isTypeName &&
+                    receiverTypeInfoName !is null &&
                     call.f.ident !is null &&
                     call.f.ident.toString == "opEquals" &&
-                    argumentPlaces.length == 1 &&
-                    (
-                        readStoredValue(argumentPlaces[0]).isTypeName ||
-                        readStoredValue(argumentPlaces[0]) == ExpressionResult.null_
-                    )
-                )
-                    return ExpressionResult(
-                        receiver == readStoredValue(argumentPlaces[0]),
-                    );
+                    argumentPlaces.length == 1
+                ) {
+                    auto argumentTypeInfoName =
+                        loadTypeInfoName(argumentPlaces[0]);
+                    const argumentIsNull =
+                        argumentPlaces[0].type.toBasetype.isTypeClass !is null &&
+                        argumentPlaces[0].loadReference is null;
+                    if (argumentTypeInfoName !is null || argumentIsNull) {
+                        if (constructionDestination !is null) {
+                            constructionDestination.place.storeNativeScalar(
+                                argumentTypeInfoName !is null &&
+                                *argumentTypeInfoName == *receiverTypeInfoName,
+                            );
+                            constructionDestination.markConstructed;
+                        }
+                        return;
+                    }
+                }
 
                 import quickbite.frontend.dmd.functions:
                     hasNoInterpretableSource, noAvailableSourceMessage;
@@ -5770,13 +5717,10 @@ private struct Walker {
                         argumentPlaces,
                         argumentExpressions,
                         evaluatedArguments,
+                        constructionDestination,
                     );
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
-                if (interpreterAllocatedClass)
-                    receiver = ExpressionResult.pointerValue(
-                        AggregateValue.nativeClassBodyAddress(receiver),
-                    );
                 // An interpreter-allocated class has no synthesized vtable
                 // yet, so only virtual dispatch is refused. A nonvirtual
                 // member resolves by symbol and receives the native body as
@@ -5799,9 +5743,9 @@ private struct Walker {
                         auto nativeReceiverPlace = function_.isCtorDeclaration !is null
                             ? nativeConstructorReceiverPlace(
                                 function_,
-                                receiverPlaceFrom(receiver, receiverType),
+                                receiver,
                             )
-                            : receiverPlaceFrom(receiver, receiverType);
+                            : receiver;
                         NativeCallResult nativeResult;
                         if (invokeNativeDeclaration(
                             function_,
@@ -5826,9 +5770,13 @@ private struct Walker {
                                     constructionDestination.place.address
                             ) {
                                 constructionDestination.markConstructed;
-                                return ExpressionResult.void_;
+                                return;
                             }
-                            return nativeCallValue(nativeResult.value);
+                            storeNativeCallResult(
+                                constructionDestination,
+                                nativeResult.value,
+                            );
+                            return;
                         }
                     } catch (NativeCallException exception) {
                         throwNativeException(exception);
@@ -5842,10 +5790,10 @@ private struct Walker {
                             : unsupportedType,
                     );
                 }
-                return runMemberFunction(
+                runMemberFunction(
                     function_,
                     dot.e1,
-                    receiverPlaceFrom(receiver, dot.e1.type),
+                    receiver,
                     argumentPlaces,
                     argumentExpressions,
                     evaluatedArguments,
@@ -5854,6 +5802,7 @@ private struct Walker {
                         : null,
                     constructionDestination,
                 );
+                return;
             }
         }
 
@@ -5864,7 +5813,7 @@ private struct Walker {
 
             if (nativeCall) {
                 if (isMonitorOperation(call.f))
-                    return ExpressionResult.void_;
+                    return;
 
                 try {
                     NativeCallResult nativeResult;
@@ -5890,9 +5839,13 @@ private struct Walker {
                                 constructionDestination.place.address
                         ) {
                             constructionDestination.markConstructed;
-                            return ExpressionResult.void_;
+                            return;
                         }
-                        return nativeCallValue(nativeResult.value);
+                        storeNativeCallResult(
+                            constructionDestination,
+                            nativeResult.value,
+                        );
+                        return;
                     }
                 } catch (NativeCallException exception) {
                     throwNativeException(exception);
@@ -5909,8 +5862,8 @@ private struct Walker {
                 );
             }
 
-            if (call.f.isNested && hasThis)
-                return runMemberFunction(
+            if (call.f.isNested && hasThis) {
+                runMemberFunction(
                     call.f,
                     null,
                     thisValue,
@@ -5920,8 +5873,10 @@ private struct Walker {
                     null,
                     constructionDestination,
                 );
+                return;
+            }
 
-            return runFunction(
+            runFunction(
                 call.f,
                 argumentPlaces,
                 argumentExpressions,
@@ -5930,11 +5885,12 @@ private struct Walker {
                 null,
                 constructionDestination,
             );
+            return;
         }
 
         if (auto var = call.e1.isVarExp)
-            if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(
+            if (auto function_ = var.var.isFuncDeclaration) {
+                runFunction(
                     function_,
                     argumentPlaces,
                     argumentExpressions,
@@ -5943,24 +5899,16 @@ private struct Walker {
                     null,
                     constructionDestination,
                 );
+                return;
+            }
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
-            if (isZeroFormalCall(function_) && argumentPlaces.length == 5) {
-                if (isRawArraysConformabilityCheck(function_)) {
-                    import quickbite.backends.interpreter.interception_guard:
-                        enforceInterceptionPolicy;
+            import quickbite.frontend.dmd.functions:
+                ensureFunctionBodySemantic;
 
-                    enforceInterceptionPolicy(
-                        function_,
-                        "enforceRawArraysConformable",
-                    );
-                    return ExpressionResult(false);
-                }
-
-                throw new Exception("Unsupported eval call.");
-            }
-            if (function_.isNested && hasThis)
-                return runMemberFunction(
+            ensureFunctionBodySemantic(function_);
+            if (function_.isNested && hasThis) {
+                runMemberFunction(
                     function_,
                     null,
                     thisValue,
@@ -5970,8 +5918,10 @@ private struct Walker {
                     null,
                     constructionDestination,
                 );
+                return;
+            }
 
-            return runFunction(
+            runFunction(
                 function_,
                 argumentPlaces,
                 argumentExpressions,
@@ -5980,10 +5930,13 @@ private struct Walker {
                 null,
                 constructionDestination,
             );
+            return;
         }
 
-        if (auto variable = lazyCallVariable(call))
-            return runLazyArgument(variable, constructionDestination);
+        if (auto variable = lazyCallVariable(call)) {
+            runLazyArgument(variable, constructionDestination);
+            return;
+        }
 
         // DMD's implicit dereference of a function-pointer-typed callee
         // (`fp1()`) leaves `call.e1.type` the bare, unsized function type
@@ -6003,34 +5956,46 @@ private struct Walker {
             calleeType,
         ));
         runExpression(call.e1, calleeTemporary);
-        const callee = readStoredValue(calleeTemporary.place);
-        if (!callee.isNativeDelegate && !callee.isFunctionPointer)
+        const isDelegate = calleeType.toBasetype.isTypeDelegate !is null;
+        auto functionPointer = calleeType.toBasetype.isTypePointer;
+        const isFunctionPointer = functionPointer !is null &&
+            functionPointer.nextOf.toBasetype.isTypeFunction !is null;
+        if (!isDelegate && !isFunctionPointer)
             throw new Exception("Unsupported eval call.");
 
-        // Both callable shapes share one slot representation; dispatch off
-        // it instead of the two separate carrier-tag checks it replaces.
-        const calleeSlot = delegateSlotValue(callee);
-        if (calleeSlot.isNative)
-            return runNativeDelegateCall(
-                callee,
+        DelegateSlot calleeSlot;
+        if (isDelegate)
+            calleeSlot = loadDelegateSlot(calleeTemporary.place);
+        else if (auto id = loadFunctionPointerId(calleeTemporary.place))
+            calleeSlot = interpretedDelegateSlot(*id);
+        else
+            throw new Exception("Unsupported eval call.");
+        if (calleeSlot.isNative) {
+            runNativeDelegateCall(
+                calleeSlot,
                 call,
                 argumentPlaces,
                 argumentExpressions,
+                constructionDestination,
             );
+            return;
+        }
 
-        if (calleeSlot.functionPointerId in _executionState.delegates)
-            return runDelegateCall(
-                callee,
+        if (calleeSlot.functionPointerId in _executionState.delegates) {
+            runDelegateCall(
+                calleeSlot,
                 argumentPlaces,
                 argumentExpressions,
                 evaluatedArguments,
                 constructionDestination,
             );
+            return;
+        }
 
         auto function_ = calleeSlot.functionPointerId in functionPointers;
         if (function_ is null)
             throw new Exception("Unsupported eval call.");
-        return runFunction(
+        runFunction(
             *function_,
             argumentPlaces,
             argumentExpressions,
@@ -6039,6 +6004,7 @@ private struct Walker {
             null,
             constructionDestination,
         );
+        return;
     }
 
     // DMD lowers a user-constructor receiver to `((S __t = <placeholder>;) ,
@@ -6086,14 +6052,6 @@ private struct Walker {
 
         --_pendingTemporaryDestructors.length;
         return variable.edtor;
-    }
-
-    private static bool isRawArraysConformabilityCheck(
-        imported!"dmd.func".FuncDeclaration function_,
-    ) {
-        return function_.ident !is null &&
-            (function_.ident.toString == "enforceRawArraysConformable" ||
-                function_.ident.toString == "enforceRawArraysConformableNogc");
     }
 
     // A constructor used directly as a member receiver owns a full-expression
@@ -6343,7 +6301,7 @@ private struct Walker {
         // return has nowhere to land.
         if (returnType.ty == TY.Tvoid) {
             runDelegateCall(
-                ExpressionResult.functionPointerValue(callback.functionPointerId),
+                interpretedDelegateSlot(callback.functionPointerId),
                 argumentPlaces,
                 new Expression[](argumentPlaces.length),
             );
@@ -6353,7 +6311,7 @@ private struct Walker {
         resultBuffer[] = 0;
         auto destination = ConstructionDestination(Place(resultBuffer.ptr, returnType));
         runDelegateCall(
-            ExpressionResult.functionPointerValue(callback.functionPointerId),
+            interpretedDelegateSlot(callback.functionPointerId),
             argumentPlaces,
             new Expression[](argumentPlaces.length),
             null,
@@ -6362,8 +6320,8 @@ private struct Walker {
         extendInboundIntegerResult(resultBuffer, returnType);
     }
 
-    private ExpressionResult runDelegateCall(
-        in ExpressionResult callee,
+    private void runDelegateCall(
+        in DelegateSlot callee,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
@@ -6373,8 +6331,8 @@ private struct Walker {
         if (runtime is null)
             throw new Exception("Unsupported eval call.");
 
-        if (runtime.hasReceiver)
-            return runMemberFunction(
+        if (runtime.hasReceiver) {
+            runMemberFunction(
                 runtime.function_,
                 null,
                 delegateReceiver(*runtime),
@@ -6384,8 +6342,10 @@ private struct Walker {
                 null,
                 constructionDestination,
             );
+            return;
+        }
 
-        return runFunction(
+        runFunction(
             runtime.function_,
             argumentPlaces,
             argumentExpressions,
@@ -6399,11 +6359,12 @@ private struct Walker {
     // Call a native delegate the interpreter holds as an opaque
     // {context, funcptr} value read from a native typed result place, the
     // inverse of the inbound callback bridge.
-    private ExpressionResult runNativeDelegateCall(
-        in ExpressionResult callee,
+    private void runNativeDelegateCall(
+        in DelegateSlot callee,
         imported!"dmd.expression".CallExp call,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        ConstructionDestination* constructionDestination,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallException,
@@ -6436,15 +6397,20 @@ private struct Walker {
                 );
             auto request = NativeCallRequest(
                 delegateSignature: functionType,
-                delegateAddress: callee.nativeDelegateFuncptr,
-                delegateContext: callee.nativeDelegateContext,
+                delegateAddress: callee.funcptr,
+                delegateContext: callee.context,
+                resultAddress: constructionDestination is null
+                    ? null
+                    : constructionDestination.place.address,
                 argumentTypes: nativeArguments.types,
                 argumentOperands: nativeArguments.operands,
                 callbackSession: durableInboundSession,
             );
             NativeCallResult nativeResult;
-            if (invokeNative(request, nativeResult))
-                return nativeCallValue(nativeResult.value);
+            if (invokeNative(request, nativeResult)) {
+                storeNativeCallResult(constructionDestination, nativeResult.value);
+                return;
+            }
         } catch (NativeCallException exception) {
             throwNativeException(exception);
         }
@@ -6479,9 +6445,10 @@ private struct Walker {
         return functionPointerExpressionFunction(expression);
     }
 
-    private ExpressionResult runStringForeachApplyCall(
+    private void runStringForeachApplyCall(
         imported!"dmd.expression".CallExp call,
         FuncDeclaration function_,
+        ConstructionDestination* constructionDestination,
     ) {
         if (call.arguments is null || call.arguments.length != 2)
             throw new Exception("Unsupported eval call.");
@@ -6521,22 +6488,26 @@ private struct Walker {
 
         foreach (value; stringForeachApplyElements(
             function_.ident.toString,
-            constructedExpressionValue((*call.arguments)[0]),
+            constructedExpressionPlace((*call.arguments)[0]),
         )) {
-            writeStoredValue(argumentPlace, value);
+            storeForeachCodeUnit(argumentPlace, value);
             auto destination = ConstructionDestination(Place(resultBlock.address, resultType));
             runFunction(body, [argumentPlace], [null], false, null, null, &destination);
-            const result = readStoredValue(destination.place);
-            if (result != ExpressionResult.void_ && result.asLong != 0)
-                return result;
+            if (destination.place.loadNativeScalar!int != 0) {
+                storeCallResult(constructionDestination, destination.place);
+                return;
+            }
         }
 
-        return ExpressionResult(0);
+        if (constructionDestination !is null) {
+            constructionDestination.place.storeNativeScalar(0);
+            constructionDestination.markConstructed;
+        }
     }
 
-    private ExpressionResult[] stringForeachApplyElements(
+    private dchar[] stringForeachApplyElements(
         scope const(char)[] helper,
-        in ExpressionResult source,
+        Place source,
     ) {
         import std.algorithm: canFind, reverse;
 
@@ -6558,67 +6529,74 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
-    private ExpressionResult[] decodedUtf8Dchars(in ExpressionResult source) {
+    private dchar[] decodedUtf8Dchars(Place source) {
         import std.utf: decode;
 
-        auto aggregate = AggregateValue.native(source);
         string encoded;
-        foreach (index; 0 .. AggregateValue.length(aggregate))
-            encoded ~= cast(char) readStoredValue(AggregateValue.elementAt(aggregate, index))
-                .castTo!long.asLong;
+        foreach (index; 0 .. source.arrayLength)
+            encoded ~= source.index(index).loadNativeScalar!char;
 
-        ExpressionResult[] values;
+        dchar[] values;
         size_t index;
         while (index < encoded.length)
-            values ~= ExpressionResult(decode(encoded, index));
+            values ~= decode(encoded, index);
 
         return values;
     }
 
-    private ExpressionResult[] decodedUtf16Dchars(in ExpressionResult source) {
+    private dchar[] decodedUtf16Dchars(Place source) {
         import std.utf: decode;
 
-        auto aggregate = AggregateValue.native(source);
         wstring encoded;
-        foreach (index; 0 .. AggregateValue.length(aggregate))
-            encoded ~= cast(wchar) readStoredValue(AggregateValue.elementAt(aggregate, index))
-                .castTo!long.asLong;
+        foreach (index; 0 .. source.arrayLength)
+            encoded ~= source.index(index).loadNativeScalar!wchar;
 
-        ExpressionResult[] values;
+        dchar[] values;
         size_t index;
         while (index < encoded.length)
-            values ~= ExpressionResult(decode(encoded, index));
+            values ~= decode(encoded, index);
 
         return values;
     }
 
-    private ExpressionResult[] utf8EncodedDstringChars(in ExpressionResult source) {
+    private dchar[] utf8EncodedDstringChars(Place source) {
         import std.utf: encode;
 
-        auto aggregate = AggregateValue.native(source);
-        ExpressionResult[] values;
-        foreach (index; 0 .. AggregateValue.length(aggregate)) {
+        dchar[] values;
+        foreach (index; 0 .. source.arrayLength) {
             char[4] encoded;
             const length = encode(
                 encoded,
-                cast(dchar) readStoredValue(AggregateValue.elementAt(aggregate, index))
-                    .castTo!long.asLong,
+                source.index(index).loadNativeScalar!dchar,
             );
             foreach (unit; encoded[0 .. length])
-                values ~= ExpressionResult(unit);
+                values ~= unit;
         }
 
         return values;
     }
 
+    private void storeForeachCodeUnit(Place destination, in dchar value) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_scalar:
+            nativeScalarKindOf;
+
+        switch (nativeScalarKindOf(destination.type)) with (TY) {
+        case Tchar: destination.storeNativeScalar(cast(char) value); return;
+        case Twchar: destination.storeNativeScalar(cast(wchar) value); return;
+        case Tdchar: destination.storeNativeScalar(value); return;
+        case Tint32: destination.storeNativeScalar(cast(int) value); return;
+        case Tuns32: destination.storeNativeScalar(cast(uint) value); return;
+        default:
+            throw new Exception("String foreach callback needs a character argument.");
+        }
+    }
+
     private FuncDeclaration resolveMemberFunction(
         FuncDeclaration function_,
-        in ExpressionResult receiver,
+        Place receiver,
     ) {
-        if (dynamicClass(receiver) is null)
-            return function_;
-
-        auto class_ = dynamicClass(receiver);
+        auto class_ = dynamicClass(classObjectFromReceiverPlace(receiver));
         if (class_ is null)
             return function_;
 
@@ -6708,10 +6686,6 @@ private struct Walker {
         return null;
     }
 
-    private bool isZeroFormalCall(FuncDeclaration function_) const {
-        return function_.parameters is null || function_.parameters.length == 0;
-    }
-
     private FuncDeclaration functionPointerExpressionFunction(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -6733,271 +6707,6 @@ private struct Walker {
         return null;
     }
 
-    // DMD lowers `sums[] = left[] + right[]` to a druntime
-    // `core.internal.array.operations.arrayOp` template call; interpret the
-    // element-wise semantics directly instead of executing the druntime body.
-    private bool isDruntimeArrayOpAddAssign(
-        imported!"dmd.func".FuncDeclaration function_,
-    ) {
-        import dmd.dtemplate: isExpression;
-        import std.algorithm: startsWith;
-        import std.conv: text;
-
-        if (
-            function_.ident is null ||
-            function_.ident.toString != "arrayOp"
-        )
-            return false;
-
-        auto instance = function_.parent is null
-            ? null
-            : function_.parent.isTemplateInstance;
-        if (instance is null || instance.tiargs is null)
-            return false;
-
-        if (
-            !text(function_.toPrettyChars)
-                .startsWith("core.internal.array.operations.arrayOp!(")
-        )
-            return false;
-
-        size_t operatorIndex;
-        foreach (argument; *instance.tiargs) {
-            auto expression = isExpression(argument);
-            if (expression is null)
-                continue;
-
-            auto literal = expression.isStringExp;
-            if (literal is null)
-                return false;
-
-            if (operatorIndex >= 2)
-                return false;
-
-            const expectedOperator = operatorIndex == 0 ? "+" : "=";
-            if (literal.peekString != expectedOperator)
-                return false;
-            ++operatorIndex;
-        }
-
-        return operatorIndex == 2;
-    }
-
-    private ExpressionResult runArrayOpAddAssignCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        if (call.arguments is null || call.arguments.length != 3)
-            throw new Exception("Unsupported eval call.");
-
-        auto target = (*call.arguments)[0].isSliceExp;
-        if (target is null)
-            throw new Exception("Unsupported eval call.");
-
-        import quickbite.backends.interpreter.place: Place;
-
-        auto leftTemporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress((*call.arguments)[1]),
-            (*call.arguments)[1].type,
-        ));
-        runExpression((*call.arguments)[1], leftTemporary);
-        auto rightTemporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress((*call.arguments)[2]),
-            (*call.arguments)[2].type,
-        ));
-        runExpression((*call.arguments)[2], rightTemporary);
-        auto leftAggregate = borrowedAggregate(leftTemporary.place);
-        auto rightAggregate = borrowedAggregate(rightTemporary.place);
-        if (AggregateValue.length(leftAggregate) != AggregateValue.length(rightAggregate))
-            throw new Exception("Unsupported eval call.");
-
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(leftAggregate))
-            elements ~= readStoredValue(AggregateValue.elementAt(leftAggregate, index)) +
-                readStoredValue(AggregateValue.elementAt(rightAggregate, index));
-
-        return writeBackSliceElements(target, elements);
-    }
-
-    private ExpressionResult writeBackSliceElements(
-        imported!"dmd.expression".SliceExp slice,
-        ExpressionResult[] elements,
-    ) {
-        auto var = slice.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported eval call.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported eval call.");
-
-        auto destination = bindingPlace(variable);
-
-        const lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-        const upper = slice.upr is null
-            ? destination.arrayLength
-            : scalarOperand!size_t(slice.upr);
-        if (upper - lower != elements.length)
-            throw new Exception("Unsupported eval call.");
-
-        foreach (index; lower .. upper)
-            writeStoredArrayElement(destination.index(index), elements[index - lower]);
-        clearUninitializedBindingAddress(destination.address);
-        return readBindingValue(variable);
-    }
-
-    // core.internal.atomic implements these with inline asm the interpreter
-    // cannot execute. Interpretation is single-threaded, so plain reads and
-    // writes of the pointed-at value are observably equivalent.
-    private ExpressionResult runAtomicHookCall(
-        imported!"dmd.expression".CallExp call,
-        in imported!"quickbite.backends.interpreter.builtins".AtomicHook hook,
-    ) {
-        import quickbite.backends.interpreter.builtins: AtomicHook;
-        import quickbite.backends.interpreter.place: Place;
-
-        if (call.arguments is null || call.arguments.length == 0)
-            throw new Exception("Unsupported eval call.");
-
-        auto destinationExpression = (*call.arguments)[0];
-
-        // Construct the pointer operand in its own typed place rather than
-        // reading it through the carrier, the same construction the
-        // dereferenced post-increment arm uses: `pointerOperandPlace`
-        // evaluates `destinationExpression` exactly once, and
-        // `.deref.address` is the identical address
-        // `nativeElementAddress(..., 0, ...)` `loadNativePointerElement`
-        // composed. The pointee type mirrors that same resolution, so an
-        // enum-typed pointee still reads/writes as its base scalar here.
-        // `aligned` checks a raw address value rather than dereferencing a
-        // pointer, so it never calls this.
-        Place pointerTarget() {
-            return Place(
-                pointerOperandPlace(destinationExpression).deref.address,
-                destinationExpression.type.toBasetype.nextOf.toBasetype,
-            );
-        }
-
-        // Mirrors `storeNativePointerElement`'s own pairing of a target
-        // write with clearing that address's uninitialized-binding flag: a
-        // native pointer can denote a still-void frame binding directly, and
-        // once the atomic write lands, a later aggregate read must use those
-        // frame bytes rather than materializing `.init` over them.
-        void writeTarget(Place target, in ExpressionResult value) {
-            writeStoredValue(target, value);
-            clearUninitializedBindingAddress(target.address);
-        }
-
-        ExpressionResult operand() {
-            if (call.arguments.length < 2)
-                throw new Exception("Unsupported eval call.");
-            return constructedExpressionValue((*call.arguments)[1]);
-        }
-
-        with (AtomicHook) final switch (hook) {
-            case aligned:
-                executeForEffectImpl(destinationExpression);
-                return ExpressionResult(true);
-
-            case load:
-                return readStoredValue(pointerTarget);
-
-            case store:
-                writeTarget(pointerTarget, operand);
-                return ExpressionResult.void_;
-
-            case exchange: {
-                auto target = pointerTarget;
-                const previous = readStoredValue(target);
-                writeTarget(target, operand);
-                return previous;
-            }
-
-            case fetchAdd:
-            case fetchSub: {
-                auto target = pointerTarget;
-                const previous = readStoredValue(target);
-                const delta = hook == fetchAdd
-                    ? operand.asLong
-                    : -operand.asLong;
-                writeTarget(
-                    target,
-                    castScalarToType(
-                        destinationExpression.type.toBasetype.nextOf,
-                        ExpressionResult(previous.asLong + delta),
-                    ),
-                );
-                return previous;
-            }
-        }
-    }
-
-    // Struct-array `.dup` is a shallow copy when the element has no copy
-    // construction. Copy the contiguous backing range once, then apply the
-    // same offset-preserving copy to address-keyed callable and symbolic
-    // metadata.
-    private ExpressionResult runBlitStructArrayDupCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-        import quickbite.backends.interpreter.native_array: NativeArray;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-
-        requireArgumentCount(call, 1);
-        const source = constructedExpressionValue((*call.arguments)[0]);
-        if (source == ExpressionResult.null_)
-            return source;
-
-        auto resultType = call.type.toBasetype.isTypeDArray;
-        if (resultType is null)
-            throw new Exception("Struct-array `.dup` needs a dynamic-array result.");
-
-        auto sourceAggregate = AggregateValue.native(source);
-        const length = AggregateValue.length(sourceAggregate);
-        auto destination = NativeArray.allocate(resultType.next, length);
-        const byteLength = length * typeByteSize(resultType.next);
-        auto sourceAddress = cast(void*) AggregateValue.nativeArrayAddress(sourceAggregate);
-        copyBytes(destination.block.address, sourceAddress, byteLength);
-        copyStoredMetadataRange(
-            sourceAddress,
-            destination.block.address,
-            byteLength,
-        );
-
-        auto header = NativeBlock.allocate(
-            NativeArray.sliceHeaderByteLength,
-            NativeBlock.Scan.conservative,
-        );
-        destination.writeSliceHeader(header, 0);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
-            call.type,
-            header,
-            destination.block,
-        ));
-    }
-
-    private void copyBytes(
-        void* destination,
-        void* source,
-        in size_t byteLength,
-    ) nothrow @trusted {
-        import core.stdc.string: memmove;
-
-        memmove(destination, source, byteLength);
-    }
-
-    private void requireArgumentCount(
-        imported!"dmd.expression".CallExp call,
-        in size_t count,
-    ) {
-        if (call.arguments is null || call.arguments.length != count)
-            throw new Exception("Unsupported eval call.");
-    }
-
     // `AggregateValue.elementAt`'s plain memory read sees a delegate-typed
     // element's zeroed bytes, not its live callable ExpressionResult -- a
     // live delegate entry is registered out-of-band in
@@ -7017,7 +6726,7 @@ private struct Walker {
         return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
     }
 
-    private ExpressionResult runFunction(
+    private void runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
         imported!"dmd.expression".Expression[] argumentExpressions,
@@ -7060,10 +6769,6 @@ private struct Walker {
             child,
             captureLocals,
         );
-        // A construction-destination call already wrote its result directly
-        // into the caller's own place; a void call has nothing to report.
-        // Either way there is nothing left to hand back through here.
-        return ExpressionResult.void_;
     }
 
     // DMD keeps a member function's hidden `this` declaration separate from
@@ -7090,7 +6795,7 @@ private struct Walker {
             _activationFrame.setReferenceSlot(vthis, thisAddress);
     }
 
-    private ExpressionResult runMemberFunction(
+    private void runMemberFunction(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression receiverExpression,
         imported!"quickbite.backends.interpreter.place".Place receiver,
@@ -7107,25 +6812,25 @@ private struct Walker {
         const(void)* precomputedReceiverAddress = null,
         ConstructionDestination* constructionDestination = null,
     ) {
-        const memberReceiver = receiverValue(receiver);
-
         if (
             declarationName(function_) == "next" &&
             receiver.type.toBasetype.isTypeClass !is null
         ) {
             auto object = classObjectFromReceiverPlace(receiver);
             if (classHasType(object, "Throwable")) {
-                if (auto next = object.address in nativeThrowableNext)
-                    return next.address is null
-                        ? ExpressionResult.null_
-                        : ExpressionResult.pointerValue(next.address);
+                if (auto next = object.address in nativeThrowableNext) {
+                    storeReferenceCallResult(
+                        constructionDestination,
+                        next.address,
+                    );
+                    return;
+                }
 
                 if (classHasFieldNamed(object, "_nextInChainPtr")) {
                     auto next = classFieldNamed(object, "_nextInChainPtr")
                         .deref.address;
-                    return next is null
-                        ? ExpressionResult.null_
-                        : ExpressionResult.pointerValue(next);
+                    storeReferenceCallResult(constructionDestination, next);
+                    return;
                 }
             }
         }
@@ -7144,32 +6849,9 @@ private struct Walker {
         bindCapturedReferenceSlots(
             function_,
             child,
-            nestedReceiverCapturedAddresses(function_, memberReceiver),
+            nestedReceiverCapturedAddresses(function_, receiver),
         );
-        // For constructor calls, DMD may blit the target variable to zero
-        // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
-        // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
-        // the struct's proper default in that case so the ctor body can write
-        // fields.  When the receiver is already a valid struct (e.g.
-        // MapResult created from a StructLiteralExp with elements), use it
-        // as-is to preserve any hidden context fields.
-        auto receiverClassType = function_.vthis is null
-            ? null
-            : function_.vthis.type;
-        if (
-            function_.isConstructorFunction &&
-            !AggregateValue.isStruct(memberReceiver)
-        ) {
-            auto structDecl = function_.constructorStructDeclaration;
-            child.thisValue = receiverPlaceFrom(
-                structDecl !is null
-                    ? defaultValueResult(structDecl.type)
-                    : memberReceiver,
-                receiverClassType,
-            );
-        } else {
-            child.thisValue = receiver;
-        }
+        child.thisValue = receiver;
         child.hasThis = true;
         child.bindFunctionParameters(
             function_,
@@ -7213,7 +6895,7 @@ private struct Walker {
                     constructionDestination.place,
                 );
             } else {
-                writeStoredValue(constructionDestination.place, receiverValue(child.thisValue));
+                copyPlaceValue(child.thisValue, constructionDestination.place);
             }
             child.thisAddress = constructionDestination.place.address;
             if (child._activationFrame.hasReferenceSlot(function_.vthis))
@@ -7312,15 +6994,10 @@ private struct Walker {
             if (constructionDestination !is null) {
                 if (constructionDestination.isFresh)
                     constructionDestination.markConstructed;
-                return ExpressionResult.void_;
+                return;
             }
-            return receiverValue(child.thisValue);
+            return;
         }
-
-        // A construction-destination call already wrote its result directly
-        // into the caller's own place; a void call has nothing to report.
-        // Either way there is nothing left to hand back through here.
-        return ExpressionResult.void_;
     }
 
     private void mergeFunctionState(
@@ -7824,7 +7501,7 @@ private struct Walker {
         _lazyArgumentMapsBorrowed = false;
     }
 
-    private ExpressionResult runLazyArgument(
+    private void runLazyArgument(
         VarDeclaration variable,
         ConstructionDestination* constructionDestination = null,
     ) {
@@ -7841,10 +7518,10 @@ private struct Walker {
             _activationFrame = savedFrame;
 
         _activationFrame = *capturedFrame;
-        return runLazyArgumentExpression(*expression, constructionDestination);
+        runLazyArgumentExpression(*expression, constructionDestination);
     }
 
-    private ExpressionResult runLazyArgumentExpression(
+    private void runLazyArgumentExpression(
         Expression expression,
         ConstructionDestination* constructionDestination = null,
     ) {
@@ -7861,10 +7538,10 @@ private struct Walker {
 
         if (constructionDestination !is null) {
             runExpression(expression, *constructionDestination);
-            return ExpressionResult.void_;
+            return;
         }
 
-        return constructedExpressionValue(expression);
+        executeForEffect(expression);
     }
 
     private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
@@ -8605,21 +8282,29 @@ private struct Walker {
         destination.storeNativeScalar(classFlagsWord(class_));
     }
 
-    private ExpressionResult typeInfoClassInitializer(
+    private void typeInfoClassInitializer(
         in string className,
-        imported!"dmd.mtype".Type resultType,
+        ConstructionDestination* constructionDestination,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
+        if (constructionDestination is null)
+            return;
         auto class_ = classDeclarationByQualifiedName(className);
         if (class_ is null)
             throw new Exception("Unsupported interpreter TypeInfo initializer.");
 
         auto object = AggregateValue.allocateClass(class_.type);
         initializeNativeClassBody(this, class_.type, object);
-        return ExpressionResult.nativeAggregateValue(
-            AggregateValue.classBodyByteSlice(object, resultType),
+        auto slice = AggregateValue.classBodyByteSlice(
+            object,
+            constructionDestination.place.type,
         );
+        copyPlaceValue(
+            Place(slice.address, slice.type),
+            constructionDestination.place,
+        );
+        constructionDestination.markConstructed;
     }
 
     private NativeArray classSliceField(
@@ -12124,16 +11809,11 @@ private struct Walker {
     // walker's own frames no longer name those variables at all.
     private void*[VarDeclaration] nestedReceiverCapturedAddresses(
         imported!"dmd.func".FuncDeclaration function_,
-        in ExpressionResult receiver,
+        Place receiver,
     ) {
         import quickbite.backends.interpreter.frame_layout: capturedVariables;
-        import quickbite.backends.interpreter.place: Place;
 
-        if (!receiver.isNativeAggregate)
-            return null;
-
-        auto native = AggregateValue.native(receiver);
-        auto structType = native.type.toBasetype.isTypeStruct;
+        auto structType = receiver.type.toBasetype.isTypeStruct;
         if (structType is null || structType.sym is null)
             return null;
 
@@ -12141,8 +11821,7 @@ private struct Walker {
         if (contextField is null)
             return null;
 
-        auto frames = Place(native.address, native.type)
-            .field(contextField)
+        auto frames = receiver.field(contextField)
             .address in nestedContextFrames;
         if (frames is null)
             return null;
@@ -12555,25 +12234,78 @@ private struct Walker {
             );
     }
 
-    private ExpressionResult nativeCallValue(
+    private void storeCallResult(
+        ConstructionDestination* destination,
+        Place source,
+    ) {
+        if (destination is null)
+            return;
+        copyQualificationConvertedPlaceValue(source, destination.place);
+        destination.markConstructed;
+    }
+
+    private void storeReceiverCallResult(
+        ConstructionDestination* destination,
+        Place receiver,
+    ) {
+        if (receiver.type.toBasetype.isTypeClass !is null)
+            storeReferenceCallResult(destination, receiver.address);
+        else
+            storeCallResult(destination, receiver);
+    }
+
+    private void storeReferenceCallResult(
+        ConstructionDestination* destination,
+        void* address,
+    ) {
+        if (destination is null)
+            return;
+        clearStoredMetadata(destination.place.type, destination.place.address);
+        destination.place.storeReference(address);
+        destination.markConstructed;
+    }
+
+    private void storeNativeCallResult(
+        ConstructionDestination* destination,
         imported!"quickbite.backends.interpreter.native_call_adapter".
             NativeOperand operand,
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
 
-        if (operand.address is null || operand.type is null ||
-            operand.type.toBasetype.ty == TY.Tvoid)
-            return ExpressionResult.void_;
-        if (operand.type.toBasetype.ty == TY.Tdelegate)
-            return operand.delegateMetadata.isNull
-                ? ExpressionResult.null_
-                : ExpressionResult.nativeDelegateValue(
-                    operand.delegateMetadata.context,
-                    operand.delegateMetadata.funcptr,
+        if (
+            destination is null ||
+            operand.address is null ||
+            operand.type is null ||
+            operand.type.toBasetype.ty == TY.Tvoid
+        )
+            return;
+
+        if (operand.address == destination.place.address) {
+            destination.markConstructed;
+            return;
+        }
+
+        if (operand.type.toBasetype.ty == TY.Tdelegate) {
+            const metadata = operand.delegateMetadata;
+            if (metadata.isNull)
+                clearPlaceValue(destination.place);
+            else
+                storeDelegateSlot(
+                    destination.place,
+                    DelegateSlot(
+                        true,
+                        metadata.context,
+                        metadata.funcptr,
+                        0,
+                    ),
                 );
-        return readValue(Place(operand.address, operand.type));
+        } else
+            copyQualificationConvertedPlaceValue(
+                Place(operand.address, operand.type),
+                destination.place,
+            );
+        destination.markConstructed;
     }
 
     private bool invokeNativeDeclaration(
@@ -13757,7 +13489,13 @@ private struct Walker {
                                 noAvailableSourceMessage(postblitCall.f),
                             );
                         if (nativeResult.value.address != place.address)
-                            writeStoredValue(place, nativeCallValue(nativeResult.value));
+                            copyQualificationConvertedPlaceValue(
+                                Place(
+                                    nativeResult.value.address,
+                                    nativeResult.value.type,
+                                ),
+                                place,
+                            );
                     } catch (NativeCallException exception) {
                         throwNativeException(exception);
                     }
@@ -14100,16 +13838,14 @@ private struct Walker {
             import dmd.astenums: TY;
 
             if (call.type.toBasetype.ty == TY.Tvoid) {
-                cast(void) runCallExpression(call, null);
+                runCallExpression(call, null);
                 destination.markConstructed;
                 return true;
             }
 
-            const result = runCallExpression(call, &destination);
-            if (!destination.isConstructed) {
-                writeStoredValue(place, result);
-                destination.markConstructed;
-            }
+            runCallExpression(call, &destination);
+            if (!destination.isConstructed)
+                throw new Exception("Call did not construct its result.");
             return true;
         }
 

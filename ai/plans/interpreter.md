@@ -441,69 +441,30 @@ worst failure class. A class whose root fix needs new boxed FFI marshalling
 gets the same gap-fixture-and-wait treatment (`value.md` decisions 17/18): a
 blocked package waits and re-earns its rows at the authority switch.
 
-**Interception policy.** AGENTS.md's druntime-first rule governs: a function
-with interpretable D source must be executed. Name-based interception of a
-called function is reserved for functions the frontend has **no body** for
-(`extern(C)` prototypes such as `memcpy` and the `gc_*` hooks — verify:
-`fd.fbody is null` at the call site) or whose body is inline asm the walker
-cannot execute (`core.internal.atomic`).
+**Interception policy.** The target has no name-based interception. A
+function with interpretable D source executes that source. A bodyless or
+inline-asm native leaf uses the ordinary typed-address FFI path to its real
+symbol or hook. `Walker.runCallExpression` has two temporary retirement
+blockers only; neither is an accepted end state:
 
-**Mechanical guard.** The chokepoint is `Walker.runCallExpression` (impl.d).
-Every name-based intercept there calls
-`enforceInterceptionPolicy(callee, interceptorName)`
-(`source/quickbite/backends/interpreter/interception_guard.d`) immediately
-before running its handler. The guard's predicate, `isLegalInterception`,
-accepts a callee when `fd.fbody is null`, or the body is/contains a
-`CompoundAsmStatement` (a recursive walk using dmd's own
-`StatementRewriteWalker` — quickbite runs dmd frontend-only, so the
-individual asm instructions inside an asm block are never resolved past
-`null` placeholders; only the `CompoundAsmStatement` wrapper node itself is
-reliably present, from parse time onward), or the callee is on the exemption
-list below. Any other body-ful, non-asm callee fails an `assert` naming the
-intercept and the callee — deliberately an `AssertError` (a `Throwable`, not
-`Exception`) rather than a thrown `Exception`, so it cannot be swallowed by
-an interpreted `catch (Exception)` or by unit-threaded's `shouldThrow`, and
-fails the enclosing unittest outright. Predicate unit tests live in
+- DMD recognizes `fabs`, `sqrt`, and `pow` as compiler builtins, but the
+  frontend-only session supplies neither an interpretable body nor a native
+  symbol that `resolveCallable` can resolve. Add one generic compiler-builtin
+  execution mechanism, then delete `tryInterpreterBuiltin`, its helper
+  module, and its guard entry.
+- DMD lowers UTF-mismatch string `foreach` to `_aApplycd1`, `_aApplywd1`,
+  `_aApplydc1`, or `_aApplyRwd1`. The synthetic declaration does not carry the
+  real call-site parameter list. Native dispatch must use the function-pointer
+  signature without adding a delegate-context receiver, and reverse callback
+  re-entry must preserve the runtime helper's ABI and root execution lifetime.
+  Then delete `runStringForeachApplyCall` and its guard entry.
+
+The mechanical guard rejects every other name match. It also retains the
+bodyless/inline-asm predicate used to classify ordinary native leaves; this
+does not authorize a handler. Once both blockers retire, delete the handler
+guard and keep only native-leaf classification beside the ordinary call
+path. Predicate unit tests live in
 `tests/ut/backends/interpreter/interception_guard.d`.
-
-Exemption list (`isExemptInterception`), each with its retirement condition:
-
-```text
-std.conv.text                             retire per value.md remaining work
-                                           item 10.
-core.internal.array.operations.arrayOp!(  retire when static-array
-...)                                      element-wise ops interpret
-                                           end-to-end over native layout.
-rt.aApply's _aApplycd1/_aApplywd1/        resolved by the frontend to synthetic
-_aApplydc1/_aApplyRwd1                    bodyless extern(C) declarations
-                                           (dmd's genCfunc), not D-bodied;
-                                           retire when string/array native
-                                           layout covers UTF-mismatch foreach.
-core.internal.util.array.                 the shim fakes a `bool` return for
-enforceRawArraysConformable[No]gc         a `void`-returning function.
-                                           Retire by executing the real bodies
-                                           once static-array element-wise ops
-                                           are interpretable end-to-end.
-core.atomic.atomicValueIsProperlyAligned  plain D bit arithmetic, no asm.
-!(...) / atomicPtrIsProperlyAligned!(...) Retire once interpreter values
-                                           carry real addresses everywhere.
-core.internal.atomic.atomicFetchSub!(...) each forwards in one line to a
-/ atomicStore!(...)                       sibling primitive containing the
-                                           real asm, so the asm-body check
-                                           (which only inspects the callee's
-                                           own body) misses them. Retire
-                                           with the rest of the AtomicHook
-                                           family.
-tryInterpreterBuiltin's matched set:       dmd's own `isBuiltin()` recognises
-std.math.algebraic.fabs/sqrt,             these by module+identifier for its
-std.math.exponential.pow,                 CTFE builtin table regardless of
-std.math.traits.isInfinity, and (via a    body, so quickbite's reuse of that
-bare-identifier fallback with no          table inherits the same
-`BUILTIN` entry) std.math.traits.signbit  body-independence. Retire once
-                                           `InterpreterBuiltin` computes each
-                                           from the value's real
-                                           representation.
-```
 
 ## 9. Open work queue
 
@@ -515,16 +476,6 @@ bare-identifier fallback with no          table inherits the same
   work: execute those lowerings for real and retire the hand-rolled path,
   reusing the same `extern(C)` `rt/lifetime.d` declarations Bytecode uses
   for `CatDcharAssignExp`.
-- `writeBackSliceElements` (impl.d, the array-op `+=` lowering's splice
-  copy) rebuilds a pointer-typed slice base as a detached local copy — a
-  latent silent-lost-write class. Needs its own exposing fixture before a
-  fix.
-- `tryInterpreterBuiltin`'s bare-identifier `signbit` fallback matches on
-  the identifier alone with no module check
-  (`interception_guard.d`), so a user or library function literally named
-  `signbit` would be silently intercepted and given
-  `std.math.traits.signbit`'s behaviour. Language-surface; fix with a
-  module check.
 - Confirmed `Interpreter` omissions to promote back into their
   `SystemLinker`-oracle matrix after fixing the named red behavior:
   - `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: retain
@@ -539,9 +490,6 @@ bare-identifier fallback with no          table inherits the same
     interpreter should retain its allocated-block diagnostic; it currently
     neither matches that characterization nor participates in the
     compiled-behavior row.
-  - `stdConvTextRendersCharArrayExpressionRaw`: keep the character array's
-    full allocated block visible through the `std.array`/`std.conv.text`
-    path.
   - `refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`:
     materialize the void-initialized struct before nested ref forwarding
     reads its field.

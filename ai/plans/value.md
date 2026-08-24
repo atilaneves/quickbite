@@ -34,7 +34,25 @@ Calls evaluate each non-lazy argument once into a typed `Place`; `ref` and
 temporary. Function, member, delegate, constructor, and FFI binding consumes
 only those places. Member and delegate receivers are places too. Reverse FFI
 callbacks borrow the typed libffi buffers directly, and callable metadata is
-keyed by the delegate place address.
+keyed by the delegate place address. A non-void call constructs into the
+caller-owned typed destination, a void call has no destination or result, and
+a `ref` return supplies its address. Native results use the destination's
+address directly when the ABI permits it.
+
+Two name-based call interceptions still block the no-interception target and
+must retire before the carrier can be deleted:
+
+- `fabs`, `sqrt`, and `pow` need generic execution of DMD-recognized compiler
+  builtins. Their declarations have no resolvable native symbol or
+  interpretable body in the frontend-only session.
+- `_aApplycd1`, `_aApplywd1`, `_aApplydc1`, and `_aApplyRwd1` need native
+  runtime-apply dispatch with the call-site function-pointer signature and a
+  correct reverse-callback ABI. Calling the resolved runtime symbol through
+  the current native delegate route supplies a delegate context that a plain
+  function pointer does not have and crashes during callback re-entry.
+
+These are retirement prerequisites, not accepted exemptions. Do not add a
+carrier bridge or another name-based result path.
 
 Stored bindings, module variables, and class field defaults remain typed
 places. A value copy snapshots address-keyed delegate, function-pointer,
@@ -57,18 +75,14 @@ scalar, pointer, or `NativeAggregate` contract across its caller boundary.
 Later families can use earlier contracts, but no family introduces a new
 general value wrapper.
 
-1. Replace call and interception results: `runCall*`, `runFunction`,
-   `runMemberFunction`, delegate and native calls, atomic hooks, string
-   `foreach`, duplication, and lazy arguments. Calls use callable and receiver
-   places and write non-void results into caller-owned destinations.
-2. Replace scalar operations, equality, and casts. These depend on typed call
+1. Replace scalar operations, equality, and casts. These depend on typed call
    results for operator overloads and use the scalar reads on `Place` plus the
    existing `runtime_casts` destination operations.
-3. Replace the aggregate, slice, index, allocation, and literal fallbacks.
+2. Replace the aggregate, slice, index, allocation, and literal fallbacks.
    This depends on the typed scalar, call, and projection contracts and
    removes the remaining `NativeAggregate` conversions to and from
    `ExpressionResult`.
-4. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
+3. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
    `readValue`, `writeValue`, `readScalarLeaf`, and `writeScalarLeaf`; the
    boxed overloads in `aggregate_value.d`; `expression_result.d`; and the
    implementation-detail tests `tests/ut/backends/interpreter/place_value.d`
@@ -125,11 +139,6 @@ against `SystemLinker` (`bin/qb` probe, both a struct method-call receiver and
 a plain scalar read), compiled D calls the first bracket's index expression
 *twice* while still calling the second bracket's once, first. Neither this
 fix's fast path nor the old fallback reproduces that.
-
-The temporary `std.conv.text` character-array path reads the authoritative
-native slice header, including its retained backing address, not a transient
-aggregate handle -- slice execution, not a formatter-specific storage shim.
-Retiring the interceptor is item 10 queue work.
 
 An associative-array `ref` parameter reads the caller's typed handle place,
 like other native-layout reference values; autovivifying a null handle
