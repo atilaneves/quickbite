@@ -274,10 +274,12 @@ public struct Callable {
 }
 
 
-// Non-virtual resolution (dlsym plus ABI provenance) is call-invariant for a
-// given declaration, so cache it there. Keyed by identity, matching every
-// other module-level provenance table above. Cleared wherever those tables
-// mutate, since a cached `Callable` embeds `compilerAbiFor`'s answer.
+// A successful non-virtual resolution (dlsym plus ABI provenance) is
+// call-invariant for a given declaration, so cache it there. A failed
+// resolution is not cached, since the symbol can still load later. Keyed by
+// identity, matching every other module-level provenance table above.
+// Cleared wherever those tables mutate, since a cached `Callable` embeds
+// `compilerAbiFor`'s answer.
 private Callable[imported!"dmd.func".FuncDeclaration] _resolvedCallables;
 
 // Resolve a native declaration without involving a backend value representation.
@@ -321,7 +323,11 @@ public Callable resolveCallable(
     if (result.address !is null)
         result.compilerAbi = compilerAbiFor(result.address);
 
-    if (!isVirtualCall)
+    // A failed lookup is not cached: the symbol can still appear later
+    // (e.g. an ordinary `dlopen(RTLD_GLOBAL)` call that never runs through
+    // this module's own dependency-image registration), so the next
+    // resolution must retry rather than remember today's failure forever.
+    if (!isVirtualCall && result.address !is null)
         _resolvedCallables[declaration] = result;
 
     return result;
@@ -409,11 +415,22 @@ private size_t _physicalCallStorageDepth;
 private void* acquirePhysicalCallStorage(in size_t byteLength) @trusted {
     import core.memory: GC;
 
-    if (_physicalCallStorageDepth == _physicalCallStorageSlots.length)
+    // Reserve this call's depth before doing anything that can throw
+    // (`GC.malloc`/the slots array growing can both raise
+    // `OutOfMemoryError`): the caller already decided, before calling this
+    // function, that its paired `release` will decrement the depth, so the
+    // reservation must be unconditional and this function's only throwing
+    // point, keeping the two in lockstep even when an embedder catches the
+    // error and keeps running.
+    const depth = _physicalCallStorageDepth++;
+    if (depth == _physicalCallStorageSlots.length)
         _physicalCallStorageSlots ~= PhysicalCallStorageSlot.init;
-    auto slot = &_physicalCallStorageSlots[_physicalCallStorageDepth++];
+    auto slot = &_physicalCallStorageSlots[depth];
     if (slot.capacity < byteLength) {
-        GC.free(slot.ptr);
+        auto stale = slot.ptr;
+        slot.ptr = null;
+        slot.capacity = 0;
+        GC.free(stale);
         slot.ptr = GC.malloc(byteLength);
         slot.capacity = byteLength;
     }
@@ -461,12 +478,12 @@ private struct PhysicalCall {
             ));
     }
 
-    // @trusted: `_storage`, when non-null, is borrowed from this thread's
-    // pooled slot for the call's nesting depth; ownership stays with the
-    // pool, so `release` returns the slot instead of freeing memory. `call`
-    // releases the uncopied staging value only after the synchronous ABI
-    // call and result copy finish.
-    private void release() nothrow @nogc @trusted {
+    // `_storage`, when non-null, is borrowed from this thread's pooled slot
+    // for the call's nesting depth; ownership stays with the pool, so
+    // `release` returns the slot instead of freeing memory. `call` releases
+    // the uncopied staging value only after the synchronous ABI call and
+    // result copy finish.
+    private void release() nothrow @nogc @safe {
         if (_argumentCount > 1)
             releasePhysicalCallStorage;
         _storage = null;
@@ -740,7 +757,14 @@ public bool call(
     if (canCachePlan) {
         auto planKey =
             FfiCallPlanKey(callable.declaration, callable.compilerAbi);
-        if (auto cached = planKey in _ffiCallPlans)
+        auto cached = planKey in _ffiCallPlans;
+        // A cached plan's cif is only valid for the argument count it was
+        // built with. `canCachePlan` normally guarantees a stable arity per
+        // `(declaration, compilerAbi)`, but treating a mismatch here as a
+        // cache miss (instead of trusting it) keeps a broken invariant from
+        // driving a wrong-arity `ffi_call` in release builds.
+        if (cached !is null &&
+            (*cached).argumentTypes.length == numAbiArguments)
             plan = *cached;
         else {
             auto newPlan = new FfiCallPlan;
