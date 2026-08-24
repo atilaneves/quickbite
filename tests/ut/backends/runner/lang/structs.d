@@ -28,6 +28,119 @@ static foreach (backend; Matrix!()) {
 }
 
 
+// A function-local struct that reads an enclosing parameter in a method has a
+// hidden context field. Default construction must initialize that field even
+// when the struct literal is returned directly, because the method call occurs
+// after the enclosing function has returned.
+// DMD CTFE cannot read the captured lazy parameter after `wrapper` returns;
+// compiled D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE reports that the captured `value` cannot be read"),
+)) {
+    @("struct.returnedNestedStructPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrapper(lazy int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Wrapper();
+            }
+
+            unittest {
+                int value = 42;
+                assert(wrapper(value).get == 42);
+            }
+        });
+    }
+}
+
+
+// A struct method call may be reached only through a helper the struct's own
+// declaring function calls; the returned struct still needs its hidden
+// context field pointed at the declaring function, not at the helper, since
+// the helper itself captures nothing from the enclosing scope.
+// DMD CTFE cannot read the captured `value` after `wrapper` returns; compiled
+// D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE reports that the captured `value` cannot be read"),
+)) {
+    @("struct.nestedStructReturnedViaHelperPreservesDeclaringContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                Wrapper make() {
+                    return Wrapper();
+                }
+
+                return make();
+            }
+
+            unittest {
+                int value = 42;
+                assert(wrapper(value).get == 42);
+            }
+        });
+    }
+}
+
+
+// A container struct's own type need not be nested, but one of its fields can
+// be a nested struct capturing a local from the container's returning
+// function. Filling in that field default-initializes its hidden context
+// field exactly like a directly-returned nested struct does. `decoy` sits
+// immediately before `value` in the enclosing scope: an uninitialized hidden
+// context field would misresolve the captured read to whatever the current
+// frame holds instead, so a stray read lands on `decoy`.
+// DMD CTFE cannot read the captured `value` after `wrapper` returns; compiled
+// D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE reports that the captured `value` cannot be read"),
+)) {
+    @("struct.nestedStructFieldInNonNestedContainerPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box(T) {
+                T payload;
+            }
+
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Box!Wrapper(Wrapper());
+            }
+
+            unittest {
+                int decoy = 999;
+                int value = 42;
+                auto boxed = wrapper(value);
+                assert(boxed.payload.get == 42);
+                assert(decoy == 999);
+            }
+        });
+    }
+}
+
+
 // Each static-array element is initialized as a struct value. Its declared
 // field initializer applies independently to every element.
 static foreach (backend; Matrix!(

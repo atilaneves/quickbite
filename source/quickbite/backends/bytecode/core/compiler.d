@@ -594,9 +594,39 @@ package(quickbite.backends.bytecode) struct Compiler {
             layout.blockSize,
             functionResultType(function_),
             layout.hasThis,
+            returnsNestedStruct(function_),
             nativeCallIndex,
         );
         return cast(ushort) index;
+    }
+
+    private bool returnsNestedStruct(FuncDeclaration function_) {
+        auto functionType = function_.type.toBasetype.isTypeFunction;
+        if (functionType is null || functionType.next is null)
+            return false;
+        auto structType = functionType.next.toBasetype.isTypeStruct;
+        return structType !is null && structOrFieldIsNested(structType.sym);
+    }
+
+    // True if `declaration` itself is nested (carries a hidden context field),
+    // or any of its fields is, at any depth -- since `compileStructLiteralInto`
+    // recurses into a nested struct-typed field and gives it the same
+    // context-initialization treatment a directly nested struct gets
+    // (`initializeNestedContext`). A function returning such a struct must
+    // keep its own frame alive exactly as if it returned the nested struct
+    // directly, or the context field that initialization writes will point at
+    // a frame the caller has since reused.
+    private bool structOrFieldIsNested(
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        if (declaration.isNested)
+            return true;
+        foreach (field; declaration.fields) {
+            auto fieldStruct = field.type.toBasetype.isTypeStruct;
+            if (fieldStruct !is null && structOrFieldIsNested(fieldStruct.sym))
+                return true;
+        }
+        return false;
     }
 
     // Registers a native leaf's `Program.nativeCalls` entry for indirect
@@ -1298,8 +1328,10 @@ package(quickbite.backends.bytecode) struct Compiler {
             _pendingGotos.remove(cast(const(void)*) label.ident);
         }
 
-        // A `label:` wrapping a loop names it for labeled `break`/`continue`:
-        // hand the ident to the loop so it records it on its loop context.
+        // A `label:` wrapping a loop or switch names it for labeled
+        // `break`/`continue` (a switch only ever accepts a labeled `break`,
+        // enforced by `targetLoopIndex`'s `isSwitch` check, not by this
+        // lookup): hand the ident to it so it records it on its loop context.
         if (label.statement !is null) {
             // DMD wraps a labeled `for` as `label: { init?; for }`; the label
             // governs the contained loop, so hand it the ident. The flag
@@ -1311,10 +1343,24 @@ package(quickbite.backends.bytecode) struct Compiler {
         }
     }
 
+    // A runtime `foreach` is never a leaf here: DMD's semantic pass lowers it
+    // to a `ForStatement` (an array/range `foreach`) or an
+    // `UnrolledLoopStatement` (a compile-time tuple `foreach`) before bytecode
+    // core ever sees the labeled statement wrapping it, so only the AST node
+    // kinds `compileStatement` itself dispatches as loops or a switch need a
+    // case here -- mirrors `collectLabels`' same set of statement kinds above.
     private static bool containsLoop(Statement statement) pure nothrow {
         if (statement is null)
             return false;
         if (statement.isForStatement !is null)
+            return true;
+        if (statement.isWhileStatement !is null)
+            return true;
+        if (statement.isDoStatement !is null)
+            return true;
+        if (statement.isUnrolledLoopStatement !is null)
+            return true;
+        if (statement.isSwitchStatement !is null)
             return true;
         if (auto scope_ = statement.isScopeStatement)
             return containsLoop(scope_.statement);
@@ -1510,6 +1556,9 @@ package(quickbite.backends.bytecode) struct Compiler {
         // A `return` leaves every active `try` body in the function. Run the
         // finalizers after the result expression has been captured.
         runExitedFinally(_tryFinallyStack.length);
+
+        foreach (_; _catchProtectedDepths)
+            _code ~= Instruction(Op.popHandler);
 
         _code ~= hasResult ? Instruction(Op.ret, result) : Instruction(Op.ret);
     }
@@ -3091,6 +3140,7 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ushort structLiteralReturnOffset(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
         zeroFrameBlock(offset, typeFacts(literal.type).byteWidth);
+        initializeNestedContext(offset, structDeclarationOf(literal.type));
         compileStructLiteralInto(offset, literal, true);
         return offset;
     }
@@ -5814,11 +5864,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         zeroFrameBlock(offset, typeFacts(variable.type).byteWidth);
 
         // A nested struct carries a hidden context pointer (`vthis`) at offset 0
-        // recording the enclosing function's frame, so its methods can read
+        // recording the declaring function's frame, so its methods can read
         // captured enclosing locals. The empty `S()` literal leaves it zero, so
-        // set it here to the current frame base index.
-        if (declaration.isNested)
-            _code ~= Instruction(Op.frameBaseIndex, offset);
+        // set it here.
+        initializeNestedContext(offset, declaration);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -6112,6 +6161,12 @@ package(quickbite.backends.bytecode) struct Compiler {
                 // to heap-escape as one at the top level (see the `Tdelegate`
                 // branch below).
                 if (auto inner = element.isStructLiteralExp) {
+                    // A nested-struct field needs its own hidden context field
+                    // initialized exactly like a top-level nested struct does
+                    // (`compileStructDeclaration`, `structLiteralReturnOffset`);
+                    // the field's own block was already zeroed as part of this
+                    // literal's containing block, above.
+                    initializeNestedContext(fieldOffset, structDeclarationOf(fieldType));
                     compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
                     continue;
                 }
@@ -6354,6 +6409,53 @@ package(quickbite.backends.bytecode) struct Compiler {
         if (auto parent = function_.toParent2)
             return parent.isFuncDeclaration;
         return null;
+    }
+
+    // The function that lexically declared a nested struct -- the frame its
+    // hidden context field (`vthis`, at the struct's own offset 0) must point
+    // at so a later method call can still resolve a captured local of that
+    // function. Mirrors `enclosingMethodOf` above, generalised from a nested
+    // function's own parent to a nested struct's.
+    private FuncDeclaration declaringFunctionOf(
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        if (auto parent = declaration.toParent2)
+            return parent.isFuncDeclaration;
+        return null;
+    }
+
+    // Initializes a nested struct instance's hidden context field to the live
+    // frame of the function that lexically declared it (a no-op for a
+    // non-nested struct). Every call site already zeroed the instance's block
+    // first, so a non-nested struct or one whose declaring function cannot be
+    // determined simply keeps that zero.
+    //
+    // The declaring function is ordinarily the function currently being
+    // compiled -- a struct default-constructed or returned directly by the
+    // same function that declared it -- in which case that function's own
+    // live frame (`Op.frameBaseIndex`) is the context. It is a different,
+    // enclosing function when a nested helper constructs and returns a
+    // struct ITS enclosing function declared (the helper captures nothing
+    // itself, so the struct's method still needs the declaring function's
+    // frame, not the helper's); that frame is reached the same way a
+    // captured variable's owner frame is (`enclosingFrameBase`).
+    private void initializeNestedContext(
+        in ushort offset,
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        if (!declaration.isNested)
+            return;
+
+        auto owner = declaringFunctionOf(declaration);
+        if (owner is null || owner is _currentFunction) {
+            _code ~= Instruction(Op.frameBaseIndex, offset);
+            return;
+        }
+
+        _code ~= Instruction(
+            Op.copy, offset, enclosingFrameBase(owner),
+            cast(ushort) size_t.sizeof,
+        );
     }
 
     private Operand storageAddressOrValue(Expression expression) {

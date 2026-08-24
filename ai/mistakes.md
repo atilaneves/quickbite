@@ -702,3 +702,7 @@
   timestamp overhead. The native-call path can be frequent but still consume
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
+
+- Do not use an existing task worktree only because its name matches the
+  current task. Treat every existing worktree as owned by another person or
+  agent unless ownership is explicit; create a new branch and worktree.

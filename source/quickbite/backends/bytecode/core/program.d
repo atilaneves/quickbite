@@ -968,6 +968,8 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     uint parameterBytes;
     ResultType returnType;
     bool hasThis;
+    // A returned nested struct can keep this frame as its hidden context.
+    bool preservesFrame;
     // Set only for a native-leaf function reached through a function-pointer
     // value (`&f` where `f.fbody is null`, taken e.g. by
     // `core.internal.dassert`'s `assumeFakeAttributes` closing over a

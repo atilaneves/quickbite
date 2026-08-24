@@ -81,6 +81,7 @@ package(quickbite.backends.bytecode) RunResult run(
     size_t functionIndex = entryIndex;
     size_t base = 0;
     size_t ip;
+    size_t preservedFrameEnd;
 
     while (true) {
         try {
@@ -1795,9 +1796,14 @@ package(quickbite.backends.bytecode) RunResult run(
                 if (program.functions[calleeIndex].code.length == 0)
                     compileFunction(calleeIndex);
 
-                const calleeBase =
-                    base + program.functions[functionIndex].frameSize;
                 const callee = program.functions[calleeIndex];
+                const reusableBase =
+                    base + program.functions[functionIndex].frameSize;
+                const calleeBase = reusableBase > preservedFrameEnd
+                    ? reusableBase
+                    : preservedFrameEnd;
+                if (callee.preservesFrame)
+                    preservedFrameEnd = calleeBase + callee.frameSize;
                 if (stack.length < calleeBase + callee.frameSize) {
                     // Growth past the reserved capacity can relocate `stack`
                     // to a fresh `NO_SCAN` block; re-mark it scanned so the
