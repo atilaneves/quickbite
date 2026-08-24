@@ -64,10 +64,12 @@ public void registerClosureAbi(
     in CompilerAbi compilerAbi,
 ) {
     _closureAbis[address] = compilerAbi;
+    _resolvedCallables = null;
 }
 
 public void unregisterClosureAbi(in void* address) {
     _closureAbis.remove(address);
+    _resolvedCallables = null;
 }
 
 public CompilerAbi compilerAbiFor(in void* symbol) {
@@ -205,6 +207,7 @@ private void loadDependencyImage(
         compilerAbi;
     if (!registerDependencyImageSegments(dependencyImage, compilerAbi))
         _dependencyImageNeedsPathLookup = true;
+    _resolvedCallables = null;
 }
 
 // Record the load segments once, while the image path is already part of image
@@ -268,10 +271,16 @@ public struct Callable {
 }
 
 
+// Non-virtual resolution (dlsym plus ABI provenance) is call-invariant for a
+// given declaration, so cache it there. Keyed by identity, matching every
+// other module-level provenance table above. Cleared wherever those tables
+// mutate, since a cached `Callable` embeds `compilerAbiFor`'s answer.
+private Callable[imported!"dmd.func".FuncDeclaration] _resolvedCallables;
+
 // Resolve a native declaration without involving a backend value representation.
 // Class virtual dispatch reads the final overrider from the receiver object's
 // vtable, so provenance must be captured from that resolved code address rather
-// than from the base declaration's image.
+// than from the base declaration's image; it is therefore never cached.
 public Callable resolveCallable(
     imported!"dmd.func".FuncDeclaration declaration,
     in bool virtualDispatch,
@@ -288,10 +297,16 @@ public Callable resolveCallable(
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
 
+    const isVirtualCall = virtualDispatch && declaration.vtblIndex >= 0;
+
+    if (!isVirtualCall)
+        if (auto cached = declaration in _resolvedCallables)
+            return *cached;
+
     Callable result;
     result.declaration = declaration;
     result.signature = cast(TypeFunction) declaration.type;
-    if (virtualDispatch && declaration.vtblIndex >= 0) {
+    if (isVirtualCall) {
         if (receiverObject is null)
             return result;
         // The object's first word is __vptr; the DMD-computed slot names the
@@ -302,6 +317,10 @@ public Callable resolveCallable(
         result.address = dlsym(RTLD_DEFAULT, mangleExact(declaration));
     if (result.address !is null)
         result.compilerAbi = compilerAbiFor(result.address);
+
+    if (!isVirtualCall)
+        _resolvedCallables[declaration] = result;
+
     return result;
 }
 
@@ -363,6 +382,46 @@ private struct PhysicalArgument {
 }
 
 
+// One buffer per native-call nesting depth. A native call can only nest
+// through a native-to-guest callback that itself makes a native call, so
+// `acquirePhysicalCallStorage`/`releasePhysicalCallStorage` run in strict
+// LIFO order and slot `_physicalCallStorageDepth` always names the
+// innermost live call. A slot's buffer is never freed early: growing it
+// replaces the buffer, but a call that fits what the slot already holds
+// reuses it, trading the GC.calloc/GC.free pair on every FFI call for
+// occasional growth.
+private struct PhysicalCallStorageSlot {
+    private void* ptr;
+    private size_t capacity;
+}
+
+private PhysicalCallStorageSlot[] _physicalCallStorageSlots;
+private size_t _physicalCallStorageDepth;
+
+// `preparePhysicalCall` overwrites every byte it hands out: `arguments`,
+// `pointerCells`, `argumentTypes`, `argumentAddresses` and
+// `argumentMetadata` are each filled index by index up to their exact
+// lengths before any of them is read. So, unlike the `GC.calloc` this
+// replaces, reused (or newly grown) storage does not need zeroing.
+private void* acquirePhysicalCallStorage(in size_t byteLength) @trusted {
+    import core.memory: GC;
+
+    if (_physicalCallStorageDepth == _physicalCallStorageSlots.length)
+        _physicalCallStorageSlots ~= PhysicalCallStorageSlot.init;
+    auto slot = &_physicalCallStorageSlots[_physicalCallStorageDepth++];
+    if (slot.capacity < byteLength) {
+        GC.free(slot.ptr);
+        slot.ptr = GC.malloc(byteLength);
+        slot.capacity = byteLength;
+    }
+    return slot.ptr;
+}
+
+private void releasePhysicalCallStorage() nothrow @nogc @safe {
+    --_physicalCallStorageDepth;
+}
+
+
 private struct PhysicalCall {
     private imported!"dmd.mtype".Type returnType;
     private PhysicalReturn returnPolicy;
@@ -382,27 +441,25 @@ private struct PhysicalCall {
         in size_t argumentCount,
         in size_t pointerCellCount,
     ) {
-        import core.memory: GC;
-
         _argumentCount = argumentCount;
         _pointerCellCount = pointerCellCount;
         assert(argumentCount > 1 || pointerCellCount <= 1);
         if (argumentCount > 1)
-            _storage = GC.calloc(storageByteLength(
+            _storage = acquirePhysicalCallStorage(storageByteLength(
                 argumentCount,
                 pointerCellCount,
             ));
     }
 
-    // @trusted: `_storage` is either null or the base pointer returned by
-    // this value's own `GC.calloc` call. `call` releases the uncopied staging
-    // value only after the synchronous ABI call and result copy finish.
-    private void release() pure nothrow @nogc @trusted {
-        import core.memory: GC;
-
-        auto storage = _storage;
+    // @trusted: `_storage`, when non-null, is borrowed from this thread's
+    // pooled slot for the call's nesting depth; ownership stays with the
+    // pool, so `release` returns the slot instead of freeing memory. `call`
+    // releases the uncopied staging value only after the synchronous ABI
+    // call and result copy finish.
+    private void release() nothrow @nogc @trusted {
+        if (_argumentCount > 1)
+            releasePhysicalCallStorage;
         _storage = null;
-        GC.free(storage);
     }
 
     // `_storage` is one exact allocation containing the five aligned staging
