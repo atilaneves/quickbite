@@ -34,16 +34,14 @@ assignment, move, postblit, and destruction semantics to that place. Never
 construct the right-hand side directly in a live target: an alias could observe
 a partially constructed value.
 
-- **Argument-channel residue**, dying with the signature flips: the binder's
-  arity check and `setLocal`/synthetic-carrier fallbacks; the places-less
-  `bindFunctionParameters` callers (the ref-returning call trio, the FFI
-  reverse bridge, synthesized postblit/equality calls); `runCallExpression`'s
-  own argument box-back and `rootedNativeClassValue` carrier fix-up;
-  `runNewStructNativeConstructor`'s carrier feed; the FFI char*-scratch and
-  delegate-callback tag branches; `applyThrowableConstructor`'s on-demand
-  boxing; `delegateReceiver`'s re-box of `RuntimeDelegate.receiver` (retire via
-  a typed-receiver `runMemberFunction`).
-- **Final flip**, once the above are clear: type `readStoredValue`/
+Calls evaluate each non-lazy argument once into a typed `Place`; `ref` and
+`out` arguments pass either their resolved lvalue place or a typed synthetic
+temporary. Function, member, delegate, constructor, and FFI binding consumes
+only those places. Member and delegate receivers are places too. Reverse FFI
+callbacks borrow the typed libffi buffers directly, and callable metadata is
+keyed by the delegate place address.
+
+- **Final flip**: type `readStoredValue`/
   `writeStoredValue` and the `run*` helpers' signatures, delete
   `constructedExpressionValue`'s boundary box and `place_value.d`'s carrier
   codec (`readValue`/`writeValue`/`readScalarLeaf`/`writeScalarLeaf`),
@@ -57,9 +55,8 @@ a partially constructed value.
   `constructPointerExpressionInto`'s pointer-typed `CastExp` branch
   (`isPointerType(cast_.e1.type)`) may wrongly collapse a null slice/pointer
   read (unproven, like its guarded array-projection sibling once did);
-  `bindSyntheticReferenceSlot`'s place overload sheds `const` via
-  `cast(Place)`, a const-cleanliness candidate; the opAssign-postblit
-  interaction candidate from the branch review is unverified.
+  the opAssign-postblit interaction candidate from the branch review is
+  unverified.
 
 ### Item 4 — Workingness track
 

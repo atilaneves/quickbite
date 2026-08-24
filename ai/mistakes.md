@@ -14,6 +14,11 @@
   expression and can read untouched destination storage. Evaluate first, then
   report a normal checked failure if the required operation declines.
 
+- A ref-returning call's address path is its complete lvalue contract. Reuse
+  that path for assignment and reference forwarding. A second assign-during-
+  return mode duplicates argument and receiver evaluation and preserves a
+  boxed call channel.
+
 - When a normalization helper may return its input unchanged, do not infer
   that normalization occurred solely from the result's value category.
 
