@@ -3013,6 +3013,94 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `static`/`__gshared` local's storage is not a fresh call frame: it
+// exists once, for the module's whole lifetime, and every call to the
+// enclosing function shares it. A second call therefore sees the first
+// call's write, unlike a plain (frame-storage) local, which starts over
+// every call. `Ctfe` cannot read dataseg storage at compile time.
+// `Interpreter` also resets the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `calls` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 2"),
+)) {
+    @("datasegLocal.persistsAcrossCalls." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int nextId() {
+                    static int calls;
+                    ++calls;
+                    return calls;
+                }
+
+                assert(nextId() == 1);
+                assert(nextId() == 2);
+            }
+        });
+    }
+}
+
+// A dataseg local's own initializer is a compile-time constant, by D's
+// rules for `static`/`__gshared` storage, and runs once, at the
+// variable's first sight, not once per call: a second call sees the
+// first call's write, not the initializer value again. `Ctfe` cannot
+// read dataseg storage at compile time. `Interpreter` resets the local
+// on the second call; `LLVMJit` never applies the explicit initializer
+// at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `calls` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "5 != 6"),
+    Omit!(LLVMJit, Because.refusal, "0 != 5"),
+)) {
+    @("datasegLocal.explicitInitializerRunsOnce." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int nextId() {
+                    static int calls = 5;
+                    return calls++;
+                }
+
+                assert(nextId() == 5);
+                assert(nextId() == 6);
+            }
+        });
+    }
+}
+
+// The struct counterpart of `persistsAcrossCalls`: a `__gshared` struct
+// local's field persists across calls the same way a scalar dataseg
+// local does. `Ctfe` cannot modify dataseg storage at compile time.
+// `Interpreter` also resets the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "variable `state` cannot be modified at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 2"),
+)) {
+    @("datasegLocal.structFieldPersistsAcrossCalls." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int calls; }
+
+            unittest {
+                static int nextId() {
+                    __gshared Counter state;
+                    ++state.calls;
+                    return state.calls;
+                }
+
+                assert(nextId() == 1);
+                assert(nextId() == 2);
+            }
+        });
+    }
+}
+
 // Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
 // sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
 // DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts

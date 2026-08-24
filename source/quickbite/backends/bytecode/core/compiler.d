@@ -4758,6 +4758,29 @@ package(quickbite.backends.bytecode) struct Compiler {
             return;
         }
 
+        // A `static`/`__gshared` local (`variable.isDataseg`) exists once,
+        // for the module's whole lifetime, and every call to the enclosing
+        // function shares it -- frame storage would instead give it a fresh
+        // slot, and the frame-based compile*Declaration functions below
+        // would re-run its default-zero or literal initializer bytecode on
+        // every call, resetting it. Route it to module storage instead:
+        // `moduleDeclarationRecord` allocates that storage and writes its
+        // default-zero or literal initializer bytes once, right now, with
+        // no bytecode instruction to re-run later. `resolvePlace` and the
+        // scalar/struct/array read and write paths already fall back to
+        // module storage for a declaration with no frame storage
+        // registered. Module registration can decline an initializer shape
+        // its literal writers do not cover yet (e.g. a static array whose
+        // elements are themselves arrays, as `core.internal.switch_`'s own
+        // `static immutable cases` table is): fall through to ordinary
+        // frame compilation below for that case. Recomputing the value on
+        // every call is not observably different from computing it once,
+        // because a dataseg initializer is always a compile-time constant.
+        if (variable.isDataseg &&
+            moduleDeclarationRecord(variable).storage ==
+                DeclarationStorage.module_)
+            return;
+
         final switch (declarationRecord(variable).facts.representation)
             with (DeclarationRepresentation)
         {

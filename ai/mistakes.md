@@ -711,3 +711,19 @@
   still declines storage for both mutable and immutable declarations).
   Remove the probe once the branch is confirmed dead or confirmed still
   needed.
+
+- The bytecode core's module-storage literal writers
+  (`moduleStaticArrayLiteralInitializerBytes`, `moduleStructLiteralInitializerBytes`)
+  cover a narrower set of initializer shapes than frame storage's own
+  `compile*Declaration` functions -- they decline (return `null`, no
+  storage registered) for a static array or struct whose elements are
+  themselves non-scalar (an array, a struct, ...). Routing every dataseg
+  declaration through module storage unconditionally, with no fallback,
+  breaks any such declaration even though its representation is
+  otherwise supported. Druntime carries a live example: `core.internal.
+  switch_.__switch`'s own `static immutable T[][N] cases` lookup table
+  (used by every `switch` on a string), an array of dynamic-array
+  elements. A target-test-only run cannot catch this: it takes a full
+  `bin/ut @Bytecode` sweep, since the regression surfaces in unrelated
+  fixtures (any fixture whose assert diagnostic or `switch` on a string
+  reaches `__switch`), not in the fixture that motivated the change.
