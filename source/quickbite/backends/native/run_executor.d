@@ -6,24 +6,51 @@ private:
 
 // The LDC benchmark host uses a DMD-built executor for generated code. Keep
 // process spawning here so SystemLinker and LLVMJit share the same boundary.
-public void runExecutor(in string requestFile, in string resultsFile) {
+public struct RunExecutorConfig {
+    public string workingDirectory;
+    public string executable;
+}
+
+public void runExecutor(
+    in string requestFile,
+    in string resultsFile,
+    in RunExecutorConfig config = RunExecutorConfig.init,
+) {
     import std.conv: text;
-    import std.process: spawnProcess, wait;
+    import std.file: exists, readText, remove;
+    import std.process: Config, spawnProcess, wait;
     import std.stdio: File, stdin;
+    import std.string: stripRight;
 
     auto devNull = File("/dev/null", "w");
+    const stderrPath = resultsFile ~ ".stderr";
+    scope(exit)
+        if (stderrPath.exists)
+            stderrPath.remove;
+    auto stderrFile = File(stderrPath, "w");
+    const executable = config.executable.length > 0
+        ? config.executable
+        : executorPath;
     auto pid = spawnProcess(
-        [executorPath, requestFile, resultsFile],
+        [executable, requestFile, resultsFile],
         stdin,
         devNull,
-        devNull,
+        stderrFile,
+        null,
+        Config.none,
+        config.workingDirectory,
     );
     const status = wait(pid);
-    if (status != 0)
+    stderrFile.close;
+    if (status != 0) {
+        const diagnostics = stderrPath.readText.stripRight;
+        const detail = diagnostics.length == 0 ? "" : ":\n" ~ diagnostics;
         throw new Exception(text(
             "run executor exited with status ", status,
             " (a fixture may have crashed the process)",
+            detail,
         ));
+    }
 }
 
 private string executorPath() {
