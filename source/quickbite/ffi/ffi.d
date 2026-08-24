@@ -64,10 +64,12 @@ public void registerClosureAbi(
     in CompilerAbi compilerAbi,
 ) {
     _closureAbis[address] = compilerAbi;
+    _resolvedCallables = null;
 }
 
 public void unregisterClosureAbi(in void* address) {
     _closureAbis.remove(address);
+    _resolvedCallables = null;
 }
 
 public CompilerAbi compilerAbiFor(in void* symbol) {
@@ -205,6 +207,7 @@ private void loadDependencyImage(
         compilerAbi;
     if (!registerDependencyImageSegments(dependencyImage, compilerAbi))
         _dependencyImageNeedsPathLookup = true;
+    _resolvedCallables = null;
 }
 
 // Record the load segments once, while the image path is already part of image
@@ -268,10 +271,16 @@ public struct Callable {
 }
 
 
+// Non-virtual resolution (dlsym plus ABI provenance) is call-invariant for a
+// given declaration, so cache it there. Keyed by identity, matching every
+// other module-level provenance table above. Cleared wherever those tables
+// mutate, since a cached `Callable` embeds `compilerAbiFor`'s answer.
+private Callable[imported!"dmd.func".FuncDeclaration] _resolvedCallables;
+
 // Resolve a native declaration without involving a backend value representation.
 // Class virtual dispatch reads the final overrider from the receiver object's
 // vtable, so provenance must be captured from that resolved code address rather
-// than from the base declaration's image.
+// than from the base declaration's image; it is therefore never cached.
 public Callable resolveCallable(
     imported!"dmd.func".FuncDeclaration declaration,
     in bool virtualDispatch,
@@ -288,10 +297,16 @@ public Callable resolveCallable(
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
 
+    const isVirtualCall = virtualDispatch && declaration.vtblIndex >= 0;
+
+    if (!isVirtualCall)
+        if (auto cached = declaration in _resolvedCallables)
+            return *cached;
+
     Callable result;
     result.declaration = declaration;
     result.signature = cast(TypeFunction) declaration.type;
-    if (virtualDispatch && declaration.vtblIndex >= 0) {
+    if (isVirtualCall) {
         if (receiverObject is null)
             return result;
         // The object's first word is __vptr; the DMD-computed slot names the
@@ -302,6 +317,10 @@ public Callable resolveCallable(
         result.address = dlsym(RTLD_DEFAULT, mangleExact(declaration));
     if (result.address !is null)
         result.compilerAbi = compilerAbiFor(result.address);
+
+    if (!isVirtualCall)
+        _resolvedCallables[declaration] = result;
+
     return result;
 }
 
