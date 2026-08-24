@@ -154,6 +154,63 @@ unittest {
     "KiB".should.be in report;
 }
 
+@("bytecodeReportsCompileTime")
+unittest {
+    import core.time: Duration;
+    import quickbite.backends.bytecode: Bytecode;
+    import quickbite.backends.runner: CompileTimeReporter;
+    import quickbite.frontend.compiler:
+        FrontendFlags, parseSnippetWithCheckActionContext;
+
+    auto bytecode = new Bytecode;
+    auto reporter = cast(CompileTimeReporter) bytecode;
+    assert(reporter !is null);
+    reporter.compileTime.should == Duration.zero;
+
+    // The unittest calls a helper so compilation also happens lazily
+    // mid-run; the reported time must cover that as well as the eager
+    // entry compile, so it must be positive after a run.
+    auto moduleResult = parseSnippetWithCheckActionContext(
+        q{
+            int twice(in int value) { return value * 2; }
+
+            unittest {
+                assert(twice(21) == 42);
+            }
+        },
+        [],
+        FrontendFlags.init,
+    );
+    bytecode.runTests(moduleResult.module_).length.should == 1;
+
+    assert(reporter.compileTime > Duration.zero);
+    reporter.resetCompileTime;
+    reporter.compileTime.should == Duration.zero;
+}
+
+@("renderBenchmarkSectionShowsCompileTime")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: msecs;
+    import std.algorithm.searching: canFind;
+    import std.typecons: nullable;
+
+    const timing = Result(1.msecs, 2.msecs, 0.0, 1024);
+    const report = renderBenchmarkSection(
+        "post-parse",
+        [
+            BenchmarkRow("pkg", "bytecode", "3/3", timing, nullable(12.msecs)),
+            BenchmarkRow("pkg", "ctfe", "3/3", timing),
+        ],
+    );
+
+    "compile".should.be in report;
+    // A backend that reports compile time shows it in ms; one that does
+    // not shows n/a in the same column.
+    assert(report.canFind("12.000 ms"));
+    assert(report.canFind("n/a"));
+}
+
 @("renderPreparationSectionReportsFailuresAsPreparationStatus")
 unittest {
     import std.algorithm.searching: canFind;
