@@ -2576,8 +2576,7 @@ package(quickbite.backends.bytecode) struct Compiler {
             }
 
             if (auto declaration = variable.var.isVarDeclaration)
-                if (isDeclarationNamed(declaration, "$") ||
-                    declaration.isImmutable)
+                if (isDeclarationNamed(declaration, "$"))
                     if (auto initializer =
                             declaration._init is null
                                 ? null
@@ -9345,7 +9344,7 @@ package(quickbite.backends.bytecode) struct Compiler {
     }
 
     private void classifyModuleDeclaration(VarDeclaration declaration) {
-        if (!declaration.isDataseg || declaration.isImmutable)
+        if (!declaration.isDataseg)
             return;
 
         final switch (declarationRecord(declaration).facts.representation)
@@ -9382,11 +9381,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleScalarVariable* allocateModuleScalarVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         // A module-level pointer (`int* p;`) is just a size_t-width value:
         // `scalarType` already maps `Tpointer` to `ScalarType.ulong_` for
@@ -9464,11 +9460,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleDynamicArrayVariable* allocateModuleDynamicArrayVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         if (auto existing = declarationRecordView(declaration).moduleDynamicArrayOrNull)
             return existing;
@@ -9789,11 +9782,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleStructVariable* allocateModuleStructVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         if (auto existing = declarationRecordView(declaration).moduleStructOrNull)
             return existing;
@@ -9832,11 +9822,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleStaticArrayVariable* allocateModuleStaticArrayVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         auto elementType = declaration.type.toBasetype.nextOf;
         if (auto existing = declarationRecordView(declaration).moduleStaticArrayOrNull)
@@ -9983,11 +9970,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleDelegateVariable* allocateModuleDelegateVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         if (auto existing = declarationRecordView(declaration).moduleDelegateOrNull)
             return existing;
@@ -10030,11 +10014,8 @@ package(quickbite.backends.bytecode) struct Compiler {
     private ModuleComplexVariable* allocateModuleComplexVariable(
         VarDeclaration declaration,
     ) {
-        if (declaration is null || !declaration.isDataseg ||
-            declaration.isImmutable)
-        {
+        if (declaration is null || !declaration.isDataseg)
             return null;
-        }
 
         if (auto existing = declarationRecordView(declaration).moduleComplexOrNull)
             return existing;

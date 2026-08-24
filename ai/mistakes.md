@@ -702,3 +702,12 @@
   timestamp overhead. The native-call path can be frequent but still consume
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
+
+- Before deleting a fallback branch believed dead after a code change,
+  confirm it empirically: add a temporary probe (e.g. a stderr write) inside
+  the branch, run the full relevant test suite, and check for zero hits.
+  Reasoning from code structure alone ("the earlier branch now always
+  matches first") can miss edge cases (a distinct representation kind that
+  still declines storage for both mutable and immutable declarations).
+  Remove the probe once the branch is confirmed dead or confirmed still
+  needed.
