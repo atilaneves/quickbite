@@ -6,14 +6,17 @@ private:
 
 public class SystemLinker:
     imported!"quickbite.backends".Backend,
-    imported!"quickbite.backends.runner".GroupedRunner
+    imported!"quickbite.backends.runner".GroupedRunner,
+    imported!"quickbite.backends.runner".CompileTimeReporter
 {
     import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
+    import core.time: Duration, MonoTime;
     import dmd.dmodule: Module;
     import dmd.func: FuncDeclaration;
 
     private const SystemLinkerInputs _inputs;
+    private Duration _compileTime;
 
     public alias eval = Evaluator.eval;
 
@@ -30,6 +33,14 @@ public class SystemLinker:
         this(
             SystemLinkerInputs(dependencyImages, dependencyImportPaths),
         );
+    }
+
+    public override Duration compileTime() @safe @nogc nothrow pure const scope {
+        return _compileTime;
+    }
+
+    public override void resetCompileTime() @safe @nogc nothrow pure scope {
+        _compileTime = Duration.zero;
     }
 
     // Derives the dependency import paths from the raw dub import paths and the
@@ -69,7 +80,7 @@ public class SystemLinker:
         // across a process boundary instead. DMD-built hosts (bin/ut, the DMD
         // benchmark build) keep running the tests in-process, unchanged.
         version (LDC)
-            return runTestsViaExecutor(modules, _inputs);
+            return runTestsViaExecutor(modules, _inputs, _compileTime);
         else
             return runTestsInProcess(modules);
     }
@@ -78,10 +89,12 @@ public class SystemLinker:
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
+        const start = MonoTime.currTime;
         auto library = compileToSharedLibrary(
             modules,
             _inputs,
         );
+        _compileTime += MonoTime.currTime - start;
         // The results copy everything they need out of the library, so it can
         // be unloaded as soon as the tests have run. Dead objects of classes
         // the fixture defines still sit in the GC heap with vptrs into this
@@ -209,7 +222,9 @@ version (LDC)
 private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     imported!"dmd.dmodule".Module[] modules,
     in SystemLinkerInputs inputs,
+    ref imported!"core.time".Duration compileTime,
 ) {
+    import core.time: MonoTime;
     import quickbite.backends.runner: TestResult;
     import quickbite.frontend.util: foreachUnitTestDeclaration;
     import run_wire:
@@ -219,7 +234,9 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     import std.path: buildPath;
     import std.string: fromStringz;
 
+    const start = MonoTime.currTime;
     auto built = buildSharedLibrary(modules, inputs);
+    compileTime += MonoTime.currTime - start;
     scope(exit) rmdirRecurse(built.dir);
 
     UnitTestSymbol[] symbols;
