@@ -7,21 +7,6 @@ private enum wcharCodeUnitWidth = 2;
 private enum dcharCodeUnitWidth = 4;
 private enum maxUtf8CodeUnits = 4;
 
-public imported!"quickbite.lang".Value stringValue(
-    imported!"dmd.expression".StringExp string_,
-) {
-    import quickbite.lang: Value;
-
-    switch (string_.sz) {
-        case wcharCodeUnitWidth:
-            return Value.stringValue(stringCodeUnits!wchar(string_));
-        case dcharCodeUnitWidth:
-            return Value.stringValue(stringCodeUnits!dchar(string_));
-        default:
-            return Value.stringValue(stringChars(string_));
-    }
-}
-
 // The literal's code units at their declared element width: `wchar`/`dchar`
 // units verbatim, `char` units as UTF-8 bytes (already 1 byte wide, so no
 // transcoding). Callers that store the result verbatim in a byte-addressed

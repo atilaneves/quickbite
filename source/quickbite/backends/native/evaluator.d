@@ -5,7 +5,7 @@ private:
 
 
 public imported!"quickbite.backends.evaluator".EvalResult evalNativeFunction(
-    scope imported!"quickbite.lang".Value delegate() call,
+    scope string delegate() call,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     import quickbite.backends.evaluator: displayEvalResult;
@@ -13,11 +13,10 @@ public imported!"quickbite.backends.evaluator".EvalResult evalNativeFunction(
     return displayEvalResult(call, function_);
 }
 
-public imported!"quickbite.lang".Value callNativeFunction(
+public string callNativeFunction(
     void* address,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import quickbite.lang: Value;
     import dmd.astenums: TY;
     import std.conv: text;
 
@@ -25,40 +24,48 @@ public imported!"quickbite.lang".Value callNativeFunction(
     switch (returnType.ty) with (TY) {
         case Tvoid:
             (cast(void function()) address)();
-            return Value.void_;
+            return "";
         case Tint32:
-            return Value((cast(int function()) address)());
+            return text((cast(int function()) address)());
         case Tuns32:
-            return Value((cast(uint function()) address)());
+            return text((cast(uint function()) address)(), "u");
         case Tbool:
-            return Value((cast(bool function()) address)());
+            return text((cast(bool function()) address)());
         case Tint8:
-            return Value((cast(byte function()) address)());
+            return text((cast(byte function()) address)());
         case Tuns8:
-            return Value((cast(ubyte function()) address)());
+            return text((cast(ubyte function()) address)());
         case Tint16:
-            return Value((cast(short function()) address)());
+            return text((cast(short function()) address)());
         case Tuns16:
-            return Value((cast(ushort function()) address)());
+            return text((cast(ushort function()) address)());
         case Tint64:
-            return Value((cast(long function()) address)());
+            return text((cast(long function()) address)(), "L");
         case Tuns64:
-            return Value((cast(ulong function()) address)());
+            return text((cast(ulong function()) address)(), "UL");
         case Tchar:
-            return Value((cast(char function()) address)());
+            return text("'", (cast(char function()) address)(), "'");
         case Tfloat32:
-            return Value((cast(float function()) address)());
+            return decimalText((cast(float function()) address)()) ~ "f";
         case Tfloat64:
-            return Value((cast(double function()) address)());
+            return decimalText((cast(double function()) address)());
         case Tfloat80:
-            return Value((cast(real function()) address)());
+            return decimalText((cast(real function()) address)()) ~ "L";
         case Tnull:
             (cast(void* function()) address)();
-            return Value.null_;
+            return "null";
         default:
             throw new Exception(text(
                 "native evaluator does not support return type ",
                 returnType.toChars,
             ));
     }
+}
+
+private string decimalText(T)(in T value) @safe pure {
+    import std.algorithm: canFind;
+    import std.conv: text;
+
+    const result = text(value);
+    return result.canFind('.', 'e', 'E', "inf", "nan") ? result : result ~ ".0";
 }

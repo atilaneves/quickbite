@@ -11,7 +11,6 @@ int main(string[] args) {
         "ut.bin.cli",
         "ut.bin.benchmarks",
         "ut.frontend.compiler",
-        "ut.backends.evaluator.value",
         "ut.backends.evaluator.eval",
         "ut.backends.interpreter.interception_guard",
         "ut.backends.interpreter.native_block",

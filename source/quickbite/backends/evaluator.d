@@ -128,9 +128,7 @@ public struct EvalResult {
     // A successful evaluation carries the rendered display string (which is the
     // empty string for a statement that produces nothing); a failed one carries
     // a Diagnostic. Representing this as a sum type makes the "value and error
-    // message at once" state unrepresentable. The string is produced by the
-    // backend via `displayString`: the backend keeps its reify -> Value ->
-    // toString chain private and only exposes the final string here.
+    // message at once" state unrepresentable.
     private SumType!(string, Diagnostic) _payload;
 
     public this(in string display) {
@@ -167,12 +165,15 @@ public struct EvalResult {
 }
 
 public EvalResult displayEvalResult(
-    scope imported!"quickbite.lang".Value delegate() produceValue,
+    scope string delegate() produceDisplay,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    try
-        return EvalResult(displayString(produceValue(), function_));
-    catch (Throwable throwable)
+    try {
+        const display = produceDisplay();
+        return EvalResult(functionReturnsString(function_)
+            ? `"` ~ display ~ `"`
+            : display);
+    } catch (Throwable throwable)
         return EvalResult(EvalResult.Diagnostic(throwable.msg));
 }
 
@@ -186,29 +187,6 @@ public EvalResult voidEvalResult(scope void delegate() execute) {
     } catch (Throwable throwable) {
         return EvalResult(EvalResult.Diagnostic(throwable.msg));
     }
-}
-
-// Renders a backend-reified `Value` to its display string at the
-// `eval(FuncDeclaration)` boundary. This is the single shared renderer so
-// every backend and the `eval(Cell)`/`eval(string)` paths produce
-// identical output: `void` renders to the empty string; a
-// function whose return type is a character array renders the quoted string
-// form (with its width suffix); everything else renders via `Value.toString`.
-// The renderer is intentionally free of the REPL-layer synthetic-name
-// scrubbing, which stays in quickbite.repl applied to this string.
-public string displayString(
-    in imported!"quickbite.lang".Value value,
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import quickbite.lang: Value;
-
-    if (value == Value.void_)
-        return "";
-
-    if (functionReturnsString(function_))
-        return `"` ~ value.asCharArrayString ~ `"` ~ value.stringTypeAnnotation;
-
-    return value.toString;
 }
 
 private bool functionReturnsString(
