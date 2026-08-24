@@ -692,3 +692,12 @@
   machinery (a multi-level nested-frame walk here) than the actual bug
   requires. The precise fix: make every caller that pattern-matches a
   specific expression shape unwrap the same inlining wrapper first.
+
+- For a large allocation regression, bracket whole phases with
+  `GC.allocatedInCurrentThread` before changing candidate storage sites. An
+  unchanged total after a candidate change is evidence against the
+  hypothesis, not evidence that more similar sites need the same change.
+  Issue #525's Cerealed repro attributed 5.0 of 7.4 GB to
+  `FrameBlock.temporaryAddress`: returned interpreter activations discarded
+  their expression-keyed temporary blocks, then rebuilt them on the next
+  call. Reusing eligible returned frames removed that cross-cutting churn.

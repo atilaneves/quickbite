@@ -5,6 +5,9 @@ module quickbite.backends.interpreter.native_call_adapter;
 
 private:
 
+
+private void*[][size_t] _invocationStoragePool;
+
 public class NativeCallException: Exception {
     public string className;
     public Throwable nativeThrowable;
@@ -401,19 +404,30 @@ private struct NativeInvocation {
         import core.memory: GC;
 
         _argumentCount = argumentCount;
-        if (argumentCount > 1)
+        if (argumentCount <= 1)
+            return;
+
+        auto available = argumentCount in _invocationStoragePool;
+        if (available !is null && available.length != 0) {
+            _storage = (*available)[$ - 1];
+            (*available).length = (*available).length - 1;
+            (*available).assumeSafeAppend;
+        } else
             _storage = GC.calloc(storageByteLength(argumentCount));
     }
 
     // @trusted: `_storage` is either null or the base pointer returned by
     // this value's own `GC.calloc` call. `invokeNative` releases the uncopied
     // staging value after native execution and result extraction complete.
-    public void release() pure nothrow @nogc @trusted {
-        import core.memory: GC;
-
+    public void release() @trusted {
         auto storage = _storage;
+        if (storage is null)
+            return;
+
+        arguments[] = typeof(_singleArgument).init;
+        roots[] = typeof(_inlineRoots[0]).init;
         _storage = null;
-        GC.free(storage);
+        _invocationStoragePool[_argumentCount] ~= storage;
     }
 
     // `_storage` is allocated for exactly `_argumentCount` TypedAddresses

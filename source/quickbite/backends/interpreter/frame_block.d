@@ -198,6 +198,23 @@ public struct FrameBlock {
         return _block.byteLength;
     }
 
+    // Restores a returned activation's owned storage to the same zeroed state
+    // as a fresh allocation. The expression-keyed temporary table remains in
+    // place so the next activation of the same function reuses its blocks.
+    public void reset() pure nothrow @safe {
+        _block.bytes[] = 0;
+        foreach (ref block; _dynamicTemporaries.byValue)
+            block.bytes[] = 0;
+    }
+
+    public void eachStorageBlock(
+        scope void delegate(void* address, size_t byteLength) visitor,
+    ) @system {
+        visitor(_block.address, _block.byteLength);
+        foreach (ref block; _dynamicTemporaries.byValue)
+            visitor(block.address, block.byteLength);
+    }
+
     // Whether `address` belongs to this activation's own inline storage.
     // Reference slots deliberately do not make their pointees part of this
     // block: a forwarded address is owned by an earlier activation.

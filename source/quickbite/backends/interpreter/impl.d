@@ -289,17 +289,27 @@ private struct EvaluatedReferenceArgument {
 private struct CallArguments {
     private size_t _length;
     private void* _storage;
+    private void*[][size_t]* _pool;
     private imported!"quickbite.backends.interpreter.expression_result".
         ExpressionResult _singleValue;
     private imported!"dmd.expression".Expression _singleExpression;
     private EvaluatedReferenceArgument _singleReference;
 
-    public this(in size_t length) {
+    public this(in size_t length, void*[][size_t]* pool) {
         import core.memory: GC;
 
         _length = length;
+        _pool = pool;
         if (length <= 1)
             return;
+
+        auto available = length in *pool;
+        if (available !is null && available.length != 0) {
+            _storage = (*available)[$ - 1];
+            (*available).length = (*available).length - 1;
+            (*available).assumeSafeAppend;
+            return;
+        }
 
         _storage = GC.malloc(storageByteLength(length));
         values[] = typeof(_singleValue).init;
@@ -307,15 +317,18 @@ private struct CallArguments {
         references[] = EvaluatedReferenceArgument.init;
     }
 
-    // @trusted: `_storage` is either null or the base pointer returned by
-    // this value's own `GC.malloc` call. Call sites release the uncopied
-    // staging value only after every slice derived from it is dead.
-    public void release() pure nothrow @nogc @trusted {
-        import core.memory: GC;
-
+    // Call sites release the uncopied staging value only after every slice
+    // derived from it is dead. Clear its scanned references before pooling.
+    public void release() @trusted {
         auto storage = _storage;
+        if (storage is null)
+            return;
+
+        values[] = typeof(_singleValue).init;
+        expressions[] = null;
+        references[] = EvaluatedReferenceArgument.init;
         _storage = null;
-        GC.free(storage);
+        (*_pool)[_length] ~= storage;
     }
 
     public @property size_t length() const @safe @nogc nothrow pure {
@@ -389,18 +402,28 @@ private struct CallArguments {
 private struct NativeCallArguments {
     private size_t _length;
     private void* _storage;
+    private void*[][size_t]* _pool;
     private imported!"dmd.mtype".Type _singleType;
     private imported!"quickbite.backends.interpreter.native_call_adapter".
         NativeOperand _singleOperand;
 
     public this(
         imported!"dmd.expression".Expression[] expressions,
+        void*[][size_t]* pool,
     ) {
         import core.memory: GC;
 
         _length = expressions.length;
-        if (_length > 1)
-            _storage = GC.calloc(storageByteLength(_length));
+        _pool = pool;
+        if (_length > 1) {
+            auto available = _length in *pool;
+            if (available !is null && available.length != 0) {
+                _storage = (*available)[$ - 1];
+                (*available).length = (*available).length - 1;
+                (*available).assumeSafeAppend;
+            } else
+                _storage = GC.calloc(storageByteLength(_length));
+        }
         foreach (index, expression; expressions)
             types[index] = expression.type;
     }
@@ -408,12 +431,15 @@ private struct NativeCallArguments {
     // @trusted: `_storage` is either null or the base pointer returned by
     // this value's own `GC.calloc` call. Call sites release the uncopied
     // staging value only after the synchronous native invocation returns.
-    public void release() pure nothrow @nogc @trusted {
-        import core.memory: GC;
-
+    public void release() @trusted {
         auto storage = _storage;
+        if (storage is null)
+            return;
+
+        types[] = null;
+        operands[] = typeof(_singleOperand).init;
         _storage = null;
-        GC.free(storage);
+        (*_pool)[_length] ~= storage;
     }
 
     // `_storage` contains exactly `_length` Types followed by the aligned
@@ -666,7 +692,10 @@ private struct InterpreterExecutionState {
     public size_t[imported!"dmd.func".FuncDeclaration] functionPointerIds;
     public size_t nextFunctionPointerId;
     public RuntimeDelegate[size_t] delegates;
-
+    public void*[][size_t] callArgumentStorage;
+    public void*[][size_t] nativeCallArgumentStorage;
+    public imported!"quickbite.backends.interpreter.frame_block".FrameBlock[][
+        imported!"dmd.func".FuncDeclaration] reusableFrames;
     // Object-address metadata is installed at allocation or native ingress
     // and remains authoritative for every alias in every later activation.
     public imported!"dmd.mtype".Type[void*] nativeClassTypes;
@@ -730,7 +759,8 @@ private struct Walker {
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
-    import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
+    import quickbite.backends.interpreter.frame_layout:
+        cachedFrameLayout, FrameLayout;
     import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -4113,6 +4143,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
@@ -4514,10 +4545,39 @@ unsupportedExpression:
             if (frame.block.address is _activationFrame.block.address)
                 return;
 
-        clearStoredMetadataRange(
-            _activationFrame.block.address,
-            _activationFrame.byteLength,
-        );
+        _activationFrame.eachStorageBlock((address, byteLength) {
+            clearStoredMetadataRange(address, byteLength);
+        });
+    }
+
+    private FrameBlock acquireActivationFrame(
+        FuncDeclaration function_,
+        FrameLayout layout,
+    ) {
+        auto available = function_ in _executionState.reusableFrames;
+        if (available is null || available.length == 0)
+            return FrameBlock.allocate(layout);
+
+        auto frame = (*available)[$ - 1];
+        (*available).length = (*available).length - 1;
+        (*available).assumeSafeAppend;
+        frame.reset;
+        return frame;
+    }
+
+    private void releaseActivationFrame(
+        FuncDeclaration function_,
+        in bool addressMayEscape = false,
+    ) {
+        retireActivationFrameMetadata;
+        if (_activationFrameMetadataRetained || addressMayEscape)
+            return;
+
+        foreach (frame; lazyArgumentFrames.byValue)
+            if (frame.block.address is _activationFrame.block.address)
+                return;
+
+        _executionState.reusableFrames[function_] ~= _activationFrame;
     }
 
     // The child's returned address points into its own frame: a pointer to a
@@ -5922,6 +5982,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
@@ -6854,7 +6915,10 @@ unsupportedExpression:
         auto functionType = delegateType.nextOf is null
             ? null
             : cast(TypeFunction) delegateType.nextOf;
-        auto nativeArguments = NativeCallArguments(argumentExpressions);
+        auto nativeArguments = NativeCallArguments(
+            argumentExpressions,
+            &_executionState.nativeCallArgumentStorage,
+        );
         scope(exit) nativeArguments.release;
         fillNativeCallOperands(
             null,
@@ -7450,10 +7514,10 @@ unsupportedExpression:
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = acquireActivationFrame(function_, layout);
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
+        scope(exit) child.releaseActivationFrame(function_);
         bindCapturedReferenceSlots(function_, child, closureAddresses);
         child.bindFunctionParameters(
             function_,
@@ -7549,10 +7613,13 @@ unsupportedExpression:
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = acquireActivationFrame(function_, layout);
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
+        scope(exit) child.releaseActivationFrame(
+            function_,
+            function_.isConstructorFunction && constructionDestination is null,
+        );
         bindCapturedReferenceSlots(
             function_,
             child,
@@ -9941,6 +10008,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
@@ -10064,6 +10132,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
@@ -13532,7 +13601,10 @@ unsupportedExpression:
             InterpreterInboundTrampolineSession, NativeCallRequest,
             NativeOperand, invokeNative;
 
-        auto nativeArguments = NativeCallArguments(argumentExpressions);
+        auto nativeArguments = NativeCallArguments(
+            argumentExpressions,
+            &_executionState.nativeCallArgumentStorage,
+        );
         scope(exit) nativeArguments.release;
         if (durableInboundSession is null)
             durableInboundSession = new InterpreterInboundTrampolineSession(
@@ -14037,6 +14109,7 @@ unsupportedExpression:
 
             auto arguments = CallArguments(
                 new_.arguments is null ? 0 : new_.arguments.length,
+                &_executionState.callArgumentStorage,
             );
             scope(exit) arguments.release;
             auto argumentPlaces = new Place[arguments.length];
@@ -14121,6 +14194,7 @@ unsupportedExpression:
                 runExpression(type.defaultInitLiteral(Loc.initial), allocated);
                 auto arguments = CallArguments(
                     new_.arguments is null ? 0 : new_.arguments.length,
+                    &_executionState.callArgumentStorage,
                 );
                 scope(exit) arguments.release;
                 auto argumentPlaces = new Place[arguments.length];
@@ -14316,6 +14390,7 @@ unsupportedExpression:
             // User-defined constructor: run it and capture the resulting this.
             auto callArguments = CallArguments(
                 new_.arguments is null ? 0 : new_.arguments.length,
+                &_executionState.callArgumentStorage,
             );
             scope(exit) callArguments.release;
             auto arguments = callArguments.values;
@@ -14428,6 +14503,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             new_.arguments is null ? 0 : new_.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
@@ -14479,6 +14555,7 @@ unsupportedExpression:
 
         auto callArguments = CallArguments(
             new_.arguments is null ? 0 : new_.arguments.length,
+            &_executionState.callArgumentStorage,
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;

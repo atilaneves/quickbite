@@ -18,6 +18,7 @@ int main(string[] args) {
         "ut.backends.interpreter.layout",
         "ut.backends.interpreter.frame_layout",
         "ut.backends.interpreter.frame_block",
+        "ut.backends.interpreter.allocation",
         "ut.backends.interpreter.place",
         "ut.backends.interpreter.place_value",
         "ut.backends.interpreter.lvalue_place",
