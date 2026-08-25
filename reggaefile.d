@@ -10,7 +10,10 @@ alias utCov = dubBuild!(
 // CompilerFlags - propagates `-O` into the dub dependencies (dmd:frontend,
 // :dmd-backend-vendor) that the benchmark actually times. bin/bench.sh drives
 // that build into its own directory; the dev build.ninja leaves this `debug`.
-alias bench = dubBuild!(Configuration("benchmark-ldc"));
+alias bench = dubBuild!(
+    Configuration("benchmark-ldc"),
+    CompilerFlags("-g"),
+);
 alias qb = dubBuild!(
     Configuration("qb"),
     CompilerFlags("-O -release -boundscheck=off"),

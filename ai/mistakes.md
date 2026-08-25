@@ -760,6 +760,17 @@
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
 
+- Build performance benchmark binaries with debug metadata by default. Debug
+  sections do not change optimized code, and a special profiling build risks
+  measuring a binary that differs from the normal benchmark. Keep the same
+  optimization and inlining settings for profiling and timing.
+
+- Do not profile a binary through a path that a later build can overwrite.
+  `perf` can hard-link that file into its build-ID cache, so overwriting the
+  build path can also corrupt the cached copy. Copy each completed binary to
+  a unique immutable path, execute that copy, and verify that the profile and
+  binary build IDs match before symbolizing samples.
+
 - Do not use an existing task worktree only because its name matches the
   current task. Treat every existing worktree as owned by another person or
   agent unless ownership is explicit; create a new branch and worktree.
@@ -810,3 +821,31 @@
   trusting `equals`. DMD's own type-identity helpers are not safe to call
   from a hot per-call path without checking what they cost, or return,
   when `.deco` isn't already resolved.
+
+- A zero-hit probe over the current suite does not prove a fallback dead:
+  if a registration that may decline can still arise, keep the fallback
+  and pin it with a fixture that reaches it; a "decline" helper must
+  itself never throw on the shape it declines.
+
+- When manually stripping a cast chain to find a source place, size the
+  result from the argument's own outermost (post-cast) type, not from
+  whatever type the unwrap lands on -- `cast(void[]) s[]` for `ulong[3]
+  s` must report 24 bytes, not a 3-element count.
+
+- A hook called from a base-class method is silently bypassed when a
+  subclass overrides that method directly instead of calling `super`:
+  check every override of a method that other logic hooks into.
+
+- When replacing a `default: break;` (or relaxing a type gate) with real
+  work, add a red-first oracle fixture for every representation the branch
+  now reaches, not just the one motivating fixture -- it can leave sibling
+  shapes untested and green by accident.
+
+- A non-scalar-base enum's own declared default cannot be derived by
+  recursing structurally into its base type's own default (e.g. a
+  struct-base enum's field-wise `.init`): call `Type.defaultInit` on the
+  enum type itself, which already returns the real default expression.
+
+- Before wording an `Omit` as a storage-shape gap, read the dispatch
+  helper: the refusal may be a type-tag match that never unwraps enums
+  (issue #517).

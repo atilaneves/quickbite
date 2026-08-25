@@ -5423,3 +5423,276 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A `static` local's own declared field initializer applies even though
+// its storage lives for the whole module lifetime, not per call: each
+// call sees the same one-time-initialized value, not zero. `Ctfe` cannot
+// read dataseg storage at compile time. `LLVMJit` never applies a local
+// static variable's declared default at all, the same known gap
+// `datasegLocal.explicitInitializerRunsOnce` already pins for an explicit
+// initializer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "0 != 3"),
+)) {
+    @("datasegLocal.structFieldDefaultInitializerApplies." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            unittest {
+                static int retries() {
+                    static Config config;
+                    return config.retries;
+                }
+                assert(retries == 3);
+            }
+        });
+    }
+}
+
+// A module-level struct global with no explicit initializer still applies
+// its declared field initializer, the same way a plain local variable of
+// the same struct type would. `Ctfe` cannot read dataseg storage at
+// compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+)) {
+    @("dataseg.moduleStructGlobalDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            __gshared Config config;
+
+            unittest {
+                assert(config.retries == 3);
+            }
+        });
+    }
+}
+
+// The `immutable` counterpart of the fixture above: an `immutable` module
+// global with no explicit initializer is still readable, and its value
+// still comes from the struct's declared field initializer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+)) {
+    @("dataseg.immutableModuleStructGlobalDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            immutable Config config;
+
+            unittest {
+                assert(config.retries == 3);
+            }
+        });
+    }
+}
+
+// A struct field with no declared initializer of its own still takes its
+// declared type's own default, recursively: a nested-struct field's own
+// declared field default (`Inner.x == 5`) applies, and a `float` field with
+// no initializer defaults to NaN, not zero, the same as a bare `float`
+// variable. `Ctfe` cannot read dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `o` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "0 != 5"),
+)) {
+    @("datasegLocal.nestedStructFieldDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x = 5; }
+            struct Outer { Inner inner; float f; }
+
+            unittest {
+                static Outer stash() {
+                    static Outer o;
+                    return o;
+                }
+                const o = stash;
+                assert(o.inner.x == 5);
+                assert(o.f != o.f);
+            }
+        });
+    }
+}
+
+// The module-scope (`__gshared`) counterpart of the fixture above: a
+// module-level struct global with no explicit initializer applies the same
+// per-field defaults, including a nested struct field's own declared
+// default and a floating-point field's NaN default.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `o` cannot be read at compile time"),
+)) {
+    @("dataseg.nestedStructFieldDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x = 5; }
+            struct Outer { Inner inner; float f; }
+
+            __gshared Outer o;
+
+            unittest {
+                assert(o.inner.x == 5);
+                assert(o.f != o.f);
+            }
+        });
+    }
+}
+
+// The `void`-field counterpart: `void` has no loadable scalar value at
+// all, so a `void[N]` field's own storage stays whatever zero bytes the
+// enclosing struct's allocation already gave it. The Interpreter cannot
+// write a `void`-typed default (see the Omit note) -- a dataseg
+// default-write gap in the same family as issue #517's enum-place gap.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `b` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: " ~
+        "unsupported at place"),
+)) {
+    @("dataseg.voidFieldDefaultsToZeroBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct B { void[8] raw; }
+
+            __gshared B b;
+
+            unittest {
+                assert(b.raw.length == 8);
+                ubyte[] bytes = cast(ubyte[]) b.raw[];
+                assert(bytes[2] == 0);
+            }
+        });
+    }
+}
+
+// A `union` member shares its storage with every other member declared at
+// the same offset. DMD's own default-initializer builder writes each
+// member's default in declaration order and skips a later member whose
+// offset falls inside a region an earlier member already wrote, so only
+// the first member (`a`) contributes its default to `S.init`; the second
+// member (`b`) never overwrites it, leaving `a`'s own `int.init == 0` in
+// place. `Ctfe` cannot read dataseg storage at compile time. `Interpreter`
+// has this same overlap gap when defaulting its own `__gshared` storage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `s` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "2143289344 != 0"),
+)) {
+    @("dataseg.unionFirstMemberDefaultAppliesToWholeStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    int a;
+                    float b;
+                }
+            }
+
+            __gshared S s;
+
+            unittest {
+                assert(s.a == 0);
+            }
+        });
+    }
+}
+
+// The reverse member order of the fixture above: the first declared
+// member (`f`, a `float`) is the one whose default actually gets written,
+// so reading the storage back through the second member (`i`, an `int`)
+// observes `float.init`'s NaN bit pattern reinterpreted as an integer, not
+// `int.init`'s own `0`. `Ctfe` cannot read dataseg storage at compile
+// time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `u` cannot be read at compile time"),
+)) {
+    @("dataseg.unionFirstMemberDefaultOverwritesLaterMemberStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float f;
+                int i;
+            }
+
+            __gshared U u;
+
+            unittest {
+                assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A static-array field's own declared array-literal default (`int[2] a =
+// [1, 2];`) applies the same way a scalar field's own declared default
+// does, even though it parses as a different `Initializer` subclass
+// internally. `Ctfe` cannot read dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `p` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "2 != 1"),
+)) {
+    @("datasegLocal.staticArrayFieldDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair { int[2] a = [1, 2]; }
+
+            unittest {
+                static Pair p;
+                assert(p.a[0] == 1);
+                assert(p.a[1] == 2);
+            }
+        });
+    }
+}
+
+// A static-array LOCAL with no explicit initializer at all takes its
+// element type's own default, elementwise: a `float[2]` with no
+// initializer defaults every element to NaN, not zero, the same as a bare
+// `float` local's own default. `Ctfe` cannot read dataseg storage at
+// compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `fs` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal,
+        "reads uninitialised storage, e.g. 4.58281e-41 == 4.58281e-41"),
+)) {
+    @("datasegLocal.staticArrayFloatDefaultsToNaN." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static float[2] fs;
+                assert(fs[0] != fs[0]);
+            }
+        });
+    }
+}

@@ -3050,6 +3050,373 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `__gshared` static array LOCAL declared with no initializer at all
+// (`__gshared int[3] x;`, no `= ...`) is a third AST shape again: DMD
+// synthesizes a default `ExpInitializer` blit for a plain-storage local
+// (the `staticArray.declarationFromScalarBroadcastsToEveryElement` fixture
+// above covers that), but a dataseg (`__gshared`/`static`) local's
+// `VarDeclaration._init` stays entirely null instead -- DMD leaves a
+// dataseg variable's `_init` null and expects the object writer to
+// zero-fill its storage. SystemLinker is the oracle: `x`'s storage still
+// reads back as zero, the same as any other default-initialized storage.
+// `Ctfe` can never modify dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "variable `x` cannot be modified at compile time"),
+)) {
+    @("staticArray.gsharedLocalWithNoInitializerDefaultsToZero." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                __gshared int[3] x;
+                int index = 1;
+                x[index] += 5;
+
+                assert(x[0] == 0);
+                assert(x[1] == 5);
+                assert(x[2] == 0);
+            }
+        });
+    }
+}
+
+// The non-scalar-element counterpart of the fixture above: a static
+// array's own element still has no `VarDeclaration` to carry an `_init`
+// (only the array variable does), so every element still takes its own
+// type's default the same way a scalar element's `0` does -- but a
+// `string` element's default is `null`, a value with no fixed-width
+// numeric representation the way `int`'s `0` or `float`'s NaN have.
+// `Ctfe` cannot read dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `names` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleStringElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared string[2] names;
+
+            unittest {
+                assert(names[0] is null);
+                assert(names.length == 2);
+            }
+        });
+    }
+}
+
+// The local (`static immutable`, not module-level `__gshared`) sibling of
+// the fixture above: a `static`/`immutable` local's storage lives for the
+// whole module's lifetime, the same as a `__gshared` variable's, so its
+// unset `string` element defaults to `null` the same way.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `names` cannot be read at compile time"),
+)) {
+    @("staticArray.localImmutableStringElementDefaultsToNull." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static immutable string[2] names;
+
+                assert(names[0] is null);
+                assert(names.length == 2);
+            }
+        });
+    }
+}
+
+// The delegate-element sibling of the two string-element fixtures above:
+// a delegate's default is `null`, all-zero bytes -- the same value its
+// storage already starts with, so an unset delegate element reads back
+// `null` the same way an unset `string` element does.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `fns` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleDelegateElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int delegate()[2] fns;
+
+            unittest {
+                assert(fns[0] is null);
+                assert(fns.length == 2);
+            }
+        });
+    }
+}
+
+// The pointer-element sibling: a pointer element's default (`null`) is a
+// plain scalar value the same width as `ulong`, so it defaults the same
+// way a plain `int` element does.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `ps` cannot be read at compile time"),
+)) {
+    @("staticArray.modulePointerElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int*[2] ps;
+
+            unittest {
+                assert(ps[0] is null);
+                assert(ps.length == 2);
+            }
+        });
+    }
+}
+
+// The class-reference-element sibling: a class reference's default
+// (`null`) is likewise a plain scalar value the same width as `ulong`,
+// reaching the same default as a pointer element.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `widgets` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleClassReferenceElementDefaultsToNull." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            __gshared Widget[2] widgets;
+
+            unittest {
+                assert(widgets[0] is null);
+                assert(widgets.length == 2);
+            }
+        });
+    }
+}
+
+// The `void`-element sibling: `void` has no loadable scalar value at all,
+// so a `void[N]` element's own storage stays whatever zero bytes its
+// allocation already gave it. The Interpreter cannot write a
+// `void`-typed default (see the Omit note) -- a dataseg default-write
+// gap in the same family as issue #517's enum-place gap.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `buf` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: " ~
+        "unsupported at place"),
+)) {
+    @("staticArray.moduleVoidArrayDefaultsToZeroBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared void[16] buf;
+
+            unittest {
+                assert(buf.length == 16);
+                ubyte[] bytes = cast(ubyte[]) buf[];
+                assert(bytes[3] == 0);
+            }
+        });
+    }
+}
+
+// A `static`/`__gshared` local's storage is not a fresh call frame: it
+// exists once, for the module's whole lifetime, and every call to the
+// enclosing function shares it. A second call therefore sees the first
+// call's write, unlike a plain (frame-storage) local, which starts over
+// every call. `Ctfe` cannot read dataseg storage at compile time.
+// `Interpreter` also resets the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `calls` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 2"),
+)) {
+    @("datasegLocal.persistsAcrossCalls." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int nextId() {
+                    static int calls;
+                    ++calls;
+                    return calls;
+                }
+
+                assert(nextId == 1);
+                assert(nextId == 2);
+            }
+        });
+    }
+}
+
+// A dataseg local's explicit initializer is a compile-time constant, by
+// D's rules for `static`/`__gshared` storage: it is baked into the data
+// segment, not executed, so a second call sees the first call's write,
+// not the initializer value again. `Ctfe` cannot read dataseg storage at
+// compile time. `Interpreter` resets the local on the second call;
+// `LLVMJit` never applies the explicit initializer at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `calls` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "5 != 6"),
+    Omit!(LLVMJit, Because.refusal, "0 != 5"),
+)) {
+    @("datasegLocal.explicitInitializerRunsOnce." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int nextId() {
+                    static int calls = 5;
+                    return calls++;
+                }
+
+                assert(nextId == 5);
+                assert(nextId == 6);
+            }
+        });
+    }
+}
+
+// The struct counterpart of `persistsAcrossCalls`: a `__gshared` struct
+// local's field persists across calls the same way a scalar dataseg
+// local does. `Ctfe` cannot modify dataseg storage at compile time.
+// `Interpreter` also resets the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "variable `state` cannot be modified at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 2"),
+)) {
+    @("datasegLocal.structFieldPersistsAcrossCalls." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int calls; }
+
+            unittest {
+                static int nextId() {
+                    __gshared Counter state;
+                    ++state.calls;
+                    return state.calls;
+                }
+
+                assert(nextId == 1);
+                assert(nextId == 2);
+            }
+        });
+    }
+}
+
+// The nested-array counterpart of `persistsAcrossCalls`: a `static` local
+// whose element type is itself a static array (`int[2][2]`) is still one
+// piece of dataseg storage, not a fresh frame slot per call, so a mutation
+// through two index operations in one call is visible to the next call.
+// `Ctfe` cannot read dataseg storage at compile time. `Interpreter` and
+// `LLVMJit` both reset the local on the second call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `table` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "1 != 5"),
+    Omit!(LLVMJit, Because.refusal, "1 != 5"),
+)) {
+    @("datasegLocal.nestedArrayInitializerPersistsAcrossCalls." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static int next() {
+                    static int[2][2] table = [[1, 2], [3, 4]];
+                    ++table[1][1];
+                    return table[1][1];
+                }
+                assert(next == 5);
+                assert(next == 6);
+            }
+        });
+    }
+}
+
+// A `static` local with no explicit initializer at all takes its
+// declared type's own default value, not zero: a floating-point type
+// defaults to NaN, so the value never compares equal to itself. `Ctfe`
+// cannot read dataseg storage at compile time. `LLVMJit` never applies
+// this default either, the same known gap
+// `datasegLocal.structFieldDefaultInitializerApplies` already pins for a
+// struct field's own default. The `LLVMJit` note below is not the verbatim
+// red: the uninitialised value it reads back varies from run to run.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `value` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal,
+        "reads uninitialised storage, e.g. 1.06074e-314 == 1.06074e-314"),
+)) {
+    @("datasegLocal.scalarFloatingPointDefaultsToNaN." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static double stash() {
+                    static double value;
+                    return value;
+                }
+                const value = stash;
+                assert(value != value);
+            }
+        });
+    }
+}
+
+// The narrow-character counterpart of the fixture above: `char.init` is
+// `0xFF`, not `0`. `Ctfe` cannot read dataseg storage at compile time.
+// `LLVMJit` never applies this default either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "' ' != 255"),
+)) {
+    @("datasegLocal.scalarCharDefaultsToMaxValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static char letter() {
+                    static char c;
+                    return c;
+                }
+                assert(letter == 0xFF);
+            }
+        });
+    }
+}
+
+// The wide-character counterpart of the fixture above: `dchar.init` is
+// `0xFFFF`, not `0xFFFFFFFF`. `Ctfe` cannot read dataseg storage at compile
+// time. `LLVMJit` never applies this default either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "' ' != 65535"),
+)) {
+    @("datasegLocal.scalarDcharDefaultsToMaxValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static dchar glyph() {
+                    static dchar c;
+                    return c;
+                }
+                assert(glyph == 0xFFFF);
+            }
+        });
+    }
+}
+
 // Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
 // sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
 // DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts
@@ -6783,6 +7150,107 @@ static foreach (backend; Matrix!(
                 assert(s.length == 2);
                 assert(s[0] == 0xD83D);
                 assert(s[1] == 0xDE00);
+            }
+        });
+    }
+}
+
+// A whole static-array slice passed as a call argument through a
+// reinterpreting cast (`cast(void[]) s[]`) must report a byte length, not
+// the source array's element count: `void[]` has a one-byte element stride,
+// so `ulong[3]`'s 24 bytes become a 24-element `void[]`, not a 3-element one.
+// dmd's own CTFE engine evaluates this same reinterpreting cast to the
+// source element count instead; see the sibling pin below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthIsBytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t byteLength(void[] chunk) {
+                return chunk.length;
+            }
+
+            unittest {
+                ulong[3] storage;
+                assert(byteLength(cast(void[]) storage[]) == 24);
+            }
+        });
+    }
+}
+
+// dmd CTFE reinterprets a whole static-array slice cast by element count,
+// not by byte length: `cast(void[]) storage[]` for `ulong[3] storage`
+// evaluates to a 3-element `void[]` at compile time.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthIsBytes." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t byteLength(void[] chunk) {
+                return chunk.length;
+            }
+
+            unittest {
+                ulong[3] storage;
+                assert(byteLength(cast(void[]) storage[]) == 3);
+            }
+        });
+    }
+}
+
+// The same reinterpreting-cast call argument, cast to a target element type
+// narrower than the source element (`ulong[3]` -> `ushort[]`): the reported
+// length must scale by the TARGET element size, not the source's, so 24
+// source bytes become 12 `ushort` elements.
+// Ctfe omitted: dmd's own CTFE engine refuses an element-size-changing array
+// cast outright (verified directly against dmd), permanently, not a
+// quickbite backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "array cast from `uint[3]` to `ushort[]` is not supported at "
+        ~ "compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: native "
+        ~ "aggregate type mismatch uint[] -> ushort[]"),
+)) {
+    @("sliceArgument.reinterpretCastStaticArrayLengthScalesByTargetElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t count(ushort[] halves) {
+                return halves.length;
+            }
+
+            unittest {
+                uint[3] storage;
+                assert(count(cast(ushort[]) storage[]) == 6);
+            }
+        });
+    }
+}
+
+// A `static` local static array of struct elements, initialized from an
+// array literal of struct-construction-call elements, is still readable
+// by field after indexing -- the struct-element counterpart of
+// `datasegLocal.nestedArrayInitializerPersistsAcrossCalls` above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal, "0 != 4"),
+)) {
+    @("datasegLocal.structElementArrayLiteralInitializerIsReadable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            unittest {
+                static immutable Point[2] points = [Point(1, 2), Point(3, 4)];
+                size_t index = 1;
+                assert(points[index].y == 4);
             }
         });
     }

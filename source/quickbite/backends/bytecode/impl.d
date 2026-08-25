@@ -12,7 +12,9 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     import quickbite.backends.bytecode.core.compiler: Compiler;
     import quickbite.backends.bytecode.core.machine: CompileFunction;
     import core.time: Duration, MonoTime;
-    import dmd.func: FuncDeclaration, UnitTestDeclaration;
+    import dmd.dmodule: Module;
+    import dmd.func: FuncDeclaration, StaticCtorDeclaration,
+        UnitTestDeclaration;
 
     private Duration _compileTime;
     // Compiled functions, class infos, and module-variable slots persist
@@ -30,6 +32,17 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         return runTests([module_]);
     }
 
+    // Each call is a fresh process: module storage is reset to its
+    // registration-time bytes (`Compiler.resetModuleData`), then every
+    // module's constructors run again -- `syncInitialModuleData` only
+    // snapshots newly allocated slots at registration time, so a ctor's
+    // writes are never part of that snapshot -- before any unittest runs.
+    // Every module's constructors run before any module's unittests, the
+    // same order a real process runs every module ctor before `main`.
+    // Druntime also runs every module's `shared static this` bodies before
+    // any module's `static this` bodies (not module-by-module), so this
+    // collects each module's constructors first and runs every shared one,
+    // across every module, before any plain one.
     public override imported!"quickbite.backends.runner".TestResult[] runTests(
         imported!"dmd.dmodule".Module[] modules,
     ) {
@@ -38,11 +51,26 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         if (_compiler !is null)
             _compiler.resetModuleData;
 
-        imported!"quickbite.backends.runner".TestResult[] cases;
+        StaticCtorDeclaration[] sharedCtors;
+        StaticCtorDeclaration[] plainCtors;
         foreach (module_; modules)
+            collectModuleConstructors(module_, sharedCtors, plainCtors);
+
+        // A thrown/asserted ctor propagates like any other host
+        // exception -- it is not caught and turned into a diagnostic
+        // here, since a module constructor failure is fatal, not
+        // attributable to a single unittest.
+        foreach (ctor; sharedCtors)
+            runModuleConstructor(ctor);
+        foreach (ctor; plainCtors)
+            runModuleConstructor(ctor);
+
+        imported!"quickbite.backends.runner".TestResult[] cases;
+        foreach (module_; modules) {
             foreachUnitTestDeclaration(module_, (unitTest) {
                 cases ~= runUnitTest(unitTest);
             });
+        }
         return cases;
     }
 
@@ -95,6 +123,38 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
                 compilation.entryIndex,
             );
         });
+    }
+
+    // Sorts one module's `shared static this`/`static this` declarations
+    // into `sharedCtors`/`plainCtors`, appending in source order -- the
+    // per-module half of `runTests`' druntime-matching startup order.
+    private void collectModuleConstructors(
+        Module module_,
+        ref StaticCtorDeclaration[] sharedCtors,
+        ref StaticCtorDeclaration[] plainCtors,
+    ) {
+        import quickbite.frontend.util: foreachStaticCtorDeclaration;
+
+        foreachStaticCtorDeclaration(module_, (ctor) {
+            if (ctor.isSharedStaticCtorDeclaration)
+                sharedCtors ~= ctor;
+            else
+                plainCtors ~= ctor;
+        });
+    }
+
+    private void runModuleConstructor(FuncDeclaration ctor) {
+        import quickbite.backends.bytecode.core.compiler: compile;
+        import quickbite.backends.bytecode.core.machine: run;
+
+        const start = MonoTime.currTime;
+        auto compilation = compile(ctor, _compiler);
+        _compileTime += MonoTime.currTime - start;
+        run(
+            *compilation.program,
+            timed(compilation.compileFunction),
+            compilation.entryIndex,
+        );
     }
 
     public override Duration compileTime() @safe @nogc nothrow pure const scope {
