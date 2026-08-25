@@ -749,3 +749,8 @@
   work, add a red-first oracle fixture for every representation the branch
   now reaches, not just the one motivating fixture -- it can leave sibling
   shapes untested and green by accident.
+
+- A non-scalar-base enum's own declared default cannot be derived by
+  recursing structurally into its base type's own default (e.g. a
+  struct-base enum's field-wise `.init`): call `Type.defaultInit` on the
+  enum type itself, which already returns the real default expression.

@@ -4906,7 +4906,7 @@ package(quickbite.backends.bytecode) struct Compiler {
             !variable.isImmutable && !variable.isConst)
         {
             throw new Exception(text(
-                "Unsupported initializer in bytecode core: ",
+                "Unsupported dataseg local in bytecode core: ",
                 declarationChars(variable),
             ));
         }
@@ -9720,6 +9720,11 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         size_t literalCount;
         ubyte[] literalBytes;
+        // A non-scalar-base enum variable with no initializer of its own
+        // (`enum S: string { a = "x" } __gshared S s;`) is not the
+        // all-zero/null-slice default `hasDefaultInitializer` otherwise
+        // means here: its unset value is its own declared member.
+        ubyte[] enumDefaultBytes;
         if (!hasDefaultInitializer) {
             literalBytes = moduleDynamicArrayLiteralInitializerBytes(
                 initializerExpr, elementType,
@@ -9727,6 +9732,12 @@ package(quickbite.backends.bytecode) struct Compiler {
                 declaration.type, literalCount,
             );
             if (literalBytes is null && literalCount == 0)
+                return null;
+        } else if (isNonScalarBaseEnum(declaration.type)) {
+            enumDefaultBytes.length = sliceDescriptorSize;
+            if (!writeEnumDefaultInitializerBytes(
+                    declaration.type, enumDefaultBytes,
+                ))
                 return null;
         }
 
@@ -9747,6 +9758,9 @@ package(quickbite.backends.bytecode) struct Compiler {
                 nativeToLittleEndian(pointer);
             _program.moduleData[lengthOffset .. lengthOffset + size_t.sizeof] =
                 nativeToLittleEndian(cast(size_t) literalCount);
+        } else if (enumDefaultBytes !is null) {
+            _program.moduleData[offset .. offset + sliceDescriptorSize] =
+                enumDefaultBytes[];
         }
         return declarationRecordView(declaration).moduleDynamicArrayOrNull;
     }
@@ -10032,7 +10046,17 @@ package(quickbite.backends.bytecode) struct Compiler {
         // element of a module-level static array already does.
         ubyte[] literalBytes;
         literalBytes.length = size;
-        if (hasDefaultInitializer) {
+        if (hasDefaultInitializer && isNonScalarBaseEnum(declaration.type)) {
+            // A struct-base enum variable with no initializer of its own
+            // (`enum P: Point { a = Point(1, 2) } __gshared P p;`) is not
+            // `Point.init`'s own field-wise default the way a plain
+            // `Point` variable's is: its unset value is its own declared
+            // member.
+            if (!writeEnumDefaultInitializerBytes(
+                    declaration.type, literalBytes,
+                ))
+                return null;
+        } else if (hasDefaultInitializer) {
             if (!writeStructDefaultInitializerBytes(
                     declaration.type, literalBytes,
                 ))
@@ -10088,7 +10112,19 @@ package(quickbite.backends.bytecode) struct Compiler {
             initializerExpr.isNullExp !is null;
 
         ubyte[] literalBytes;
-        if (hasDefaultInitializer) {
+        if (hasDefaultInitializer && isNonScalarBaseEnum(declaration.type)) {
+            // A non-scalar-base enum variable with no initializer of its
+            // own (`enum A: int[2] { a = [1, 2] } __gshared A x;`) is not
+            // the all-zero default `writeStaticArrayDefaultInitializerBytes`
+            // would otherwise compute by descending structurally into the
+            // enum's base type: its unset value is its own declared
+            // member.
+            literalBytes.length = size;
+            if (!writeEnumDefaultInitializerBytes(
+                    declaration.type, literalBytes,
+                ))
+                return null;
+        } else if (hasDefaultInitializer) {
             literalBytes.length = size;
             if (!writeStaticArrayDefaultInitializerBytes(
                     declaration.type, literalBytes,
@@ -10110,6 +10146,143 @@ package(quickbite.backends.bytecode) struct Compiler {
         return declarationRecordView(declaration).moduleStaticArrayOrNull;
     }
 
+    // A dataseg variable, array element, or struct field whose type is an
+    // enum with a non-scalar base (`enum S: string { a = "x" }`, `enum A:
+    // int[2] { a = [1, 2] }`, `enum P: Point { a = Point(1, 2) }`) has no
+    // all-zero implicit default: unlike a plain `string`/array/struct
+    // variable's own unset value, the enum's unset value is its own first
+    // declared member. `moduleScalarDefaultBytes` already derives a
+    // scalar-base enum's real default from `Type.defaultInit`; every
+    // dynamic-array/static-array/struct default writer below needs this
+    // same check before falling back to its own all-zero/field-wise
+    // default, which would otherwise silently give the wrong value
+    // instead of the enum's declared one.
+    private bool isNonScalarBaseEnum(Type type) {
+        if (type.isTypeEnum is null)
+            return false;
+
+        final switch (typeFacts(type).representation)
+            with (DeclarationRepresentation)
+        {
+            case scalar:
+            case pointer:
+            case classPointer:
+            case assocArray:
+                return false;
+            case dynamicArray:
+            case staticArray:
+            case struct_:
+            case delegate_:
+            case vector:
+            case complexDouble:
+            case unavailable:
+            case lazyDelegate:
+                return true;
+        }
+    }
+
+    // Write a non-scalar-base enum's own declared default value into
+    // `bytes` (already sized to `type`'s own byte width), reusing the
+    // same literal writers an explicit initializer of the matching shape
+    // already uses. `Type.defaultInit` on the enum type itself (not its
+    // stripped base type) returns the enum's own first member's value
+    // expression -- a `StringExp`/`ArrayLiteralExp` for a string/array
+    // base, a `StructLiteralExp` for a struct base -- rather than the
+    // all-zero or field-wise default a plain variable of the same shape
+    // would get. Declines (`false`, `bytes` untouched) for a
+    // representation none of those literal writers cover, or when the
+    // default expression is not the expected shape.
+    private bool writeEnumDefaultInitializerBytes(Type type, ubyte[] bytes) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInit;
+
+        auto expression = type.defaultInit(Loc.initial);
+
+        final switch (typeFacts(type).representation)
+            with (DeclarationRepresentation)
+        {
+            case dynamicArray:
+                return writeEnumDynamicArrayDefaultBytes(
+                    type, expression, bytes,
+                );
+            case staticArray:
+            case vector:
+                auto elementType = type.toBasetype.nextOf;
+                auto literalBytes = moduleStaticArrayLiteralInitializerBytes(
+                    expression.isArrayLiteralExp, elementType,
+                    cast(ushort) bytes.length,
+                );
+                if (literalBytes is null)
+                    return false;
+                bytes[] = literalBytes[];
+                return true;
+            case struct_:
+                return writeStructLiteralFieldBytes(
+                    expression.isStructLiteralExp, bytes,
+                );
+            case scalar:
+            case pointer:
+            case classPointer:
+            case assocArray:
+            case delegate_:
+            case complexDouble:
+            case unavailable:
+            case lazyDelegate:
+                return false;
+        }
+    }
+
+    // The `dynamicArray`-representation branch of
+    // `writeEnumDefaultInitializerBytes`: a string-base enum's default is
+    // a `StringExp` (not the `ArrayLiteralExp`
+    // `moduleDynamicArrayLiteralInitializerBytes` otherwise expects), so
+    // its code units are written directly the same way
+    // `appendStringLiteral` builds an ordinary string literal's bytes; any
+    // other array-base enum's default reuses
+    // `moduleDynamicArrayLiteralInitializerBytes` unchanged. `bytes` is a
+    // fresh 16-byte descriptor slot (a whole variable's own module-data
+    // slot, or one element/field's own slice within a larger buffer);
+    // the enum's default byte content is pushed into a fresh
+    // `literalBlocks` entry, the same stable-address mechanism every
+    // other module-level array default already uses.
+    private bool writeEnumDynamicArrayDefaultBytes(
+        Type type,
+        Expression expression,
+        ubyte[] bytes,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        if (bytes.length != sliceDescriptorSize)
+            return false;
+
+        ubyte[] literalBytes;
+        size_t count;
+        if (auto string_ = expression.isStringExp) {
+            import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
+
+            literalBytes = stringCodeUnitBytes(string_).dup;
+            count = literalBytes.length / string_.sz;
+        } else {
+            const elementType = dynamicArrayElementType(type);
+            const elementIsArray = arrayElementIsArray(type);
+            literalBytes = moduleDynamicArrayLiteralInitializerBytes(
+                expression, elementType, elementIsArray, type, count,
+            );
+            if (literalBytes is null)
+                return false;
+        }
+
+        _program.literalBlocks ~= literalBytes;
+        const pointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
+        const ptrOffset = sliceDescriptorPtrOffset(0);
+        const lengthOffset = sliceDescriptorLengthOffset(0);
+        bytes[ptrOffset .. ptrOffset + size_t.sizeof] =
+            nativeToLittleEndian(pointer);
+        bytes[lengthOffset .. lengthOffset + size_t.sizeof] =
+            nativeToLittleEndian(cast(size_t) count);
+        return true;
+    }
+
     private bool writeStaticArrayDefaultInitializerBytes(
         Type type,
         ubyte[] bytes,
@@ -10129,6 +10302,28 @@ package(quickbite.backends.bytecode) struct Compiler {
             auto elementBytes = bytes[
                 index * elementSize .. (index + 1) * elementSize
             ];
+
+            // `void` has no default value of its own (`Type.defaultInit`
+            // on `Tvoid` emits a diagnostic and errors out) even though it
+            // reports a one-byte `scalar` representation like any ordinary
+            // numeric type -- DMD itself substitutes `ubyte` when building
+            // a `void[N]`'s own default (`TypeSArray.defaultInit`), so a
+            // `void` element's default is simply its already-zeroed byte
+            // left untouched, the same as a dynamic array or delegate
+            // element's default below.
+            if (elementType.toBasetype.ty == TY.Tvoid)
+                continue;
+
+            // A non-scalar-base enum element's default is its own
+            // declared member, not the representation-generic default the
+            // `final switch` below would otherwise compute by descending
+            // structurally into the enum's base type.
+            if (isNonScalarBaseEnum(elementType)) {
+                if (!writeEnumDefaultInitializerBytes(elementType, elementBytes))
+                    return false;
+                continue;
+            }
+
             // Every element takes the element type's own `.init`, the
             // array counterpart of a struct field with no initializer
             // below -- gated on `typeFacts`' representation rather than
@@ -10197,7 +10392,7 @@ package(quickbite.backends.bytecode) struct Compiler {
         // float b; }` has `.a == 0`, from `int`'s default, even though
         // `b`'s own `float.init` is NaN). `nextOffset` mirrors that same
         // running end offset here.
-        uint nextOffset = 0;
+        uint nextOffset;
         foreach (field; declaration.fields) {
             // A bit field's `offset`/byte width describe its containing
             // storage unit, not its own bit range, so writing its default
@@ -10224,6 +10419,16 @@ package(quickbite.backends.bytecode) struct Compiler {
             // for a type it cannot represent as one of `ScalarType`'s
             // fixed-width cases.
             if (field._init is null) {
+                // A non-scalar-base enum field's default is its own
+                // declared member, not the representation-generic default
+                // the `final switch` below would otherwise compute by
+                // descending structurally into the enum's base type.
+                if (isNonScalarBaseEnum(field.type)) {
+                    if (!writeEnumDefaultInitializerBytes(field.type, fieldBytes))
+                        return false;
+                    continue;
+                }
+
                 final switch (typeFacts(field.type).representation)
                     with (DeclarationRepresentation)
                 {
@@ -10249,7 +10454,6 @@ package(quickbite.backends.bytecode) struct Compiler {
                         break;
                     case dynamicArray:
                     case delegate_:
-                    case lazyDelegate:
                         break;
                     case unavailable:
                     case vector:
@@ -10259,6 +10463,13 @@ package(quickbite.backends.bytecode) struct Compiler {
                         // this branch would give, and `unavailable` has no
                         // known layout to write at all -- decline rather
                         // than silently zero.
+                        return false;
+                    case lazyDelegate:
+                        // A field can never actually have this
+                        // representation (only a `lazy` parameter does),
+                        // so this is unreached in practice; decline rather
+                        // than silently zero, matching the element-writer
+                        // sibling of this switch.
                         return false;
                 }
                 continue;

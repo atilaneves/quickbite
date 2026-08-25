@@ -3038,9 +3038,9 @@ static foreach (backend; Matrix!(
 }
 
 // The local (`static immutable`, not module-level `__gshared`) sibling of
-// the fixture above: a `static`/`immutable` local reaches the same
-// dataseg default-bytes writer as a module variable, so it needs the same
-// element-shape gate.
+// the fixture above: a `static`/`immutable` local's storage lives for the
+// whole module's lifetime, the same as a `__gshared` variable's, so its
+// unset `string` element defaults to `null` the same way.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `names` cannot be read at compile time"),
@@ -3060,12 +3060,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The delegate-element sibling of the two string-element fixtures above: a
-// `delegate` element has no fixed-width `ScalarType` either, so `scalarType`
-// throws for it the same way it does for a `string` element -- a static
-// array's own storage is already all-zero (`allocateModuleBytes`'s
-// zero-filled growth), which already matches a defaulted delegate's own
-// `{null, null}` value.
+// The delegate-element sibling of the two string-element fixtures above:
+// a delegate's default is `null`, all-zero bytes -- the same value its
+// storage already starts with, so an unset delegate element reads back
+// `null` the same way an unset `string` element does.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `fns` cannot be read at compile time"),
@@ -3084,10 +3082,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The pointer-element sibling: a pointer element's default (`null`) does
-// have a `ScalarType` (`scalarType` maps every `T*` to `ScalarType.ulong_`),
-// so this shape already reaches the scalar-default write the same way a
-// plain `int` element does.
+// The pointer-element sibling: a pointer element's default (`null`) is a
+// plain scalar value the same width as `ulong`, so it defaults the same
+// way a plain `int` element does.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `ps` cannot be read at compile time"),
@@ -3106,10 +3103,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The class-reference-element sibling: a class reference element's default
-// (`null`) likewise has a `ScalarType` (`scalarType` maps every class type
-// to `ScalarType.ulong_`), reaching the same scalar-default write as a
-// pointer element.
+// The class-reference-element sibling: a class reference's default
+// (`null`) is likewise a plain scalar value the same width as `ulong`,
+// reaching the same default as a pointer element.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `widgets` cannot be read at compile time"),
@@ -3126,6 +3122,32 @@ static foreach (backend; Matrix!(
             unittest {
                 assert(widgets[0] is null);
                 assert(widgets.length == 2);
+            }
+        });
+    }
+}
+
+// The `void`-element sibling: `void` has no loadable scalar value at all,
+// so a `void[N]` element's own storage stays whatever zero bytes its
+// allocation already gave it. `Interpreter` cannot yet write this
+// storage's default value either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `buf` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: " ~
+        "unsupported at place"),
+)) {
+    @("staticArray.moduleVoidArrayDefaultsToZeroBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared void[16] buf;
+
+            unittest {
+                assert(buf.length == 16);
+                ubyte[] bytes = cast(ubyte[]) buf[];
+                assert(bytes[3] == 0);
             }
         });
     }

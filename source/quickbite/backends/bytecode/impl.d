@@ -39,6 +39,10 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     // writes are never part of that snapshot -- before any unittest runs.
     // Every module's constructors run before any module's unittests, the
     // same order a real process runs every module ctor before `main`.
+    // Druntime also runs every module's `shared static this` bodies before
+    // any module's `static this` bodies (not module-by-module), so this
+    // collects each module's constructors first and runs every shared one,
+    // across every module, before any plain one.
     public override imported!"quickbite.backends.runner".TestResult[] runTests(
         imported!"dmd.dmodule".Module[] modules,
     ) {
@@ -47,8 +51,19 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         if (_compiler !is null)
             _compiler.resetModuleData;
 
+        StaticCtorDeclaration[] sharedCtors;
+        StaticCtorDeclaration[] plainCtors;
         foreach (module_; modules)
-            runModuleConstructors(module_);
+            collectModuleConstructors(module_, sharedCtors, plainCtors);
+
+        // A thrown/asserted ctor propagates like any other host
+        // exception -- it is not caught and turned into a diagnostic
+        // here, since a module constructor failure is fatal, not
+        // attributable to a single unittest.
+        foreach (ctor; sharedCtors)
+            runModuleConstructor(ctor);
+        foreach (ctor; plainCtors)
+            runModuleConstructor(ctor);
 
         imported!"quickbite.backends.runner".TestResult[] cases;
         foreach (module_; modules) {
@@ -110,13 +125,15 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         });
     }
 
-    // Runs a module's `shared static this`/`static this` bodies, matching
-    // compiled D's startup order.
-    private void runModuleConstructors(Module module_) {
+    // Sorts one module's `shared static this`/`static this` declarations
+    // into `sharedCtors`/`plainCtors`, appending in source order -- the
+    // per-module half of `runTests`' druntime-matching startup order.
+    private void collectModuleConstructors(
+        Module module_,
+        ref StaticCtorDeclaration[] sharedCtors,
+        ref StaticCtorDeclaration[] plainCtors,
+    ) {
         import quickbite.frontend.util: foreachStaticCtorDeclaration;
-
-        StaticCtorDeclaration[] sharedCtors;
-        StaticCtorDeclaration[] plainCtors;
 
         foreachStaticCtorDeclaration(module_, (ctor) {
             if (ctor.isSharedStaticCtorDeclaration)
@@ -124,16 +141,6 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
             else
                 plainCtors ~= ctor;
         });
-
-        // `shared static this` bodies run before `static this` bodies,
-        // matching compiled D's startup order; a thrown/asserted ctor
-        // propagates like any other host exception -- it is not caught and
-        // turned into a diagnostic here, since a module constructor failure
-        // is fatal, not attributable to a single unittest.
-        foreach (ctor; sharedCtors)
-            runModuleConstructor(ctor);
-        foreach (ctor; plainCtors)
-            runModuleConstructor(ctor);
     }
 
     private void runModuleConstructor(FuncDeclaration ctor) {

@@ -6499,6 +6499,148 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The `string`-base counterpart of the fixture above: an enum whose base
+// type is `string`, not an integral, still defaults to its own declared
+// member -- not the empty string a plain `string` variable's own unset
+// value would be. `Ctfe` cannot read dataseg storage at compile time.
+// `Interpreter` does not yet index into this shape of dataseg storage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `s` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleStringEnumDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum S: string { a = "x" }
+
+            __gshared S s;
+
+            unittest {
+                assert(s == "x");
+            }
+        });
+    }
+}
+
+// The array-element counterpart: a `string`-base enum element of a
+// module-level static array still defaults to its own declared member,
+// the same way a plain `int` element defaults to `0`. `Interpreter` has
+// the same indexing gap as the whole-variable fixture above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `arr` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleStringEnumArrayElementDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum S: string { a = "x" }
+
+            __gshared S[2] arr;
+
+            unittest {
+                assert(arr[0] == "x");
+                assert(arr[1] == "x");
+            }
+        });
+    }
+}
+
+// The struct-field counterpart: a `string`-base enum field with no
+// initializer of its own still takes the enum's own declared default
+// member, the same way the integral-base enum field above already does.
+// `Interpreter` has the same indexing gap as the two fixtures above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `t` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleStringEnumStructFieldDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum S: string { a = "x" }
+            struct T { S s; }
+
+            __gshared T t;
+
+            unittest {
+                assert(t.s == "x");
+            }
+        });
+    }
+}
+
+// The static-array-base counterpart: an enum whose base type is itself a
+// static array still defaults to its own declared member, not the base
+// array's own all-zero default. `Interpreter` has the same indexing gap
+// as the string-base fixtures above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `x` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleStaticArrayEnumDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum A: int[2] { a = [1, 2] }
+
+            __gshared A x;
+
+            unittest {
+                assert(x[0] == 1);
+                assert(x[1] == 2);
+            }
+        });
+    }
+}
+
+// The struct-base counterpart: an enum whose base type is a struct still
+// defaults to its own declared member, not the struct's own field-wise
+// `.init`. `Interpreter` does not yet resolve a struct-typed enum
+// variable's own field access.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `p` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: " ~
+        "DotVarExp receiver is not a struct-, class-, or pointer-typed " ~
+        "place"),
+)) {
+    @("dataseg.moduleStructEnumDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            enum P: Point { a = Point(1, 2) }
+
+            __gshared P p;
+
+            unittest {
+                assert(p.x == 1);
+                assert(p.y == 2);
+            }
+        });
+    }
+}
+
 // A module-level pointer variable (`__gshared int* quickbiteDatasegPointer;`)
 // -- `moduleScalarVariableOrNull` used to decline every `Tpointer` dataseg
 // declaration outright ("pointer ... dataseg variables remain entirely

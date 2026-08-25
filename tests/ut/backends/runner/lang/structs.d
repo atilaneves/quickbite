@@ -5377,6 +5377,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The `void`-field counterpart: `void` has no loadable scalar value at
+// all, so a `void[N]` field's own storage stays whatever zero bytes the
+// enclosing struct's allocation already gave it. `Interpreter` cannot
+// yet write this storage's default value either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `b` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place_value.writeValue: " ~
+        "unsupported at place"),
+)) {
+    @("dataseg.voidFieldDefaultsToZeroBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct B { void[8] raw; }
+
+            __gshared B b;
+
+            unittest {
+                assert(b.raw.length == 8);
+                ubyte[] bytes = cast(ubyte[]) b.raw[];
+                assert(bytes[2] == 0);
+            }
+        });
+    }
+}
+
 // A `union` member shares its storage with every other member declared at
 // the same offset. DMD's own default-initializer builder writes each
 // member's default in declaration order and skips a later member whose
@@ -5384,7 +5412,7 @@ static foreach (backend; Matrix!(
 // the first member (`a`) contributes its default to `S.init`; the second
 // member (`b`) never overwrites it, leaving `a`'s own `int.init == 0` in
 // place. `Ctfe` cannot read dataseg storage at compile time. `Interpreter`
-// has this same overlap gap in its own module-default writer.
+// has this same overlap gap when defaulting its own `__gshared` storage.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `s` cannot be read at compile time"),
