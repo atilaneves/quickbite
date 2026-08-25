@@ -5625,15 +5625,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A pointer local reassigned twice within the same activation, each
-// assignment a genuine host address (`values.ptr`, not `&scalar` -- see the
-// carrier fixture below), exercises `impl.d`'s verified frame mirror on its
-// ACCEPT path twice: `setLocal`/`mirrorToFrame` writes the new address into
-// the frame slot, and the next read's `assertFrameMirror` recomposes it
-// through the identical `place_value.writeValue` and compares raw bytes
-// (`ai/plans/value.md` "Remaining work" item 5, the pointer leaf). A wrong
-// scan policy or an asymmetric write/verify guard would surface here as an
-// `AssertError` from inside the interpreter, not a wrong return value.
+// Reassigning a pointer local must make later dereferences use the new
+// address. Each source array remains live while the pointer can refer to it.
 static foreach (backend; Matrix!()) {
     @("pointer.mirroredAcrossReassignment." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -7948,18 +7941,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A class field whose own type is a class -- an object GRAPH, not only a
-// single object -- built as a short linked list, then mutated and read back
-// through the SAME chain of field accesses throughout: this is the
-// real-object-graph shape the native frame mirror's class-body composition
-// now has to compose and verify without asserting. Deliberately built and
-// read through one root reference only (`first.next...`), never through a
-// second, independent local bound to an interior node: `ai/plans/value.md`'s
-// Cell coherence contract already names class-typed fields as having "no
-// cell support on either the read or write side", and a second alias into
-// the middle of the graph is exactly the shape that gap affects -- out of
-// this fixture's scope, which is the mirror's own composition, not that
-// pre-existing boxed-authority limit.
+// A linked object graph keeps each node's identity through chained field
+// access. Mutating the tail must not change either preceding node.
 static foreach (backend; Matrix!()) {
     @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -8066,18 +8049,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A shared object graph's nested body, rewritten through a DIFFERENT
-// binding's own mirror after `parent`'s own mirror last established, must
-// not crash a later read of `parent`: `child`'s own `mirrorClassToFrame`
-// write (`child.x = 5;`) rewrites the SAME `object_table.ObjectTable`-owned
-// body `parent`'s established graph already composed (`parent.child` is the
-// identical identity), strictly AFTER `parent`'s own mirror recorded what
-// it wrote. The pre-existing boxed-authority gap
-// (`ai/plans/value.md`'s Cell coherence "Known gaps") already means
-// `parent`'s own boxed `locals[]` copy of `child`'s field goes stale here --
-// a wrong VALUE on a correct guest program, on master too -- but the native
-// mirror's own verify step must not turn that pre-existing wrong answer
-// into an internal `AssertError` crash.
+// Two class bindings that refer to the same child object share its identity.
+// A field write through the child binding must be visible through the
+// parent's field.
 static foreach (backend; Matrix!()) {
     @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
         backend.stringof)
@@ -8500,11 +8474,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A class-typed field reassigned to a NEW object must observe the new
-// object's own fields afterward, not retain the old object's -- ordinary
-// class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
-// coherence contract), which the native mirror's object-graph composition
-// must not disturb.
+// Reassigning a class-typed field binds it to the new object's identity.
+// Later field writes and reads must not retain the old object's state.
 static foreach (backend; Matrix!()) {
     @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -14138,9 +14109,8 @@ static foreach (backend; Matrix!()) {
 
 // The static-array sibling of the fixture above: `*&buf[2]` carries DMD's
 // own already-computed byte offset for element 2 in the `SymOffExp` it folds
-// to, which the `ref` bind must apply directly to `buf`'s own storage
-// (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
-// an element index.
+// to. The `ref` bind must apply that offset directly to `buf`'s storage
+// rather than re-derive it as an element index.
 static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
         backend.stringof)

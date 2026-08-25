@@ -1,10 +1,9 @@
 # Bytecode VM plan
 
-Created from scratch 2026-08-11 after deleting the previous plan. Nothing
-from that plan — nor from value.md, ffi.md, or RESEARCH.md — binds this one;
-the only inherited constraint is the project goal: minimal
-edit-to-unittest-verdict latency. The design survey behind this plan lives
-in ai/research/bytecode.md.
+Created from scratch 2026-08-11 after deleting the previous plan. No deleted
+plan binds this one. The inherited constraint is the project goal: minimal
+edit-to-unittest-verdict latency. The design survey behind this plan lives in
+`ai/research/bytecode.md`.
 
 ## North star
 

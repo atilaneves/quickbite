@@ -421,7 +421,7 @@ unittest {
 // recursive path: `*&buf[2]` carries a `SymOffExp` whose own `offset` is
 // DMD's already-computed byte offset -- `2 * int.sizeof` -- which must be
 // applied DIRECTLY to `buf`'s own cell address rather than re-derived as an
-// element index (`value.md`'s Layout authority contract).
+// element index.
 @("placeOfLvalue.ptrExp.symOffOperandAppliesDmdsOwnByteOffsetWithScalarRoundTrip")
 unittest {
     auto target = lvalueTargetOf(

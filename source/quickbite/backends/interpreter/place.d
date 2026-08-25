@@ -236,9 +236,9 @@ public struct Place {
     // composed from (a frame slot, a struct/class body, an array element)
     // whose type transitively contains a pointer or class reference was
     // allocated `NativeBlock.Scan.conservative` for exactly that reason,
-    // per DMD's own `hasPointers` (`value.md`'s Containers contract). A
-    // `null` reference and a non-GC (FFI/foreign) address are both fine
-    // anywhere: there is nothing for the collector to lose track of.
+    // per DMD's own `hasPointers`. A `null` reference and a non-GC
+    // (FFI/foreign) address are both fine anywhere: there is nothing for
+    // the collector to lose track of.
     public void storeReference(void* reference) @safe {
         if (
             _type.isTypePointer is null &&

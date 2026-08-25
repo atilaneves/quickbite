@@ -2556,12 +2556,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `frame_layout`'s reference slot for a `ref`/`out` parameter (`value.md`'s
-// Remaining work item 5) composes the caller-side address of a `ref`
-// argument's own lvalue at bind time and stores it in the callee's frame,
-// purely as an internal, bind-time-verified shadow -- authority stays
-// boxed, so every fixture below only re-confirms `SystemLinker`-oracle
-// behaviour that already worked, now exercised through the new wiring.
+// A `ref` or `out` parameter aliases the caller's selected lvalue. Writes in
+// the callee must therefore change that caller storage for scalars,
+// aggregates, references, and nested forwarding alike.
 static foreach (backend; Matrix!()) {
     @("refArgument.scalarParameterMutatedByCallee." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3555,14 +3552,9 @@ static foreach (backend; Matrix!(
 }
 
 // DMD flattens an ANONYMOUS union's members into the enclosing struct's own
-// `fields` at OVERLAPPING offsets (`ai/plans/value.md`'s Unions section: the
-// offsets are the aliasing truth). The enclosing declaration is still a
-// plain struct, so treating its fields as independent, non-overlapping
-// storage writes both members in declaration order over the same bytes and
-// lets the last one win. `real` and `long` never re-derive each other, so
-// after `s.l = 42` the boxed `r` is still NaN while the bytes read `42` --
-// two members whose snapshots genuinely contradict, which is exactly what
-// an explicit union's own stricter gate exists to refuse.
+// `fields` at overlapping offsets. The offsets define D's aliasing: writing
+// one member changes the bytes read through the other member, even though the
+// enclosing declaration is a struct.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~

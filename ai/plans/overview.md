@@ -17,11 +17,7 @@ The product work order is:
    `SystemLinker`, using only ordinary D semantics. The default LDC-hosted
    benchmark is the acceptance command; packages are feature-discovery and
    integration workloads, never sources of package-specific behavior.
-2. Delete the Interpreter's universal expression carrier through
-   destination-passing evaluation (`value.md` items 8-10).
-3. Execute the formatter in every remaining backend and delete the shared
-   `quickbite.lang.Value`.
-4. Expand the Interpreter language surface beyond the subset the Cerealed
+2. Expand the Interpreter language surface beyond the subset the Cerealed
    gate required.
 
 The Bytecode VM (`bytecode.md`) and the native-layout FFI are a parallel
@@ -72,7 +68,8 @@ Backends:
   from `SystemLinker` its behaviour is characterized, not treated as
   truth (`AGENTS.md`, Testing).
 - `Interpreter` — tree-walking AST interpreter. Current centre of
-  gravity: execute Cerealed completely (`interpreter.md`).
+  gravity: execute real packages through native typed places and ordinary D
+  runtime semantics (`interpreter.md`).
 - `Bytecode` — bytecode VM compiled lazily per function from the
   analysed AST, values in native D layout throughout (`bytecode.md`).
 - `IR` — lower-to-IR interpreter (`ir.md`).
@@ -85,24 +82,20 @@ Backends:
 Live plans:
 
 - `interpreter.md` — make the default LDC-hosted Interpreter run the package
-  gates through package-independent D semantics, then hand off to the
-  destination-passing cleanup.
-- `ffi.md` — `quickbite.ffi.ffi`, the address-only native-call mechanism every
-  backend calls native leaves through.
-- `value.md` — Interpreter native storage, prelude display formatting, and
-  shared `Value` deletion.
+  gates through package-independent D semantics; it also owns Interpreter
+  storage, metadata, lifetime, druntime, and native-call adapter contracts.
 - `bytecode.md` — the bytecode VM: cerealed green, druntime-first
   convergence, coverage, then performance.
 - `ir.md` — IR backend promotion; known semantic divergences listed
   there.
-- `repl.md` — REPL redesign.
+- `repl.md` — REPL sessions, result transport, and display formatting.
 - `backend-test-modules-order.md` — shared module ordering for backend
   promotion work.
 
-The primary-source surveys behind the value-representation, FFI, and
-VM-design decisions live in `ai/research/` (`interpreter.md`,
-`bytecode.md`, `druntime-reuse.md`). Deleted plans' conclusions live in
-their owning plans and git history.
+The primary-source surveys behind Interpreter storage, native calls, and VM
+design live in `ai/research/` (`interpreter.md`, `bytecode.md`, and
+`druntime-reuse.md`). Durable contracts live in their owning plans; completed
+work lives in git history.
 
 ## Testing Rules
 

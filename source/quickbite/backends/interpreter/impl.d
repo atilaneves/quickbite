@@ -511,9 +511,9 @@ private struct FrameMetadataLifetime {
 }
 
 // `nativeDelegateSlots`' payload: a live delegate is either an opaque
-// native-code {context, funcptr} pair (ffi.md §35.8) or the interpreter's
-// own callable id, looked up again in `_executionState.delegates` for the
-// full `RuntimeDelegate`. The two shapes share one table, keyed by the
+// native-code {context, funcptr} pair or the interpreter's own callable id,
+// looked up again in `_executionState.delegates` for the full
+// `RuntimeDelegate`. The two shapes share one table, keyed by the
 // delegate-typed slot's own address, but never share a representation.
 private struct DelegateSlot {
     public bool isNative;
@@ -2068,11 +2068,10 @@ private struct Walker {
                 continue;
             // `copyPlaceValue`, not the raw `copyFromUnchecked`: a field
             // could be a delegate/function-pointer/nested-context type carrying
-            // out-of-band metadata (`ai/plans/value.md` decision 15), and
-            // this destination is a class body the Walker may have already
-            // populated once before -- this pairs the byte copy with the
-            // same clear-then-copy invariant every other typed place write
-            // in this module observes.
+            // out-of-band metadata, and this destination is a class body the
+            // Walker may have already populated once before. This pairs the
+            // byte copy with the same clear-then-copy invariant every other
+            // typed place write in this module observes.
             copyPlaceValue(source.field(field), destination.field(field));
         }
     }
@@ -13084,10 +13083,9 @@ private struct RuntimeDelegate {
     // this delegate value was created (while that activation's frame was
     // still live), never re-derived from whatever activation later calls
     // the delegate. The captured addresses point into that activation's
-    // GC-backed `FrameBlock` (decision 17, `value.md`); retaining them
-    // here keeps the block itself reachable for exactly as long as this
-    // delegate can still be called, the same way any other GC pointer
-    // field does.
+    // GC-backed `FrameBlock`; retaining them here keeps the block itself
+    // reachable for exactly as long as this delegate can still be called,
+    // the same way any other GC pointer field does.
     public void*[imported!"dmd.declaration".VarDeclaration] capturedAddresses;
 }
 

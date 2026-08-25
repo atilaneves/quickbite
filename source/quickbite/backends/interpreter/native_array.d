@@ -614,10 +614,9 @@ public struct NativeArray {
     // an activation frame slot, a struct/class body, or an array element --
     // every one of which was itself allocated `Scan.conservative` whenever
     // it (transitively) contains a slice field, per DMD's own `hasPointers`
-    // recursing into aggregate fields (`value.md`'s Containers contract) --
-    // so this never actually throws for a legitimate call site; it is the
-    // same defensive check the overload above performs, not a speculative
-    // one invented for this overload alone.
+    // recursing into aggregate fields. Thus, this never throws for a
+    // legitimate call site; it is the same defensive check the overload
+    // above performs, not a speculative one invented for this overload.
     public void writeSliceHeader(void* destAddress) const @safe {
         import core.memory: GC;
 

@@ -1,10 +1,10 @@
-# Research: the endpoint after `Value`
+# Research: the native-place Interpreter endpoint
 
 ## Purpose
 
-This document is the precedent survey behind the endpoints committed in
-`ai/plans/value.md` and `ai/plans/ffi.md` (decisions settled 2026-08-11).
-The decisions, contracts, and remaining work live in those plans; this file
+This document is the precedent survey behind the Interpreter's carrier-free
+storage and typed-address native-call boundaries. The current contracts live
+in `ai/plans/interpreter.md`; display belongs to `ai/plans/repl.md`. This file
 records the surveyed projects, the questions each was evaluated against, the
 conclusions the survey supports, and the pinned primary sources.
 
@@ -120,10 +120,10 @@ Arbitrary-sized aggregates remain in target-layout virtual memory. Typed
 places. Function-call evaluation carries a destination place.
 
 This is evidence against an arbitrary-sized universal value and in favor of
-destination passing. It is not evidence for retaining a smaller
-`ExpressionResult`: rustc still needs an operand enum because it is a generic
-MIR abstract machine, whereas Quickbite's tree walker can invoke statically
-typed helpers from statically typed AST nodes.
+destination passing. It is not evidence for retaining a smaller carrier:
+rustc still needs an operand enum because it is a generic MIR abstract
+machine, whereas Quickbite's tree walker can invoke statically typed helpers
+from statically typed AST nodes.
 
 Miri adds allocation identities, pointer provenance, validity checking,
 cross-target behavior, and isolation because its product is undefined-behavior
@@ -572,7 +572,7 @@ latency favor native bytes and host addresses. Cross-target symbolic identity,
 managed-object uniformity, reflection, and JIT throughput do not justify a
 runtime box.
 
-### 2. `ExpressionResult` is not the endpoint
+### 2. A universal expression result is not the endpoint
 
 A smaller, nonrecursive sum type is still a universal runtime value. It still:
 
@@ -586,7 +586,9 @@ A smaller, nonrecursive sum type is still a universal runtime value. It still:
 
 The survey found scalar unions in generic bytecode/IR loops, but no reason a
 statically dispatched tree walker must copy that design. The frontend has
-already typed every expression.
+already typed every expression. The Interpreter now implements this endpoint:
+production expression evaluation uses typed places and caller-provided
+destinations, with no universal expression-result carrier.
 
 ### 3. Destination passing best matches the evidence
 
@@ -600,8 +602,9 @@ assignment different aliasing, postblit, move, destruction, and failure
 semantics from initialization. Statically typed host locals can carry scalar
 intermediates without becoming a guest-value currency.
 
-`value.md` decision 7 is the normative evaluator contract. This survey records
-why that contract was chosen; it does not define its operations or invariants.
+`ai/plans/interpreter.md`'s "Storage and value boundary" section is the
+normative evaluator contract. This survey records why that contract was
+chosen; it does not define its operations or invariants.
 
 ### 4. Locals and expression temporaries have different lifetimes
 
@@ -636,8 +639,9 @@ use separate lifetime-aware `Block` and `Descriptor` machinery.
 
 The existing Interpreter caches whole-body frame layout for one root
 execution. That cache does not survive a new root or a source edit, so the
-survey gives neither candidate presumed cross-edit reuse credit. `value.md`
-decision 19 and item 8 own the constraints, measurement, and selection.
+survey gives neither candidate presumed cross-edit reuse credit. The
+addressable-temporary guardrail in `ai/plans/interpreter.md` requires a new
+measurement before a different storage strategy.
 
 Primary source for D temporary lifetime rules: [D expressions][d-expressions].
 
@@ -658,8 +662,9 @@ The surveyed representation pattern is:
 
 This evidence rules out treating an internal descriptor address as executable
 code. A real native crossing needs a native-valid representation; metadata
-beside a null or fake slot does not provide one. `value.md` decision 15 owns
-the refusal contract, and `ffi.md` owns the separate inbound-callback boundary.
+beside a null or fake slot does not provide one. `ai/plans/interpreter.md`
+owns the storage and callback-adapter contracts; `quickbite.ffi.ffi` owns the
+typed physical call mechanism.
 
 ### 6. Native calls split into reusable facts and a small hot path
 
@@ -698,8 +703,9 @@ invalidation rules:
 
 That independence supports separate reuse and invalidation. A prepared
 `ffi_cif` is process-local and retains its `ffi_type` graph, while a target
-address is tied to an image generation. `ffi.md` is the normative owner of
-cache ownership, keys, lifetime, and invalidation.
+address is tied to an image generation. The `quickbite.ffi.ffi` module owns
+these physical-call caches; `ai/plans/interpreter.md` owns the Interpreter
+adapter and callback lifetime.
 
 ### 7. Inbound re-entry is a separate direction
 
@@ -719,7 +725,7 @@ not universal properties of every callback.
 
 Both shapes are separate from outbound calls and may share ABI classification.
 The contrast supports lazy construction at an actual escape rather than a
-cost on every interpreted callable. `ffi.md` normatively keeps inbound
+cost on every interpreted callable. `ai/plans/interpreter.md` keeps inbound
 lifetime and re-entry backend-adapter-owned.
 
 ### 8. Real projects choose order and tuning, not architecture debt

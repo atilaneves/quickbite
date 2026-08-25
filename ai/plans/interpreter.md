@@ -30,17 +30,15 @@ translation stay in its backend adapter.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
-concern owned with `value.md`'s prelude formatter. Expressions and nested
-function returns inside a unittest use caller-provided typed destinations.
+concern owned by `repl.md`. Expressions and nested function returns inside a
+unittest use caller-provided typed destinations.
 
 ## Execution architecture
 
 This section is authoritative for execution-state ownership, interpreted D
-calls, and the migration away from child-`Walker` state copying. `value.md`
-remains authoritative for value and place representation, while `ffi.md`
-remains authoritative for the native-call seam. The precedent surveys —
-including the call-state survey behind this section — live in
-`ai/research/interpreter.md`.
+calls, native storage, and the migration away from child-`Walker` state
+copying. The precedent surveys, including the call-state survey behind this
+section, live in `ai/research/interpreter.md`.
 
 The surveyed engines agree on the lifetime split that matters here: shared
 execution state is borrowed, calls allocate compact frames, and none
@@ -123,18 +121,14 @@ calls, delegates, function pointers, constructors, `ref` returns, and native
 callback re-entry into one invocation path. It establishes the result
 destination, evaluates each receiver and argument exactly once in D order,
 allocates and binds the activation, dispatches the body or native leaf, and
-unwinds the activation. The endpoint follows `value.md`:
-
-- a statement produces no value;
-- an lvalue produces a typed place;
-- an rvalue constructs into a caller-provided typed destination; and
-- a call receives its result destination before the callee runs.
+unwinds the activation. Its result follows "Storage and value boundary"
+below.
 
 Guest associative arrays are druntime `Impl*` tables built by interpreted
 `core.internal.newaa` code, but two `Impl` fields still hold interpreter-world
 objects, so an AA must not cross the native-call seam; the seam work is
-recorded in ffi.md's "Associative arrays" section. See [druntime's AA
-implementation][druntime-newaa].
+an Interpreter storage concern. See
+[druntime's AA implementation][druntime-newaa].
 
 ### Ownership invariants
 
@@ -143,9 +137,6 @@ implementation][druntime-newaa].
 - Each activation owns fresh frame storage. `ref`, `out`, receiver, and
   captured bindings retain typed addresses into existing storage; they do not
   copy values for later reconciliation.
-- An address plus its static D type is the authority for a place. Side metadata
-  may describe bytes that cannot encode an interpreted callable, dynamic class
-  type, or native exception directly; it never becomes a second value store.
 - Callable identities are unique and monotonic within the execution that owns
   them. Address-keyed slot metadata is not monotonic: ordinary stores, clears,
   copies, moves, and reallocations insert, replace, relocate, and remove its
@@ -213,6 +204,65 @@ architecture:
 This contract deliberately preserves child `Walker` and recursive AST descent.
 Renaming or splitting the evaluator is not part of the bounded gate.
 
+### Storage and value boundary
+
+The Interpreter has no boxed value representation. A place is one native
+address paired with its static D type. The address is the storage authority:
+
+- a statement produces no value;
+- an lvalue produces a typed place;
+- an rvalue constructs into a caller-provided typed destination;
+- assignment writes the selected place and remains distinct from
+  construction; and
+- a call receives its result destination before the callee runs.
+
+Frames, module storage, aggregates, arrays, arguments, and results use the
+host D ABI layout. DMD-derived sizes, alignments, field offsets, and type facts
+are the only layout rules. Native calls receive typed addresses through
+`quickbite.ffi.ffi`; the adapter does not marshal values through a backend
+representation.
+
+Side metadata records only facts that native bytes cannot express for the
+Interpreter, such as symbolic callable identity, interpreted delegate state,
+dynamic class ownership, and synthesized `TypeInfo` identity. It is not a
+second value store. Every clear, store, copy, move, and relocation updates the
+metadata with the bytes. Address-keyed metadata must not keep dead guest
+objects alive or survive address reuse; [issue #563] owns the remaining
+retention work.
+
+Borrowed native storage has an external owner. That owner must keep the bytes
+live for every derived place and pointer. Owned array growth can move its
+allocation. Earlier pointers and slice headers then remain silently stale, as
+they do in compiled D; the Interpreter does not update them or add a bounds
+diagnostic. A borrowed array cannot grow in place because the Interpreter does
+not own its allocation.
+
+Addressable expression temporaries belong to the activation and survive until
+their D full-expression cleanup runs, including exceptional unwind. The
+Cerealed gate did not justify segmented scratch storage; add it only after a
+new measurement identifies temporary storage as the next bounded cost.
+
+### Druntime and call dispatch
+
+When DMD supplies a lowering or druntime supplies D source or a real hook, the
+Interpreter executes it. A local implementation is temporary and must have an
+owning issue and a retirement condition. The remaining storage/runtime
+deviations are [static-array construction][issue #562], [array allocation and
+length][issue #565], [append and reserve][issue #566], [exception
+chaining][issue #568], and [concatenation][issue #569].
+
+The target has no name-based call interception. A function with D source
+executes that source. A bodyless or inline-assembly native leaf uses the
+ordinary typed-address native-call path. A DMD-recognized compiler builtin is
+a typed compiler operation, selected by DMD semantic identity rather than a
+Quickbite name table. The remaining monitor and `_d_arrayctor` deviations are
+owned by [issue #561] and [issue #562]. [Issue #570] owns deletion of the dead
+policy API after those deviations are gone.
+
+Native delegates loaded from storage use their native context and function
+pointer words. [Issue #560] owns the remaining `.ptr` and `.funcptr` property
+support; it does not authorize a separate delegate representation.
+
 ### Later migration, in dependency order
 
 The remaining clean-sheet migration is:
@@ -253,13 +303,12 @@ The remaining clean-sheet migration is:
 
 ```text
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
-- value and place semantics: ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
   raw source — templates and `static foreach` arrive pre-lowered);
 - general interpreter tuning (timings per `overview.md`'s measurement
   contract);
-  execution-state lifetime correctness and bounded call setup remain here;
-- value-representation performance, owned by `value.md`.
+  execution-state lifetime correctness, storage correctness, and bounded call
+  setup remain here.
 ```
 
 ## 3. Oracle
@@ -276,7 +325,7 @@ live in `tests/ut/backends/runner/lang/` (pure interpretation) and `sys/`
 (runtime / FFI). This plan's fixtures are almost all `lang/` — they exercise
 interpreter execution, not the native boundary.
 
-## 4. Relationship to the FFI and representation plans
+## 4. Relationship to native calls and other backends
 
 ```text
 quickbite.ffi.ffi
@@ -287,14 +336,6 @@ Interpreter adapter
                selects typed addresses and owns callback lifetime/re-entry and
                native exception translation. It has one preparation path and
                one execution path, with no legacy marshalling fallback.
-value.md       how the interpreter represents runtime results and addressable
-               storage. The meeting surface is wider than "a missing Value
-               kind": synthetic pointers, cast-aliasing, allocation identity,
-               and reinterpret loads are value.md's, handled per the §8 triage
-               rule — red fixture here, Interpreter omitted, root fix there.
-               Its settled contract is native-layout storage, a place as an
-               address plus its static type, destination-passing evaluation,
-               and no FFI marshalling. This plan owns the workingness track.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 overview.md    the benchmarking measurement contract (GC policy, ratchet,
                corpus selection). Tuning may not redefine language behavior
@@ -334,10 +375,10 @@ eval(FuncDeclaration) / evalFormattedDisplay(FuncDeclaration) -> EvalResult
 ```
 
 The separation is the contract. A successful unittest reaches `TestResult`
-without `displayString`, `Value.toString`, or `__quickbiteFormat`. A REPL
-expression cell executes the frontend-synthesized formatter and returns its
-string. Statement/no-display cells may use the same execution machinery
-without manufacturing a display value.
+without invoking a display formatter. A REPL expression cell executes the
+frontend-synthesized formatter and returns its string. Statement/no-display
+cells may use the same execution machinery without manufacturing a display
+value.
 
 Inside the walker, expression evaluation remains recursive because all real D
 code, including unittests, computes expressions and calls value-returning
@@ -400,32 +441,25 @@ triage, never the end state: the goal is that the interpreter **runs** the
 construct and agrees with `SystemLinker`. Do not add tests that pin an
 unsupported diagnostic as acceptable interpreter behaviour.
 
-**Triage rule: language-surface vs representation-ceiling.** Before fixing a
-frontier class, classify its root:
+**Triage rule: language surface vs storage root.** Before fixing a frontier
+class, classify its root:
 
 ```text
-language-surface      the interpreter lacks a language behaviour any
-                      representation needs (a missing expression branch,
-                      lazy-parameter semantics, exception hierarchy,
-                      on-demand semantic2). Fix here, red fixture first,
-                      per the §8 loop.
-representation-       the root is value representation: synthetic
-ceiling               pointers instead of addresses, cast-aliasing the
-                      value model cannot see, lost allocation identity,
-                      reinterpret loads, or a runtime hook whose contract
-                      is real memory (gc_*, memcpy). Write the standalone
-                      red fixture (the durable asset), OMIT `Interpreter`
-                      from its matrix per the rule above, and defer the
-                      root to value.md's native-layout track. Do not add
-                      a shim.
+language surface      the interpreter lacks a language behaviour such as an
+                      expression branch, lazy-parameter semantics, exception
+                      hierarchy, or on-demand semantic2. Fix here, red fixture
+                      first, per the §8 loop.
+storage root          the Interpreter composes the wrong typed place, loses
+                      allocation identity, mishandles a reinterpret load, or
+                      substitutes for a runtime operation whose contract is
+                      real memory. Write the same standalone red fixture and
+                      fix the native-place root under this plan. Do not add a
+                      shim or a second value representation.
 ```
 
-Support for ceiling classes arrives via the representation change, not via
-name-based shims that approximate it — a shim that skips construction
-semantics or fabricates a hook's return value is a silent wrong answer, the
-worst failure class. A class whose root fix needs bespoke FFI marshalling
-gets the same gap-fixture-and-wait treatment (`value.md` decisions 17/18): a
-blocked package waits and re-earns its rows at the authority switch.
+The typed-place path handles both classes. A proposed fix that needs bespoke
+FFI marshalling is a boundary error: keep the oracle-backed gap visible and
+fix the Interpreter storage or typed-address adapter instead.
 
 **Interception policy.** The target has no name-based interception. A
 function with interpretable D source executes that source. A bodyless or
@@ -443,40 +477,15 @@ re-enter the root execution through its durable trampoline session; a lowered
 pointer ABI binds an interpreted `ref` parameter to the pointed-to typed
 place. Call dispatch has no name-based interception. The bodyless/inline-asm
 predicate classifies ordinary native leaves; it does not authorize a handler.
-Predicate unit tests live in
-`tests/ut/backends/interpreter/interception_guard.d`.
+The current name-based monitor and `_d_arrayctor` deviations are temporary and
+owned by [issue #561] and [issue #562]. The dead policy API and its direct
+tests retire under [issue #570]; public language fixtures remain the contract.
 
 ## 9. Open work queue
 
-- The frontend already populates `Expression.lowering` with real druntime
-  calls for `~=`/`~`/`new T[n]`, but the interpreter ignores it for those
-  three (it reads `.lowering` only for AA literals and the non-`.length=`
-  `LoweredAssignExp` fallback) and instead hand-rolls append/growth/concat
-  in `native_array.d`, outside the §8 interception guard's enumeration. Open
-  work: execute those lowerings for real and retire the hand-rolled path,
-  reusing the same `extern(C)` `rt/lifetime.d` declarations Bytecode uses
-  for `CatDcharAssignExp`.
-- Confirmed `Interpreter` omissions to promote back into their
-  `SystemLinker`-oracle matrix after fixing the named red behavior:
-  - `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: retain
-    the zero-length allocation's pointer identity across `reserve` and
-    append.
-  - `pointer.comparisonWithinArray`,
-    `pointer.relationsAcrossArraysReturnFalse`, and
-    `pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly`:
-    provide the native pointer representation required by comparison and
-    write-through operations.
-  - `pointer.slicePastAllocatedBlockDiagnostic`: decide whether the
-    interpreter should retain its allocated-block diagnostic; it currently
-    neither matches that characterization nor participates in the
-    compiled-behavior row.
-  - `refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`:
-    materialize the void-initialized struct before nested ref forwarding
-    reads its field.
-  - `struct.staticArrayCopyRunsPostblitAndDtors`: preserve pointer fields
-    while copying static-array elements before their postblits run; the
-    current postblit dereferences a null counter pointer and terminates the
-    test process.
+The issue links in the owning contract sections above are the complete
+storage and runtime queue. Other language-completeness work remains here:
+
 - An interface method taking a parameter, called through an interface-typed
   variable, fails with "Unsupported interpreter call arguments." Only
   zero-arg interface methods are proven (`expressions.d`'s
@@ -487,9 +496,6 @@ Predicate unit tests live in
   ordinary function, as every proven matrix fixture does) silently returns
   the wrong value, with no diagnostic. Found via `tests/example.d`; no
   matrix fixture pins it yet.
-- A method call chained off an assignment whose target is a side-effecting
-  `PtrExp`/`IndexExp` is refused; the lifting condition is recorded in
-  `value.md`'s item 4 notes.
 
 ## 10. Standing Cerealed regression gate
 
@@ -547,8 +553,8 @@ Cerealed is the first driving package, not the finish line. Automem is the
 second package and exercises allocators, reference-counted ownership,
 interfaces, nested callables, and native-layout mutation. Once both package
 gates are green, profile the surviving Interpreter before tuning it.
-Package-driven workingness continues through `value.md` item 4; do not add
-legacy marshalling or separate value machinery for a later package.
+Package-driven workingness continues through §8; do not add marshalling or a
+separate value representation for a later package.
 
 ### 11.1 automem — open disagreement queue
 
@@ -672,3 +678,21 @@ rung of its own.
 
 [druntime-newaa]:
   https://github.com/dlang/dmd/blob/master/druntime/src/core/internal/newaa.d
+[issue #560]:
+  https://github.com/atilaneves/quickbite/issues/560
+[issue #561]:
+  https://github.com/atilaneves/quickbite/issues/561
+[issue #562]:
+  https://github.com/atilaneves/quickbite/issues/562
+[issue #563]:
+  https://github.com/atilaneves/quickbite/issues/563
+[issue #565]:
+  https://github.com/atilaneves/quickbite/issues/565
+[issue #566]:
+  https://github.com/atilaneves/quickbite/issues/566
+[issue #568]:
+  https://github.com/atilaneves/quickbite/issues/568
+[issue #569]:
+  https://github.com/atilaneves/quickbite/issues/569
+[issue #570]:
+  https://github.com/atilaneves/quickbite/issues/570
