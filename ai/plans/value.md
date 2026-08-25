@@ -71,23 +71,16 @@ binding stores only the class reference, and exception chaining stores the
 next object address in both the typed class field and the runtime-owned link
 table. Do not turn this identity into a general value wrapper.
 
-Finish deletion in this order. Each family keeps a typed `Place`, native
-scalar, pointer, or `NativeAggregate` contract across its caller boundary.
-Later families can use earlier contracts, but no family introduces a new
-general value wrapper.
-
-1. Replace the aggregate, slice, index, allocation, and literal fallbacks.
-   This depends on the typed scalar, call, and projection contracts and
-   removes the remaining `NativeAggregate` conversions to and from
-   `ExpressionResult`.
-2. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
-   `readValue`, `writeValue`, `readScalarLeaf`, and `writeScalarLeaf`; the
-   boxed overloads in `aggregate_value.d`; `expression_result.d`; and the
-   implementation-detail tests `tests/ut/backends/interpreter/place_value.d`
-   and `tests/ut/backends/interpreter/native_array.d`. Update the test module
-   aggregation. Inventory real corpus crossings that need an interpreted
-   callable or `TypeInfo` to escape to native code. The standing refusal
-   holds: no trampoline or proxy until a real crossing exists.
+Delete the remaining carrier residue at the callable, symbolic `TypeInfo`,
+and dynamic-class ownership boundaries. This includes `readStoredValue`,
+`writeStoredValue`, `constructedExpressionValue`, the carrier receiver and
+class-identity adapters, `readValue` and `writeValue`, the boxed overloads in
+`aggregate_value.d`, and `expression_result.d`. Delete the implementation-
+detail tests in `tests/ut/backends/interpreter/place_value.d` and
+`tests/ut/backends/interpreter/native_array.d`, then update the test module
+aggregation. Inventory real corpus crossings that need an interpreted
+callable or `TypeInfo` to escape to native code. The standing refusal holds:
+no trampoline or proxy until a real crossing exists.
 - **Deferred findings** (need a proving test first, AGENTS.md): a native
   delegate slot's `.ptr`/`.funcptr` always throws, pre-existing; the
   opAssign-postblit interaction candidate from the branch review is

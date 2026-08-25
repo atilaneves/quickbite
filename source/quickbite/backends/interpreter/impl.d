@@ -187,19 +187,6 @@ private string formattedDisplay(
 }
 
 
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult characterArrayValue(
-    ref Walker walker,
-    imported!"dmd.mtype".Type type,
-    in string characters,
-) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    ExpressionResult[] elements;
-    foreach (character; characters)
-        elements ~= ExpressionResult(character);
-    return walker.reconstructStoredArray(type, elements);
-}
-
 
 private enum LoopControl {
     none,
@@ -1534,57 +1521,6 @@ private struct Walker {
         return value;
     }
 
-    private ExpressionResult withStoredStructField(
-        in ExpressionResult receiver,
-        imported!"dmd.mtype".Type receiverType,
-        in size_t fieldIndex,
-        in ExpressionResult fieldValue,
-    ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto field = structFields(receiverType.toBasetype.isTypeStruct)[fieldIndex];
-        const symbolicTypeInfo = field.type.toBasetype.isTypeClass !is null &&
-            fieldValue.isTypeName;
-        // A live delegate value (an interpreted closure, not `null`) has no
-        // native ABI function address, so `AggregateValue.withStructField`'s
-        // own `place_value.writeValue` call -- unlike `writeStoredValue`
-        // below -- has no out-of-band fallback and throws for it. Seed this
-        // fresh copy's field with `null` here instead; `writeStoredValue`
-        // below writes the REAL `fieldValue` once `destination`'s own field
-        // address is known, registering it in `nativeDelegateSlots` the same
-        // way it always does for a live delegate.
-        const liveDelegate = field.type.toBasetype.ty == TY.Tdelegate &&
-            fieldValue != ExpressionResult.null_;
-        // A function-pointer value is the same story: it's a distinct
-        // `FunctionPointer` ExpressionResult variant, not a `Pointer`, so
-        // `AggregateValue.withStructField`'s `place_value.writeValue` call
-        // throws for it just like it does for a live delegate. Seed `null`
-        // here too; `writeStoredValue` below registers it in
-        // `nativeFunctionPointerSlots` once `destination`'s field address
-        // is known.
-        auto fieldPointerType = field.type.toBasetype.isTypePointer;
-        const liveFunctionPointer = fieldPointerType !is null &&
-            fieldPointerType.nextOf.toBasetype.isTypeFunction !is null &&
-            fieldValue.isFunctionPointer;
-        auto result = AggregateValue.withStructField(
-            AggregateValue.native(receiver),
-            fieldIndex,
-            symbolicTypeInfo || liveDelegate || liveFunctionPointer
-                ? ExpressionResult.null_
-                : fieldValue,
-        );
-        auto source = AggregateValue.native(receiver);
-        copyStoredMetadata(receiverType, source.address, result.address);
-
-        auto fieldPlace = Place(result.address, result.type)
-            .field(field);
-        writeStoredValue(fieldPlace, fieldValue);
-        return ExpressionResult.nativeAggregateValue(result);
-    }
-
     private void retainTemporaryPointerOwner(NativeBlock owner) @safe {
         assert(
             _temporaryPointerOwners !is null &&
@@ -1959,15 +1895,6 @@ private struct Walker {
     // A selected lvalue write updates the
     // authoritative bytes and address-keyed metadata at that place. It does
     // not rebuild or write back any enclosing aggregate snapshot.
-    private void writeProjectionPlace(
-        imported!"dmd.expression".Expression target,
-        in ExpressionResult value,
-    ) {
-        auto destination = directWriteProjectionPlace(target);
-        writeStoredValue(destination, storageValue(target.type, value));
-        clearProjectionRootUninitialized(target);
-    }
-
     private Place directWriteProjectionPlace(
         imported!"dmd.expression".Expression target,
         in bool writeBounds = true,
@@ -2090,27 +2017,6 @@ private struct Walker {
         return bindingPlace(variable).address;
     }
 
-
-    private bool storeSliceBinding(VarDeclaration variable, in ExpressionResult value) {
-        import quickbite.backends.interpreter.native_array: NativeArray;
-
-        if (!value.isNativeAggregate)
-            return false;
-        auto aggregate = AggregateValue.native(value);
-        if (!AggregateValue.isArray(aggregate))
-            return false;
-
-        const nativeAddress = AggregateValue.nativeArrayAddress(aggregate);
-        if (nativeAddress is null && AggregateValue.elementCount(aggregate) != 0)
-            return false;
-
-        auto arrayType = variable.type.toBasetype.isTypeDArray;
-        auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(aggregate));
-
-        array.writeSliceHeader(bindingAddress(variable));
-        return true;
-    }
 
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
@@ -4860,101 +4766,6 @@ private struct Walker {
     }
 
     // Write scalar leaves of a struct cell into its native layout.
-    private void writeStructCellScalarFields(ref NativeStruct cell, in ExpressionResult structValue) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.layout: fieldByteOffset;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
-        import quickbite.frontend.dmd.types:
-            isDynamicArrayType, isStaticArrayType;
-
-        foreach (index; 0 .. cell.fieldCount) {
-            auto fieldType = cell.fieldDeclaration(index).type;
-
-            if (isNativeScalarType(fieldType)) {
-                writeScalarLeaf(
-                    Place(cell.field(index).ptr, fieldType),
-                    readStoredValue(
-                        AggregateValue.fieldAt(AggregateValue.native(structValue), index),
-                    ),
-                );
-                continue;
-            }
-
-            if (isStaticArrayType(fieldType)) {
-                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                auto structType = elementType.isTypeStruct;
-                if (!isNativeScalarType(elementType) && (
-                    structType is null ||
-                    structType.sym.isUnionDeclaration !is null
-                ))
-                    continue;
-
-                const fieldValue = readStoredValue(
-                    AggregateValue.fieldAt(AggregateValue.native(structValue), index),
-                );
-                if (!AggregateValue.isArray(fieldValue))
-                    continue;
-
-                auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue))
-                    writeArrayCellElement(
-                        arrayCell,
-                        elementIndex,
-                        readStoredValue(
-                            AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
-                        ),
-                    );
-                continue;
-            }
-
-            if (isDynamicArrayType(fieldType)) {
-                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                auto structType = elementType.isTypeStruct;
-                if (!isNativeScalarType(elementType) && (
-                    structType is null ||
-                    structType.sym.isUnionDeclaration !is null
-                ))
-                    continue;
-
-                const fieldValue = readStoredValue(
-                    AggregateValue.fieldAt(AggregateValue.native(structValue), index),
-                );
-                if (!AggregateValue.isArray(fieldValue))
-                    continue;
-
-                auto arrayCell = NativeArray.allocate(elementType,
-                    AggregateValue.elementCount(fieldValue));
-                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue))
-                    writeArrayCellElement(
-                        arrayCell,
-                        elementIndex,
-                        readStoredValue(
-                            AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
-                        ),
-                    );
-                arrayCell.writeSliceHeader(
-                    cell.block,
-                    fieldByteOffset(cell.fieldDeclaration(index)),
-                );
-                continue;
-            }
-
-            auto nestedStructType = fieldType.toBasetype.isTypeStruct;
-            if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
-                continue;
-
-            const nestedValue = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(structValue), index),
-            );
-            if (!AggregateValue.isStruct(nestedValue))
-                continue;
-
-            auto nestedCell = cell.structField(index);
-            writeStructCellScalarFields(nestedCell, nestedValue);
-        }
-    }
 
     private ExpressionResult readBindingValue(VarDeclaration variable) {
         materializeDatasegInitializer(variable);
@@ -6542,19 +6353,6 @@ private struct Walker {
     // `nativeDelegateSlots`, keyed by its own element address, exactly the
     // same gap `loadNativePointerElement`'s identical `TY.Tdelegate` arm
     // checks before falling through to a plain read.
-    private ExpressionResult nativeArrayElementAt(in ExpressionResult array, in size_t index) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto aggregate = AggregateValue.native(array);
-        auto elementType = aggregate.type.toBasetype.nextOf;
-        if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
-            if (auto delegate_ = AggregateValue.elementAddress(aggregate, index) in nativeDelegateSlots)
-                return delegateSlotResult(*delegate_);
-        return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
-    }
-
     private void runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
@@ -6855,123 +6653,6 @@ private struct Walker {
             _lazyArgumentMapsBorrowed = false;
     }
 
-    private ExpressionResult structValueFromCell(in ExpressionResult current, ref NativeStruct cell) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readScalarLeaf;
-        import quickbite.frontend.dmd.types:
-            isDynamicArrayType, isStaticArrayType;
-
-        ExpressionResult value = current;
-        foreach (index; 0 .. cell.fieldCount) {
-            auto fieldType = cell.fieldDeclaration(index).type;
-
-            if (isNativeScalarType(fieldType)) {
-                value = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-                    AggregateValue.native(value), index,
-                    readScalarLeaf(Place(cell.field(index).ptr, fieldType)),
-                ));
-                continue;
-            }
-
-            if (isStaticArrayType(fieldType)) {
-                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                auto structType = elementType.isTypeStruct;
-                if (!isNativeScalarType(elementType) && (
-                    structType is null ||
-                    structType.sym.isUnionDeclaration !is null
-                ))
-                    continue;
-
-                auto fieldValue = readStoredValue(
-                    AggregateValue.fieldAt(AggregateValue.native(value), index),
-                );
-                if (!AggregateValue.isArray(fieldValue))
-                    continue;
-
-                auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue)) {
-                    ExpressionResult elementValue;
-                    if (structType !is null) {
-                        auto elementCell = arrayCell.structElement(elementIndex);
-                        elementValue = structValueFromCell(
-                            readStoredValue(
-                                AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
-                            ),
-                            elementCell,
-                        );
-                    } else
-                        elementValue = readScalarLeaf(Place(
-                            arrayCell.element(elementIndex).ptr,
-                            elementType,
-                        ));
-                    fieldValue = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                        AggregateValue.native(fieldValue),
-                        elementIndex,
-                        elementValue,
-                    ));
-                }
-                value = ExpressionResult.nativeAggregateValue(
-                    AggregateValue.withStructField(AggregateValue.native(value), index, fieldValue),
-                );
-                continue;
-            }
-
-            if (isDynamicArrayType(fieldType)) {
-                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                auto structType = elementType.isTypeStruct;
-                if (!isNativeScalarType(elementType) && (
-                    structType is null ||
-                    structType.sym.isUnionDeclaration !is null
-                ))
-                    continue;
-
-                const fieldValue = readStoredValue(
-                    AggregateValue.fieldAt(AggregateValue.native(value), index),
-                );
-                if (!AggregateValue.isArray(fieldValue))
-                    continue;
-
-                auto arrayCell = cell.sliceField(index);
-                copyArrayCellTo(
-                    fieldType,
-                    arrayCell,
-                    Place(
-                        AggregateValue.native(value).address,
-                        AggregateValue.native(value).type,
-                    )
-                        .field(cell.fieldDeclaration(index)),
-                );
-                continue;
-            }
-
-            auto nestedStructType = fieldType.toBasetype.isTypeStruct;
-            if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
-                continue;
-
-            auto nestedValue = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(value), index),
-            );
-            if (!AggregateValue.isStruct(nestedValue))
-                continue;
-
-            auto nestedCell = cell.structField(index);
-            value = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-                AggregateValue.native(value), index,
-                structValueFromCell(nestedValue, nestedCell),
-            ));
-        }
-
-        return value;
-    }
-
-    // `assign`/`construct`/`blit` (`=`, its DMD-synthesized construction
-    // form, and its DMD-synthesized zero-init/copy form) all share the
-    // `BinExp`-derived `.e1` target shape; DMD's own "assign, then mutate the
-    // target in place" lowering (e.g. `emplaceRef`'s generated
-    // `(this.payload = args).__postblit()`) chains a postblit/method call
-    // straight off one of these. Returns the assignment's target expression,
     // or `null` if `expression` is none of the three.
     private static imported!"dmd.expression".Expression assignmentTarget(
         imported!"dmd.expression".Expression expression,
@@ -8376,12 +8057,7 @@ private struct Walker {
         // fallback, but return the RHS's typed temporary to the construction
         // dispatch instead of carrying its value across that boundary.
         auto result = constructedExpressionPlace(assign.e2);
-        auto value = readStoredValue(result);
-        if (auto target = assign.e1.isVarExp)
-            if (auto variable = target.var.isVarDeclaration)
-                if (variable.type.toBasetype.isTypeClass !is null)
-                    value = rootedNativeClassValue(assign.e2, value);
-        writeLocation(assign.e1, value);
+        writeLocation(assign.e1, result);
         return result;
     }
 
@@ -8464,7 +8140,7 @@ private struct Walker {
 
     private void writeLocation(
         imported!"dmd.expression".Expression target,
-        in ExpressionResult value,
+        Place value,
         in bool arrayRefWriteback = false,
     ) {
         if (auto cast_ = target.isCastExp) {
@@ -8476,13 +8152,8 @@ private struct Walker {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
-            writeStoredValue(
-                bindingPlace(variable),
-                storageValue(variable.type, value),
-                true,
-            );
+            copyPlaceValue(value, bindingPlace(variable), true);
             clearUninitializedBindingAddress(bindingPlace(variable).address);
-
             return;
         }
 
@@ -8494,33 +8165,34 @@ private struct Walker {
             // `thisValue` with a disconnected copy -- that would silently
             // drop the mutation the caller's own storage was supposed to
             // observe.
-            if (thisAddress !is null) {
-                import quickbite.backends.interpreter.place: Place;
-
-                const stored = storageValue(target.type, value);
-                writeStoredValue(Place(thisAddress, target.type), stored);
-                // The written place is thisAddress itself for a struct
-                // receiver, but the class receiver's own body address for
-                // a class one -- `thisAddress` there is the *slot* the
-                // reference was just written into, one indirection short of
-                // `bindClassReceiver`'s own body-address invariant.
-                thisValue = target.type.toBasetype.isTypeStruct !is null
-                    ? Place(thisAddress, target.type)
-                    : Place(stored.pointerAddress, target.type);
-                return;
+            if (target.type.toBasetype.isTypeStruct !is null) {
+                if (thisAddress !is null) {
+                    auto receiver = Place(thisAddress, target.type);
+                    copyPlaceValue(value, receiver);
+                    thisValue = receiver;
+                } else {
+                    thisValue = value;
+                }
+            } else {
+                auto body = value.loadReference;
+                if (thisAddress !is null)
+                    Place(thisAddress, target.type).storeReference(body);
+                thisValue = Place(body, target.type);
             }
-            thisValue = receiverPlaceFrom(value, target.type);
             return;
         }
 
         if (target.isSuperExp !is null && hasThis) {
-            thisValue = receiverPlaceFrom(value, target.type);
+            thisValue = target.type.toBasetype.isTypeStruct !is null
+                ? value
+                : Place(value.loadReference, target.type);
             return;
         }
 
         if (auto dot = target.isDotVarExp) {
             if (isDirectProjectionWriteTarget(dot)) {
-                writeProjectionPlace(dot, value);
+                copyPlaceValue(value, directWriteProjectionPlace(dot));
+                clearProjectionRootUninitialized(dot);
                 return;
             }
 
@@ -8535,10 +8207,7 @@ private struct Walker {
             // instead of reading a snapshot and writing it back through this
             // function's own recursion below.
             if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
-                writeStoredValue(
-                    projectionPlace(dot),
-                    storageValue(target.type, value),
-                );
+                copyPlaceValue(value, projectionPlace(dot));
                 clearProjectionRootUninitialized(dot);
                 return;
             }
@@ -8562,10 +8231,9 @@ private struct Walker {
 
                     auto address = refReturningCallAddress(call, EXP.address);
                     // `auto`: a `Place` needs a mutable address.
-                    writeStoredValue(
-                        Place(address, dot.e1.type)
-                            .field(dot.var.isVarDeclaration),
-                        storageValue(target.type, value),
+                    copyPlaceValue(
+                        value,
+                        Place(address, dot.e1.type).field(dot.var.isVarDeclaration),
                     );
                     return;
                 }
@@ -8582,140 +8250,23 @@ private struct Walker {
                 dot.e1.type,
             ));
             runExpression(dot.e1, receiverTemporary);
-            const receiver = readStoredValue(receiverTemporary.place);
-            if (receiver.isNativeAggregate) {
-                import dmd.astenums: TY;
-                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-                auto field = dot.var.isVarDeclaration;
-                if (
-                    field !is null &&
-                    field.type.toBasetype.isTypeClass !is null &&
-                    value.isTypeName
-                ) {
-                    const fieldIndex = structFieldIndex(dot);
-                    auto updated = withStoredStructField(
-                        receiver,
-                        dot.e1.type,
-                        fieldIndex,
-                        value,
-                    );
-                    writeLocation(dot.e1, updated);
-                    return;
-                }
-                // Both symbolic-field arms below hand the field's own place
-                // straight to `writeStoredValue` (rather than registering the
-                // out-of-band table entry here directly) so a stale entry left
-                // by a union sibling at this same address is cleared first --
-                // `writeStoredValue`'s own Tdelegate/function-pointer arms do
-                // exactly this clear-then-register-then-zero sequence.
-                if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
-                    if (auto variableExpression = dot.e1.isVarExp)
-                        if (auto variable = variableExpression.var.isVarDeclaration)
-                        if (hasBindingPlace(variable)) {
-                            writeStoredValue(bindingPlace(variable).field(field), value);
-                            return;
-                        }
-                }
-                auto pointerType = field is null
-                    ? null
-                    : field.type.toBasetype.isTypePointer;
-                if (
-                    pointerType !is null &&
-                    pointerType.nextOf.toBasetype.isTypeFunction !is null &&
-                    value.isFunctionPointer
-                ) {
-                    if (auto variableExpression = dot.e1.isVarExp)
-                        if (auto variable = variableExpression.var.isVarDeclaration)
-                        if (hasBindingPlace(variable)) {
-                            writeStoredValue(bindingPlace(variable).field(field), value);
-                            return;
-                        }
-                }
-            }
-            const nativeClassReceiver = receiver.isPointer
-                ? receiver
-                : receiver.isNativeAggregate && dot.e1.type.toBasetype.isTypeClass !is null
-                ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                : ExpressionResult.null_;
-            if (
-                nativeClassReceiver.isPointer &&
-                dot.e1.type.toBasetype.isTypeClass !is null
-            ) {
-                import dmd.astenums: TY;
-                import quickbite.backends.interpreter.place: Place;
-
-                auto field = dot.var.isVarDeclaration;
-                auto bodyAddress = nativeClassReceiver.pointerAddress;
+            auto receiverPlace = receiverTemporary.place;
+            if (dot.e1.type.toBasetype.isTypeClass !is null) {
+                auto bodyAddress = receiverPlace.loadReference;
                 auto bodyType = dot.e1.type;
                 if (auto metadata = bodyAddress in nativeExceptionMetadata) {
                     bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
                     bodyType = (*metadata).type;
                 }
-                auto fieldPlace = Place(bodyAddress, bodyType)
-                    .field(field);
-                // A live delegate value (an interpreted closure, not `null`)
-                // has no native ABI function address, so `place_value.
-                // writeValue`'s Tdelegate arm only ever accepts `null`.
-                // `writeStoredValue` registers it out-of-band in
-                // `nativeDelegateSlots`, keyed by the field's own address,
-                // clearing any stale entry a union sibling left there first.
-                // A class field's address is the object body's own storage,
-                // live for the object's whole lifetime.
-                writeStoredValue(fieldPlace, value);
+                copyPlaceValue(
+                    value,
+                    Place(bodyAddress, bodyType).field(dot.var.isVarDeclaration),
+                );
                 return;
             }
 
-            // A dynamic-array header can be reinterpreted as a two-field
-            // struct through a pointer.  DMD's own __ArrayCast does this to
-            // change the header length while retaining the data pointer.
-            // The expression carrier remains an array because those are the
-            // bytes' actual guest meaning; update its descriptor rather than
-            // reconstructing a field-by-field struct snapshot.
-            if (receiver.isNativeAggregate && declarationName(dot.var) == "length") {
-                auto receiverAggregate = AggregateValue.native(receiver);
-                if (AggregateValue.isArray(receiverAggregate)) {
-                    writeLocation(
-                        dot.e1,
-                        ExpressionResult.nativeAggregateValue(
-                            AggregateValue.borrowArrayOwner(
-                                dot.e1.type,
-                                cast(size_t) value.asLong,
-                                AggregateValue.nativeArrayAddress(receiverAggregate),
-                            ),
-                        ),
-                    );
-                    return;
-                }
-            }
-
-            // Whatever remains here has no addressable place this activation
-            // can compose in place: a plain (non-ref) call result or a
-            // literal receiver is a genuine rvalue -- DMD itself makes
-            // `f().field = v` a compile error for a non-ref `f` returning a
-            // struct by value, so this shape is reachable only through an
-            // already-lowered AST, not user-written code with observable
-            // aliasing to preserve. A captured-variable receiver has live
-            // storage but no static predicate resolves it yet (the frame/
-            // dataseg-scoped `hasBindingPlace` does not see a closure's
-            // cross-activation captures) -- separate follow-on work.
-            // A whole-struct-typed target through a `VarExp`-rooted receiver
-            // (`local.inner = v`) also lands here even though `local` itself
-            // has a place: `isDirectProjectionWriteTarget` excludes
-            // struct/static-array-typed targets outright, and reworking that
-            // exclusion is a separate change from wiring up the two
-            // previously-unaddressable receiver shapes above.
-            const fieldIndex = structFieldIndex(dot);
-            auto unionType = receiverStructType(dot.e1);
-            const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
-                ? withUnionFieldWrite(receiver, unionType, fieldIndex, value)
-                : withStoredStructField(
-                    receiver,
-                    dot.e1.type,
-                    fieldIndex,
-                    value,
-                );
-            writeLocation(dot.e1, updated);
+            copyPlaceValue(value, receiverPlace.field(dot.var.isVarDeclaration));
+            writeLocation(dot.e1, receiverPlace);
             return;
         }
 
@@ -8743,12 +8294,7 @@ private struct Walker {
             // A dereferenced native pointer (e.g. a malloc'd struct like
             // std.stdio.File's Impl): write straight into native memory.
             if (address !is null) {
-                storeNativePointerElement(
-                    ptr.e1.type,
-                    ExpressionResult.pointerValue(cast(void*) address),
-                    0,
-                    value,
-                );
+                copyPlaceValue(value, Place(cast(void*) address, ptr.type));
                 return;
             }
 
@@ -8787,7 +8333,7 @@ private struct Walker {
     // assigned value through that place.
     private bool writeRefReturningCallLocation(
         imported!"dmd.expression".CallExp call,
-        in ExpressionResult value,
+        Place value,
     ) {
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.place: Place;
@@ -8797,73 +8343,52 @@ private struct Walker {
 
         auto address = refReturningCallAddress(call, EXP.address);
         // `auto`: a `Place` needs a mutable address.
-        writeStoredValue(Place(address, call.type), value);
+        copyPlaceValue(value, Place(address, call.type));
         return true;
-    }
-
-    private void writeArrayLengthLocation(
-        imported!"dmd.expression".ArrayLengthExp target,
-        in ExpressionResult value,
-    ) {
-        const current = constructedExpressionValue(target.e1);
-        const newLength = cast(size_t) value.asLong;
-        writeLocation(
-            target.e1,
-            resizedStoredArray(target.e1.type, current, newLength),
-        );
     }
 
     private void writeArrayLengthLocation(
         imported!"dmd.expression".ArrayLengthExp target,
         Place value,
     ) {
-        writeArrayLengthLocation(target, readStoredValue(value));
+        auto current = constructedExpressionPlace(target.e1);
+        const newLength = cast(size_t) value.loadSignedScalar;
+        writeLocation(
+            target.e1,
+            resizedStoredArray(target.e1.type, current, newLength),
+        );
     }
 
-    private ExpressionResult resizedStoredArray(
+    private Place resizedStoredArray(
         imported!"dmd.mtype".Type type,
-        in ExpressionResult current,
+        Place current,
         in size_t newLength,
     ) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: arrayElementType;
 
-        ExpressionResult[] noElements;
-        const source = current == ExpressionResult.null_
-            ? reconstructStoredArray(type, noElements)
-            : current;
-        auto sourceAggregate = AggregateValue.native(source);
-        const oldLength = AggregateValue.length(sourceAggregate);
-        const previousData = AggregateValue.nativeArrayAddress(sourceAggregate);
-        const resized = ExpressionResult.nativeAggregateValue(
-            AggregateValue.withArrayLength(sourceAggregate, newLength),
-        );
+        auto sourceAggregate = borrowedAggregate(current);
+        const oldLength = current.arrayLength;
+        const previousData = current.sliceDataPointer;
+        auto resized = AggregateValue.withArrayLength(sourceAggregate, newLength);
         auto elementType = arrayElementType(type);
+        auto destination = Place(resized.address, type);
         relocatePriorAppendedElementSlots(
             elementType,
             previousData,
-            resized,
+            destination,
             oldLength,
         );
-        auto destination = Place(AggregateValue.native(resized).address, type);
-        foreach (index; oldLength .. newLength)
-            writeStoredValue(
-                destination.index(index),
-                runDefaultValue(elementType),
-            );
-        return resized;
+        foreach (index; oldLength .. newLength) {
+            auto element = ConstructionDestination(destination.index(index));
+            runExpression(elementType.defaultInitLiteral(Loc.initial), element);
+        }
+        return destination;
     }
 
-    private ExpressionResult runDefaultValue(imported!"dmd.mtype".Type type) {
-        import dmd.location: Loc;
-        import dmd.typesem: defaultInitLiteral;
-
-        return constructedExpressionValue(type.defaultInitLiteral(Loc.initial));
-    }
-
-    // A value-result caller has no final place yet. Build the D default in a
-    // typed native owner, then cross the existing result boundary only when
     // this older expression path requires it.
     private ExpressionResult defaultValueResult(imported!"dmd.mtype".Type type) {
         import quickbite.backends.interpreter.place: Place;
@@ -8873,1188 +8398,143 @@ private struct Walker {
         return readValue(Place(owner.address, type));
     }
 
-    private ExpressionResult storageValue(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult value,
-    ) {
-        import quickbite.frontend.dmd.types: isCharacterArrayType;
-
-        if (type is null)
-            return value;
-
-        if (value.isTypeName && isCharacterArrayType(type))
-            return characterArrayValue(this, type, value.asTypeNameString);
-
-        // `void[]` denotes raw bytes, so coercing an aggregate to it is a
-        // reinterpretation of that aggregate's own storage -- exactly what
-        // `void[] bytes = someStruct;` and the allocator APIs that traffic in
-        // `void[]` mean by it -- not a value conversion. There is no scalar
-        // cast that could express it, so answer a byte view aliasing the
-        // source instead of falling through to `backendCastValue`.
-        if (value.isNativeAggregate) {
-            import dmd.astenums: TY;
-
-            auto array = type.toBasetype.isTypeDArray;
-            auto source = AggregateValue.native(value).type.toBasetype;
-            if (
-                array !is null &&
-                array.nextOf.toBasetype.ty == TY.Tvoid &&
-                (
-                    source.isTypeStruct !is null ||
-                    source.isTypeSArray !is null
-                )
-            )
-                return ExpressionResult.nativeAggregateValue(
-                    AggregateValue.nativeAggregateByteSlice(
-                        AggregateValue.native(value),
-                        type,
-                    ),
-                );
-        }
-
-        return value;
-    }
 
     private void writeIndexLocation(
         imported!"dmd.expression".IndexExp index,
-        in ExpressionResult value,
+        Place value,
     ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: isPointerType;
 
+        if (hasProjectionPlace(index)) {
+            copyPlaceValue(value, directWriteProjectionPlace(index));
+            clearProjectionRootUninitialized(index);
+            return;
+        }
+
         const arrayIndex = scalarOperand!size_t(index.e2);
-
-        // DMD's own `modifiableLvalue` semantic reverts an associative-array
-        // index used through a further field/method/element access (rather
-        // than being the assignment's own direct target) to an rvalue read
-        // through `_d_aaGetRvalueX` (`expressionsem.d`'s
-        // `revertModifiableAAIndexReads`) -- a `Point* __aaget = ...; *(
-        // __aaget ? __aaget : range-error)` shape whose outer node is a
-        // plain pointer-dereference `IndexExp` (index 0), reached here when
-        // `writeLocation`'s `DotVarExp` arm rebuilds the whole receiver
-        // value and recurses back onto it. That pointer already names the
-        // AA's own value-slot storage, so writing through it is the correct
-        // (and only) place for this element, matching
-        // `runIndexAssignExpression`'s identical pointer-index arm.
         if (auto call = index.e1.isCallExp) {
-            import dmd.tokens: EXP;
-            import quickbite.backends.interpreter.place: Place;
-
             auto address = refReturningCallAddress(call, EXP.address);
-            // `auto`: a `Place` needs a mutable address.
-            writeStoredValue(
+            copyPlaceValue(
+                value,
                 Place(address, index.e1.type).index(arrayIndex),
-                storageValue(index.type, value),
             );
             return;
         }
 
         if (isPointerType(index.e1.type)) {
-            const address = pointerOperandPlace(index.e1).deref.address;
-            if (address !is null) {
-                storeNativePointerElement(
-                    index.e1.type,
-                    ExpressionResult.pointerValue(cast(void*) address),
-                    arrayIndex,
-                    value,
-                );
-                return;
-            }
-            throw new Exception("Pointer index assignment needs a native address.");
-        }
-
-        // `(*p)[i] = v`: `index.e1` is itself a dereference (`p`'s pointee
-        // is the static array being indexed, e.g. `int[3]*`), not a
-        // variable/field lvalue. `&(*p)` recovers `p`'s own address
-        // (`addressOfExpression`'s identical `PtrExp` arm); index directly
-        // into the pointee's bytes at that address rather than through a
-        // binding.
-        if (auto derefBase = index.e1.isPtrExp) {
-            const address = pointerOperandPlace(derefBase.e1).deref.address;
-            if (address !is null) {
-                import quickbite.backends.interpreter.place: Place;
-
-                writeStoredValue(
-                    Place(cast(void*) address, index.e1.type).index(arrayIndex),
-                    value,
-                );
-                return;
-            }
-            throw new Exception("Unsupported interpreter assignment target.");
-        }
-
-        // The compound-assignment (`arr[i].field[j][k] += value`) sibling of
-        // `runNestedIndexAssignExpression`'s identical `DotVarExp` arm: `index.e1`
-        // (`arr[i].field[j]`) is itself an `IndexExp` whose own `e1` is a
-        // `DotVarExp`, not a `DotVarExp`/`VarExp` directly, so it fell through
-        // both arms below. `value` here is already the compound-assignment's
-        // computed result (`writeLocation`'s caller resolved it), so only the
-        // write-back composition is needed, not an rhs evaluation.
-        if (auto outer = index.e1.isIndexExp) {
-            auto dot = outer.e1.isDotVarExp;
-            if (dot is null)
-                throw new Exception("Unsupported interpreter assignment target.");
-
-            if (receiverClassType(dot.e1) !is null) {
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue, writeValue;
-
-                const receiver = constructedExpressionValue(dot.e1);
-                // A class local exposes its object-body pointer. Resolve the
-                // field's `Place` directly through that pointer and write the
-                // updated nested element back through it, mirroring this
-                // function's singly-indexed `DotVarExp` class arm below.
-                const nativeClassReceiver = receiver.isPointer
-                    ? receiver
-                    : receiver.isNativeAggregate
-                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : ExpressionResult.null_;
-                if (!nativeClassReceiver.isPointer)
-                    throw new Exception("Class field assignment needs a native address.");
-
-                auto bodyAddress = nativeClassReceiver.pointerAddress;
-                auto bodyType = dot.e1.type;
-                if (auto metadata = bodyAddress in nativeExceptionMetadata) {
-                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                    bodyType = (*metadata).type;
-                }
-                auto fieldPlace = Place(bodyAddress, bodyType)
-                    .field(dot.var.isVarDeclaration);
-                const fieldValue = readValue(fieldPlace);
-                const outerIndex = scalarOperand!size_t(outer.e2);
-                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                const outerElement = readStoredValue(
-                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                );
-                checkStaticArrayIndexInBounds(outerElement, arrayIndex);
-                const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                    AggregateValue.native(fieldValue),
-                    outerIndex,
-                    ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                        AggregateValue.native(outerElement), arrayIndex, value,
-                    )),
-                ));
-                writeValue(fieldPlace, updatedField);
-                return;
-            }
-
-            // A `this`/`super`-rooted receiver chain (`this.arr[i][j] += v`,
-            // or a deeper `this.inner.arr[i][j] += v`) is bound to this
-            // activation's own receiver storage for its whole lifetime --
-            // `projectionPlace` composes the field's live address the same
-            // way `writeLocation`'s own `DotVarExp` arm does for an
-            // unindexed field write.
-            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
-                import quickbite.backends.interpreter.place_value: readValue;
-
-                auto fieldPlace = projectionPlace(dot);
-                const fieldValue = readValue(fieldPlace);
-                const outerIndex = scalarOperand!size_t(outer.e2);
-                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                const outerElement = readStoredValue(
-                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                );
-                checkStaticArrayIndexInBounds(outerElement, arrayIndex);
-                writeStoredValue(
-                    fieldPlace.index(outerIndex).index(arrayIndex),
-                    storageValue(index.type, value),
-                );
-                clearProjectionRootUninitialized(index);
-                return;
-            }
-
-            // A ref-returning call's receiver (`f().arr[i][j] += v` where
-            // `f` returns `ref S`) names a live struct lvalue, not a
-            // temporary -- the same lvalue this function's own
-            // `index.e1.isCallExp` arm above already resolves through
-            // `refReturningCallAddress` for the top-level index-is-call
-            // shape.
-            if (auto call = dot.e1.isCallExp)
-                if (
-                    call.f !is null &&
-                    returnsRef(call.f) &&
-                    dot.e1.type.toBasetype.isTypeStruct !is null
-                ) {
-                    import dmd.tokens: EXP;
-                    import quickbite.backends.interpreter.place: Place;
-                    import quickbite.backends.interpreter.place_value: readValue;
-
-                    auto address = refReturningCallAddress(call, EXP.address);
-                    // `auto`: a `Place` needs a mutable address.
-                    auto fieldPlace = Place(address, dot.e1.type)
-                        .field(dot.var.isVarDeclaration);
-                    const fieldValue = readValue(fieldPlace);
-                    const outerIndex = scalarOperand!size_t(outer.e2);
-                    checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                    const outerElement = readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                    );
-                    checkStaticArrayIndexInBounds(outerElement, arrayIndex);
-                    writeStoredValue(
-                        fieldPlace.index(outerIndex).index(arrayIndex),
-                        storageValue(index.type, value),
-                    );
-                    return;
-                }
-
-            // Whatever remains here has no addressable place this
-            // activation can compose in place: a plain (non-ref) call
-            // result or a literal receiver is a genuine rvalue -- DMD
-            // itself makes `f().field[j][k] += v` a compile error for a
-            // non-ref `f` returning a struct by value, so this shape is
-            // reachable only through an already-lowered AST. A
-            // captured-variable receiver has live storage but no static
-            // predicate resolves it yet (the frame/dataseg-scoped
-            // `hasBindingPlace` does not see a closure's cross-activation
-            // captures) -- separate follow-on work. A `VarExp`-rooted
-            // struct receiver (`local.field[j][k] += v`) also lands here:
-            // `local` itself has a place, but this function composes its
-            // write targets by hand rather than through the direct-write
-            // predicates, so a plain local receiver keeps the snapshot
-            // rebuild it always used.
-            const fieldIndex = structFieldIndex(dot);
-            import quickbite.backends.interpreter.place: Place;
-
-            auto receiverTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(dot.e1),
-                dot.e1.type,
-            ));
-            runExpression(dot.e1, receiverTemporary);
-            const receiver = readStoredValue(receiverTemporary.place);
-            const fieldValue = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
-            );
-            const outerIndex = scalarOperand!size_t(outer.e2);
-            checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-            const outerElement = readStoredValue(
-                AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-            );
-            checkStaticArrayIndexInBounds(outerElement, arrayIndex);
-            const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                AggregateValue.native(fieldValue),
-                outerIndex,
-                ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                    AggregateValue.native(outerElement), arrayIndex, value,
-                )),
-            ));
-            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
-                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedField),
-            ));
+            auto pointer = pointerOperandPlace(index.e1);
+            copyPlaceValue(value, pointer.index(arrayIndex));
             return;
         }
 
-        if (auto dot = index.e1.isDotVarExp) {
-            if (receiverClassType(dot.e1) !is null) {
-                const receiver = constructedExpressionValue(dot.e1);
-                // A class local exposes its object-body pointer. Resolve the
-                // field's `Place` directly through that pointer and write
-                // the updated array back through it.
-                const nativeClassReceiver = receiver.isPointer
-                    ? receiver
-                    : receiver.isNativeAggregate
-                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : ExpressionResult.null_;
-                if (nativeClassReceiver.isPointer) {
-                    import quickbite.backends.interpreter.place: Place;
-                    import quickbite.backends.interpreter.place_value: readValue, writeValue;
-
-                    auto bodyAddress = nativeClassReceiver.pointerAddress;
-                    auto bodyType = dot.e1.type;
-                    if (auto metadata = bodyAddress in nativeExceptionMetadata) {
-                        bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                        bodyType = (*metadata).type;
-                    }
-                    auto fieldPlace = Place(bodyAddress, bodyType)
-                        .field(dot.var.isVarDeclaration);
-                    const source = readValue(fieldPlace);
-                    const updatedArray = ExpressionResult.nativeAggregateValue(
-                        AggregateValue.withArrayElement(AggregateValue.native(source), arrayIndex, value),
-                    );
-                    writeValue(fieldPlace, updatedArray);
-                    return;
-                }
-                throw new Exception("Class field assignment needs a native address.");
-            }
-
-            // A `this`/`super`-rooted receiver chain (`this.arr[i] += v`, or
-            // a deeper `this.inner.arr[i] += v`) is bound to this
-            // activation's own receiver storage for its whole lifetime --
-            // `projectionPlace` composes the field's live address the same
-            // way `writeLocation`'s own `DotVarExp` arm does for an
-            // unindexed field write.
-            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
-                import quickbite.backends.interpreter.place_value: readValue;
-
-                auto fieldPlace = projectionPlace(dot);
-                checkStaticArrayIndexInBounds(readValue(fieldPlace), arrayIndex);
-                writeStoredValue(
-                    fieldPlace.index(arrayIndex),
-                    storageValue(index.type, value),
-                );
-                clearProjectionRootUninitialized(index);
-                return;
-            }
-
-            // A ref-returning call's receiver (`f().arr[i] += v` where `f`
-            // returns `ref S`) names a live struct lvalue, not a temporary
-            // -- the same lvalue this function's own `index.e1.isCallExp`
-            // arm above already resolves through `refReturningCallAddress`
-            // for the top-level index-is-call shape.
-            if (auto call = dot.e1.isCallExp)
-                if (
-                    call.f !is null &&
-                    returnsRef(call.f) &&
-                    dot.e1.type.toBasetype.isTypeStruct !is null
-                ) {
-                    import dmd.tokens: EXP;
-                    import quickbite.backends.interpreter.place: Place;
-                    import quickbite.backends.interpreter.place_value: readValue;
-
-                    auto address = refReturningCallAddress(call, EXP.address);
-                    // `auto`: a `Place` needs a mutable address.
-                    auto fieldPlace = Place(address, dot.e1.type)
-                        .field(dot.var.isVarDeclaration);
-                    checkStaticArrayIndexInBounds(readValue(fieldPlace), arrayIndex);
-                    writeStoredValue(
-                        fieldPlace.index(arrayIndex),
-                        storageValue(index.type, value),
-                    );
-                    return;
-                }
-
-            // Whatever remains here has no addressable place this
-            // activation can compose in place: a plain (non-ref) call
-            // result or a literal receiver is a genuine rvalue -- DMD
-            // itself makes `f().field[j] += v` a compile error for a
-            // non-ref `f` returning a struct by value, so this shape is
-            // reachable only through an already-lowered AST. A
-            // captured-variable receiver has live storage but no static
-            // predicate resolves it yet (the frame/dataseg-scoped
-            // `hasBindingPlace` does not see a closure's cross-activation
-            // captures) -- separate follow-on work. A `VarExp`-rooted
-            // struct receiver (`local.field[j] += v`) also lands here for
-            // the same reason as `writeIndexLocation`'s nested-`IndexExp`
-            // arm above: this function composes its write targets by hand
-            // rather than through the direct-write predicates, so a plain
-            // local receiver keeps the snapshot rebuild it always used.
-            const fieldIndex = structFieldIndex(dot);
-            import quickbite.backends.interpreter.place: Place;
-
-            auto receiverTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(dot.e1),
-                dot.e1.type,
-            ));
-            runExpression(dot.e1, receiverTemporary);
-            const receiver = readStoredValue(receiverTemporary.place);
-            const fieldValue = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
-            );
-            const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                AggregateValue.native(fieldValue), arrayIndex, value,
-            ));
-            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
-                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedArray),
-            ));
-            return;
-        }
-
-        auto var = index.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        auto place = bindingPlace(variable).index(arrayIndex);
-        writeStoredValue(place, storageValue(index.type, value));
-        clearUninitializedBindingAddress(bindingPlace(variable).address);
-    }
-
-    private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
-        import quickbite.backends.interpreter.layout: structFields;
-
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            throw new Exception("Unsupported interpreter field access.");
-
-        auto structType = receiverStructType(dot.e1);
-        if (structType is null || structType.sym is null)
-            throw new Exception("Unsupported interpreter field access.");
-
-        foreach (index, candidate; structFields(structType))
-            if (candidate is field)
-                return index;
-
-        throw new Exception("Unsupported interpreter field access.");
-    }
-
-    private ExpressionResult withUnionFieldWrite(
-        in ExpressionResult receiver,
-        imported!"dmd.mtype".TypeStruct unionType,
-        in size_t fieldIndex,
-        in ExpressionResult value,
-    ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readScalarLeaf, writeScalarLeaf;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
-
-        auto fields = structFields(unionType);
-        if (fieldIndex >= fields.length)
-            throw new Exception("Unsupported interpreter union field access.");
-        const symbolicValue = value.isTypeName ||
-            value.isFunctionPointer ||
-            (fields[fieldIndex].type.toBasetype.ty == TY.Tdelegate &&
-                value != ExpressionResult.null_);
-        auto updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-            AggregateValue.native(receiver),
-            fieldIndex,
-            symbolicValue ? ExpressionResult.null_ : value,
-        ));
-
-        auto writtenType = fields[fieldIndex].type;
-        const writtenScalar = isNativeScalarType(writtenType);
-        auto writtenStructType = writtenType.toBasetype.isTypeStruct;
-        const writtenStruct = writtenStructType !is null
-            && writtenStructType.sym.isUnionDeclaration is null;
-        const writtenArray = isStaticArrayType(writtenType)
-            && isNativeScalarType(writtenType.toBasetype.nextOf.toBasetype)
-            && AggregateValue.isArray(value);
-
-        if (!writtenScalar && !writtenStruct && !writtenArray)
-            return withUnionStoredField(
-                receiver,
-                unionType,
-                fieldIndex,
+        if (auto dereference = index.e1.isPtrExp) {
+            auto address = pointerOperandPlace(dereference.e1).loadReference;
+            copyPlaceValue(
                 value,
-                updated,
+                Place(address, index.e1.type).index(arrayIndex),
             );
-
-        auto cell = NativeStruct.allocate(unionType);
-
-        // `NativeStruct.allocate` zero-initialises, and the transient cell
-        // used to be seeded ONLY with the just-written member's own bytes
-        // before the sibling loop below re-derived every OTHER member's
-        // FULL extent from it -- any sibling WIDER than the written member
-        // read zeros in the bytes outside the written member's extent
-        // instead of the union's PRIOR bytes there (e.g. `int[2] a; int i;`:
-        // writing `u.i` after `u.a = [...]` zeroed `a[1]`, which lies
-        // entirely outside `i`'s 4-byte extent). Seeding the cell from
-        // `receiver` -- the union's current native state, via the same
-        // overlay-every-member-in-declaration-order path `promoteStructCell`
-        // already uses to seed a cell from scratch -- first fills every
-        // byte the union's prior state actually agreed on (every earlier
-        // write through this same function already left every native-scalar/
-        // array/struct sibling mutually consistent, so re-overlaying them
-        // here is harmless, exactly as that seed's own doc comment already
-        // established); the just-written member's bytes below then overwrite
-        // only their own extent on top, leaving any wider sibling's tail
-        // outside that extent intact instead of zeroed.
-        writeStructCellScalarFields(cell, receiver);
-
-        if (writtenScalar) {
-            writeScalarLeaf(Place(cell.field(fieldIndex).ptr, writtenType), value);
-        } else if (writtenStruct) {
-            auto writtenCell = cell.structField(fieldIndex);
-            writeStructCellScalarFields(writtenCell, value);
-        } else {
-            auto writtenElementType = writtenType.toBasetype.nextOf.toBasetype;
-            auto writtenArrayCell = cell.arrayField(fieldIndex);
-            auto valueAggregate = AggregateValue.native(value);
-            foreach (elementIndex; 0 .. AggregateValue.length(valueAggregate))
-                writeScalarLeaf(
-                    Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType),
-                    readStoredValue(
-                        AggregateValue.elementAt(valueAggregate, elementIndex),
-                    ),
-                );
+            return;
         }
 
-        foreach (siblingIndex, sibling; fields) {
-            if (siblingIndex == fieldIndex)
-                continue;
-
-            if (isNativeScalarType(sibling.type)) {
-                updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-                    AggregateValue.native(updated), siblingIndex,
-                    readScalarLeaf(Place(cell.field(siblingIndex).ptr, sibling.type)),
-                ));
-                continue;
-            }
-
-            if (isStaticArrayType(sibling.type)) {
-                auto siblingElementType = sibling.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(siblingElementType))
-                    continue;
-
-                auto siblingCurrent = readStoredValue(
-                    AggregateValue.fieldAt(AggregateValue.native(updated), siblingIndex),
-                );
-                if (!siblingCurrent.isNativeAggregate)
-                    continue;
-                auto siblingAggregate = AggregateValue.native(siblingCurrent);
-                if (!AggregateValue.isArray(siblingAggregate))
-                    continue;
-
-                auto siblingArrayCell = cell.arrayField(siblingIndex);
-                foreach (elementIndex; 0 .. AggregateValue.length(siblingAggregate))
-                    siblingAggregate = AggregateValue.withArrayElement(siblingAggregate, elementIndex,
-                        readScalarLeaf(Place(
-                            siblingArrayCell.element(elementIndex).ptr,
-                            siblingElementType,
-                        )));
-                updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-                    AggregateValue.native(updated), siblingIndex,
-                    ExpressionResult.nativeAggregateValue(siblingAggregate),
-                ));
-                continue;
-            }
-
-            auto siblingStructType = sibling.type.toBasetype.isTypeStruct;
-            if (siblingStructType is null || siblingStructType.sym.isUnionDeclaration !is null)
-                continue;
-
-            auto siblingCurrent = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(updated), siblingIndex),
-            );
-            if (!AggregateValue.isStruct(siblingCurrent))
-                continue;
-
-            auto siblingCell = cell.structField(siblingIndex);
-            updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
-                AggregateValue.native(updated), siblingIndex,
-                structValueFromCell(siblingCurrent, siblingCell),
-            ));
-        }
-
-        return withUnionStoredField(
-            receiver,
-            unionType,
-            fieldIndex,
-            value,
-            updated,
-        );
-    }
-
-    private ExpressionResult withUnionStoredField(
-        in ExpressionResult receiver,
-        imported!"dmd.mtype".TypeStruct unionType,
-        in size_t fieldIndex,
-        in ExpressionResult value,
-        in ExpressionResult updated,
-    ) {
-        import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto source = AggregateValue.native(receiver);
-        auto destination = AggregateValue.native(updated);
-        copyStoredMetadata(unionType, source.address, destination.address);
-        writeStoredValue(
-            Place(destination.address, unionType).field(
-                structFields(unionType)[fieldIndex],
-            ),
-            value,
-        );
-        return updated;
+        auto base = constructedExpressionPlace(index.e1);
+        copyPlaceValue(value, base.index(arrayIndex));
+        writeLocation(index.e1, base);
     }
 
     private Place runIndexAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
-        import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
+        auto destination = selectedIndexPlace(index);
+        auto value = assignThroughTypedTemporary(destination, rhs);
+        clearProjectionRootUninitialized(index);
+        clearUninitializedBindingAddress(destination.address);
+        return value;
+    }
 
-        // Compose the selected live element once before the RHS. Its complete
-        // typed temporary then copies into that already-selected place, so
-        // array and struct elements do not rebuild an enclosing carrier.
+    // Select an indexed live place before the RHS runs. The recursive arm
+    // handles lowered associative-array and nested-array shapes without
+    // rebuilding any enclosing aggregate value.
+    private Place selectedIndexPlace(
+        imported!"dmd.expression".IndexExp index,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types: isPointerType;
+
         if (isDirectIndexAssignmentTarget(index))
-            return runProjectionAssignExpression(index, rhs);
+            return directWriteProjectionPlace(index);
 
+        Place base;
         if (auto call = index.e1.isCallExp) {
-            import dmd.tokens: EXP;
-            import quickbite.backends.interpreter.place: Place;
-
-            auto address = refReturningCallAddress(call, EXP.address);
-            // `auto`: a `Place` needs a mutable address.
-            const arrayIndex = scalarOperand!size_t(index.e2);
-            auto destination = Place(address, index.e1.type)
-                .index(arrayIndex);
-            return assignThroughTypedTemporary(destination, rhs);
-        }
-
-        if (isPointerType(index.e1.type)) {
-            const address = pointerOperandPlace(index.e1).deref.address;
-            const arrayIndex = scalarOperand!size_t(index.e2);
-            if (address !is null) {
-                import quickbite.backends.interpreter.layout: typeByteSize;
-                import quickbite.backends.interpreter.place: Place;
-
-                auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
-                auto destination = Place(
-                    nativeElementAddress(
-                        cast(void*) address,
-                        arrayIndex,
-                        typeByteSize(elementType),
-                    ),
-                    elementType,
-                );
-                auto value = assignThroughTypedTemporary(destination, rhs);
-                clearUninitializedBindingAddress(cast(void*) address);
-                return value;
-            }
-            throw new Exception("Pointer index assignment needs a native address.");
-        }
-
-        // `(*p)[i] = v`'s SIMPLE-assignment path -- the counterpart of
-        // `writeIndexLocation`'s identical `PtrExp` arm (compound
-        // assignment/atomic path). `index.e1` is a dereference whose
-        // pointee is the static array being indexed (e.g. `int[3]*`), not a
-        // variable/field lvalue; `&(*p)` recovers `p`'s own address
-        // (`addressOfExpression`'s identical `PtrExp` arm).
-        if (auto derefBase = index.e1.isPtrExp) {
-            const address = pointerOperandPlace(derefBase.e1).deref.address;
-            if (address !is null) {
-                import quickbite.backends.interpreter.place: Place;
-
-                const arrayIndex = scalarOperand!size_t(index.e2);
-                auto destination = Place(cast(void*) address, index.e1.type)
-                    .index(arrayIndex);
-                auto value = assignThroughTypedTemporary(destination, rhs);
-                clearUninitializedBindingAddress(cast(void*) address);
-                return value;
-            }
-            throw new Exception("Unsupported interpreter assignment target.");
-        }
-
-        if (auto outer = index.e1.isIndexExp)
-            return runNestedIndexAssignExpression(outer, index, rhs);
-
-        if (auto dot = index.e1.isDotVarExp) {
-            // Class sibling of the struct branch below (aggregate
-            // composition -- static-array field): `c.arr[i] = v`'s
-            // SIMPLE-assignment path (as opposed to
-            // `writeIndexLocation`'s compound-assignment/atomic path, fixed
-            // alongside this one) previously fell through to
-            // `structFieldIndex`, which throws "Unsupported interpreter
-            // field access." for a class receiver -- this shape was entirely
-            // unsupported. Checked via the STATIC receiver type, matching
-            // `writeLocation`'s own class-field dispatch.
-            if (receiverClassType(dot.e1) !is null) {
-                const receiver = constructedExpressionValue(dot.e1);
-                const nativeClassReceiver = receiver.isPointer
-                    ? receiver
-                    : receiver.isNativeAggregate
-                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : ExpressionResult.null_;
-                if (nativeClassReceiver.isPointer) {
-                    import quickbite.backends.interpreter.place: Place;
-
-                    auto bodyAddress = nativeClassReceiver.pointerAddress;
-                    auto bodyType = dot.e1.type;
-                    if (auto metadata = bodyAddress in nativeExceptionMetadata) {
-                        bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                        bodyType = (*metadata).type;
-                    }
-                    auto fieldPlace = Place(bodyAddress, bodyType)
-                        .field(dot.var.isVarDeclaration);
-                    const source = readStoredValue(fieldPlace);
-                    if (index.lengthVar !is null)
-                        setLocal(index.lengthVar,
-                            AggregateValue.length(AggregateValue.native(source)));
-                    const arrayIndex = scalarOperand!size_t(index.e2);
-                    auto destination = fieldPlace.index(arrayIndex);
-                    return assignThroughTypedTemporary(destination, rhs);
-                }
-                throw new Exception("Class field assignment needs a native address.");
-            }
-
-            // A `this`/`super`-rooted receiver chain (`this.arr[i] = v`, or
-            // a deeper `this.inner.arr[i] = v`) is bound to this
-            // activation's own receiver storage for its whole lifetime --
-            // `projectionPlace` composes the field's live address the same
-            // way `writeLocation`'s own `DotVarExp` arm does for an
-            // unindexed field write. With the field itself now a live
-            // place, the element write goes through the same
-            // typed-temporary discipline `runProjectionAssignExpression`
-            // uses for a direct target, instead of composing a whole
-            // rebuilt struct value.
-            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
-                auto fieldPlace = projectionPlace(dot);
-                const source = readStoredValue(fieldPlace);
-                if (index.lengthVar !is null)
-                    setLocal(index.lengthVar,
-                        AggregateValue.length(AggregateValue.native(source)));
-                const arrayIndex = scalarOperand!size_t(index.e2);
-                auto destination = fieldPlace.index(arrayIndex);
-                auto value = assignThroughTypedTemporary(destination, rhs);
-                clearProjectionRootUninitialized(index);
-                return value;
-            }
-
-            // A ref-returning call's receiver (`f().arr[i] = v` where `f`
-            // returns `ref S`) names a live struct lvalue, not a temporary
-            // -- the same lvalue this function's own `index.e1.isCallExp`
-            // arm above already resolves through `refReturningCallAddress`
-            // for the top-level index-is-call shape.
-            if (auto call = dot.e1.isCallExp)
+            base = Place(refReturningCallAddress(call, EXP.address), index.e1.type);
+        } else if (isPointerType(index.e1.type)) {
+            base = pointerOperandPlace(index.e1);
+        } else if (auto dereference = index.e1.isPtrExp) {
+            base = Place(
+                pointerOperandPlace(dereference.e1).loadReference,
+                index.e1.type,
+            );
+        } else if (auto outer = index.e1.isIndexExp) {
+            base = selectedIndexPlace(outer);
+        } else if (hasProjectionPlace(index.e1)) {
+            base = projectionPlace(index.e1, true);
+        } else if (auto dot = index.e1.isDotVarExp) {
+            Place field;
+            if (classRootedFieldPlace(dot, field)) {
+                base = field;
+            } else if (auto call = dot.e1.isCallExp) {
                 if (
-                    call.f !is null &&
-                    returnsRef(call.f) &&
-                    dot.e1.type.toBasetype.isTypeStruct !is null
-                ) {
-                    import dmd.tokens: EXP;
-                    import quickbite.backends.interpreter.place: Place;
-
-                    auto address = refReturningCallAddress(call, EXP.address);
-                    // `auto`: a `Place` needs a mutable address.
-                    auto fieldPlace = Place(address, dot.e1.type)
-                        .field(dot.var.isVarDeclaration);
-                    const source = readStoredValue(fieldPlace);
-                    if (index.lengthVar !is null)
-                        setLocal(index.lengthVar,
-                            AggregateValue.length(AggregateValue.native(source)));
-                    const arrayIndex = scalarOperand!size_t(index.e2);
-                    auto destination = fieldPlace.index(arrayIndex);
-                    return assignThroughTypedTemporary(destination, rhs);
-                }
-
-            // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so
-            // it must see the field array's current length: resolve the
-            // field and seed lengthVar from it before evaluating index.e2,
-            // the same order runIndexExpression (read path) already uses for
-            // the same `$` binding. Evaluating e2 first left lengthVar
-            // holding a stale (or default zero) length, so `h.arr[$ - 1] =
-            // v` right after growing `h.arr` underflowed to size_t.max.
-            //
-            // Whatever remains here has no addressable place this
-            // activation can compose in place: a plain (non-ref) call
-            // result or a literal receiver is a genuine rvalue -- DMD
-            // itself makes `f().arr[i] = v` a compile error for a non-ref
-            // `f` returning a struct by value, so this shape is reachable
-            // only through an already-lowered AST. A captured-variable
-            // receiver has live storage but no static predicate resolves
-            // it yet (the frame/dataseg-scoped `hasBindingPlace` does not
-            // see a closure's cross-activation captures) -- separate
-            // follow-on work. Any `VarExp`-rooted receiver already took
-            // the direct-write path at the top of this function
-            // (`isDirectIndexAssignmentTarget`), so a struct receiver
-            // reaching here has no projection place of its own to derive.
-            const fieldIndex = structFieldIndex(dot);
-            import quickbite.backends.interpreter.place: Place;
-
-            auto receiverTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(dot.e1),
-                dot.e1.type,
-            ));
-            runExpression(dot.e1, receiverTemporary);
-            const receiver = readStoredValue(receiverTemporary.place);
-            const source = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
-            );
-            if (index.lengthVar !is null)
-                setLocal(index.lengthVar,
-                    AggregateValue.length(AggregateValue.native(source)));
-            const arrayIndex = scalarOperand!size_t(index.e2);
-            auto rhsTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(rhs),
-                rhs.type,
-            ));
-            runExpression(rhs, rhsTemporary);
-            const value = readStoredValue(rhsTemporary.place);
-            const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                AggregateValue.native(source), arrayIndex, value,
-            ));
-            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
-                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedArray),
-            ));
-            return rhsTemporary.place;
-        }
-
-        auto var = index.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-
-        const current = readBindingValue(variable);
-
-        const arrayIndex = scalarOperand!size_t(index.e2);
-        if (isStaticArrayType(index.e1.type))
-            checkStaticArrayIndexInBounds(current, arrayIndex);
-
-        auto elementType = index.e1.type.toBasetype.nextOf;
-        auto destination = bindingPlace(variable).index(arrayIndex);
-
-        auto value = assignThroughTypedTemporary(destination, rhs);
-        clearUninitializedBindingAddress(bindingPlace(variable).address);
-        return value;
-    }
-
-    // A runtime index past a static array's fixed DMD element count is
-    // bounds checked here, before `withArrayElement`'s offset arithmetic --
-    // otherwise `Place.index` (`place.d`) raises its own generic container
-    // `Exception`, not druntime's `ArrayIndexError` text. Compiled D always
-    // raises this exact wording for a write, regardless of call depth
-    // (unlike the read path's accepted top-level/nested-call divergence), so
-    // this forces `indexOutOfBoundsMessage`'s `runningCalledFunction` arm
-    // unconditionally rather than threading the Walker's own flag through.
-    private void checkStaticArrayIndexInBounds(
-        in ExpressionResult array,
-        in size_t index,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
-
-        const length = AggregateValue.length(AggregateValue.native(array));
-        if (index >= length)
-            throwRangeError(indexOutOfBoundsMessage(
-                index,
-                length,
-                /* isSlice */ false,
-                /* runningCalledFunction */ true,
-            ));
-    }
-
-    private void writeArrayCellElement(
-        ref NativeArray cell,
-        in size_t index,
-        in ExpressionResult value,
-    ) {
-        if (cell.elementType.isTypeStruct) {
-            auto elementCell = cell.structElement(index);
-            writeStructCellScalarFields(elementCell, value);
-            return;
-        }
-
-        if (cell.elementType.isTypeSArray) {
-            auto elementCell = cell.arrayElement(index);
-            writeStaticArrayCellScalarElements(elementCell, value);
-            return;
-        }
-
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
-
-        writeScalarLeaf(Place(cell.element(index).ptr, cell.elementType), value);
-    }
-
-    // Writes `arrayValue`'s scalar leaves into `cell`'s bytes (the
-    // static-array-element counterpart of `writeStructCellScalarFields`):
-    // shared by
-    // `promoteArrayCell`'s static-array-element branch (the cell-creation
-    // seed) and `writeArrayCellElement`'s own branch above (a direct
-    // element write, `a[i] = [...]`, after the cell already exists).
-    // Nested static-array elements recurse through `NativeArray.arrayElement`;
-    // scalar elements terminate in the shared scalar codec. A no-op for a
-    // value that isn't actually an array (defensive, mirroring
-    // `writeStructCellScalarFields`'s static-array-field branch).
-    private void writeStaticArrayCellScalarElements(
-        ref NativeArray cell,
-        in ExpressionResult arrayValue,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
-
-        if (!arrayValue.isNativeAggregate)
-            return;
-        auto aggregate = AggregateValue.native(arrayValue);
-        if (!AggregateValue.isArray(aggregate))
-            return;
-
-        foreach (index; 0 .. cell.length) {
-            if (index >= AggregateValue.elementCount(aggregate))
-                continue;
-
-            if (cell.elementType.isTypeSArray) {
-                // Mutable because recursive write takes the view by ref.
-                auto elementCell = cell.arrayElement(index);
-                writeStaticArrayCellScalarElements(
-                    elementCell,
-                    readStoredValue(AggregateValue.elementAt(aggregate, index)),
-                );
-            } else {
-                writeScalarLeaf(
-                    Place(cell.element(index).ptr, cell.elementType),
-                    readStoredValue(AggregateValue.elementAt(aggregate, index)),
-                );
-            }
-        }
-    }
-
-    // A native cell already owns the aggregate bytes. Copy static-array bytes
-    // directly to their typed place, or write a dynamic-array header that
-    // aliases the cell's backing storage. Neither path rebuilds an aggregate
-    // ExpressionResult solely to write it into another aggregate.
-    private void copyArrayCellTo(
-        imported!"dmd.mtype".Type type,
-        ref NativeArray cell,
-        imported!"quickbite.backends.interpreter.place".Place destination,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        if (type.toBasetype.isTypeDArray !is null) {
-            AggregateValue.initializeBorrowedArray(
-                destination,
-                cell.length,
-                cell.block.address,
-            );
-            return;
-        }
-
-        copyPlaceValue(Place(cell.block.address, type), destination);
-    }
-
-    private Place runNestedIndexAssignExpression(
-        imported!"dmd.expression".IndexExp outer,
-        imported!"dmd.expression".IndexExp inner,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        // `rows["a"][1] = 99`: DMD's own `revertIndexAssignToRvalues`
-        // (`expressionsem.d`) rewrites an associative-array index nested one
-        // level deeper than the assignment's own direct target (indexing
-        // `rows["a"]`'s aggregate-typed VALUE, rather than `rows["a"]`
-        // itself being assigned) into a `_d_aaGetRvalueX`-based rvalue read
-        // -- `outer` (`rows["a"]`) becomes a pointer-dereference `IndexExp`
-        // (index 0) over that call's own result, whose address already IS
-        // the AA's own value-slot storage (the same lowering
-        // `writeIndexLocation`'s own pointer arm composes through for the
-        // sibling `aa[key].field = ...` shape). Write through that pointer
-        // directly because the ordinary binding path has no pointer-typed
-        // base.
-        import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
-
-        if (isPointerType(outer.e1.type)) {
-            import quickbite.backends.interpreter.place: Place;
-
-            const address = pointerOperandPlace(outer.e1).deref.address;
-            if (address is null)
-                throw new Exception("Unsupported interpreter assignment target.");
-
-            const innerIndex = scalarOperand!size_t(inner.e2);
-            auto destination = Place(cast(void*) address, outer.type)
-                .index(innerIndex);
-            auto value = assignThroughTypedTemporary(destination, rhs);
-            clearUninitializedBindingAddress(cast(void*) address);
-            return value;
-        }
-
-        // `arr[i].field[j][k] = value`: `outer` (`arr[i].field[j]`) is
-        // itself an `IndexExp` whose own `e1` is a `DotVarExp`
-        // (`arr[i].field`), not a `VarExp` -- the shape the plain-local
-        // branch below assumes. Resolve the field's own current array
-        // value through the receiver (mirroring `runIndexAssignExpression`'s
-        // singly-indexed `DotVarExp` arm), then compose both index levels
-        // onto it via the same `withArrayElement`/`elementAt` pair the
-        // plain-local branch below uses, before writing the whole updated
-        // field back through the receiver's own lvalue. `checkStaticArrayIndexInBounds`
-        // bounds-checks a `Tarray` dimension just as well as a `Tsarray` one
-        // -- both go through `AggregateValue.length`, which already reads
-        // either shape's real runtime length -- so it applies to both
-        // dimensions unconditionally here rather than being gated behind
-        // `isStaticArrayType` as the plain-local branch's own checks are.
-        //
-        // `a.m[i][j] = value` (a bare class-typed local's own field,
-        // `dot.e1` a `VarExp`) needs the class-field machinery instead:
-        // `structFieldIndex` resolves the receiver's type via
-        // `receiverStructType`, which returns `null` for a class, so it
-        // unconditionally threw "Unsupported interpreter field access." for
-        // this receiver shape before any indexing even ran. Dispatching on
-        // `receiverClassType(dot.e1)` alone is not enough, though: a class
-        // local exposes either its object-body pointer or its owning native
-        // aggregate. Resolve the field's `Place` through that address, the same
-        // `nativeClassReceiver`/`fieldPlace` composition
-        // `runIndexAssignExpression`'s singly-indexed `DotVarExp`/class arm
-        // already uses, then write only the selected element through that
-        // same `Place` -- a class body's storage is its own host address, so
-        // there is no separate receiver lvalue to rebind the way a struct's
-        // local binding needs.
-        if (auto dot = outer.e1.isDotVarExp) {
-            if (receiverClassType(dot.e1) !is null) {
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue;
-
-                const receiver = constructedExpressionValue(dot.e1);
-                const nativeClassReceiver = receiver.isPointer
-                    ? receiver
-                    : receiver.isNativeAggregate
-                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : ExpressionResult.null_;
-                if (!nativeClassReceiver.isPointer)
+                    call.f is null ||
+                    !returnsRef(call.f) ||
+                    dot.e1.type.toBasetype.isTypeStruct is null
+                )
                     throw new Exception("Unsupported interpreter assignment target.");
-
-                auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
-                    .field(dot.var.isVarDeclaration);
-                const fieldValue = readValue(fieldPlace);
-                const outerIndex = scalarOperand!size_t(outer.e2);
-                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                const outerElement = readStoredValue(
-                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                );
-                const innerIndex = scalarOperand!size_t(inner.e2);
-                checkStaticArrayIndexInBounds(outerElement, innerIndex);
-                // Both bounds checks already passed against the field's own
-                // current shape, so the composed element place is in range;
-                // the class field's own storage is directly addressable, so
-                // the selected element can be written in isolation instead
-                // of rebuilding and rewriting the whole nested array.
-                auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                return assignThroughTypedTemporary(destination, rhs);
+                base = Place(
+                    refReturningCallAddress(call, EXP.address),
+                    dot.e1.type,
+                ).field(dot.var.isVarDeclaration);
+            } else {
+                base = constructedExpressionPlace(index.e1);
             }
-
-            // A `this`/`super`-rooted receiver chain (`this.m[i][j] = v`, or
-            // a deeper `this.inner.m[i][j] = v`) is bound to this
-            // activation's own receiver storage for its whole lifetime --
-            // `projectionPlace` composes the field's live address the same
-            // way the class arm above composes its own `fieldPlace`, and
-            // `writeLocation`'s own `DotVarExp` arm does for an unindexed
-            // field write. With the field itself now a live place, the
-            // element write goes through the same typed-temporary
-            // discipline the class arm above uses, instead of composing a
-            // whole rebuilt struct value.
-            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
-                import quickbite.backends.interpreter.place_value: readValue;
-
-                auto fieldPlace = projectionPlace(dot);
-                const fieldValue = readValue(fieldPlace);
-                const outerIndex = scalarOperand!size_t(outer.e2);
-                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                const outerElement = readStoredValue(
-                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                );
-                const innerIndex = scalarOperand!size_t(inner.e2);
-                checkStaticArrayIndexInBounds(outerElement, innerIndex);
-                auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                auto value = assignThroughTypedTemporary(destination, rhs);
-                clearProjectionRootUninitialized(inner);
-                return value;
-            }
-
-            // A ref-returning call's receiver (`f().m[i][j] = v` where `f`
-            // returns `ref S`) names a live struct lvalue, not a temporary
-            // -- the same lvalue the sibling `dot.e1.isCallExp` arms in
-            // `runIndexAssignExpression` and `writeIndexLocation` already
-            // resolve through `refReturningCallAddress` for their own
-            // singly-indexed struct fallbacks.
-            if (auto call = dot.e1.isCallExp)
-                if (
-                    call.f !is null &&
-                    returnsRef(call.f) &&
-                    dot.e1.type.toBasetype.isTypeStruct !is null
-                ) {
-                    import dmd.tokens: EXP;
-                    import quickbite.backends.interpreter.place: Place;
-                    import quickbite.backends.interpreter.place_value: readValue;
-
-                    auto address = refReturningCallAddress(call, EXP.address);
-                    // `auto`: a `Place` needs a mutable address.
-                    auto fieldPlace = Place(address, dot.e1.type)
-                        .field(dot.var.isVarDeclaration);
-                    const fieldValue = readValue(fieldPlace);
-                    const outerIndex = scalarOperand!size_t(outer.e2);
-                    checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                    const outerElement = readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-                    );
-                    const innerIndex = scalarOperand!size_t(inner.e2);
-                    checkStaticArrayIndexInBounds(outerElement, innerIndex);
-                    auto destination = fieldPlace.index(outerIndex).index(innerIndex);
-                    return assignThroughTypedTemporary(destination, rhs);
-                }
-
-            // Whatever remains here has no addressable place this
-            // activation can compose in place: a plain (non-ref) call
-            // result or a literal receiver is a genuine rvalue -- DMD
-            // itself makes `f().m[i][j] = v` a compile error for a
-            // non-ref `f` returning a struct by value, so this shape is
-            // reachable only through an already-lowered AST. A
-            // captured-variable receiver has live storage but no static
-            // predicate resolves it yet (the frame/dataseg-scoped
-            // `hasBindingPlace` does not see a closure's cross-activation
-            // captures) -- separate follow-on work. A `VarExp`-rooted
-            // struct receiver (`local.m[i][j] = v`) also lands here: this
-            // function composes its write targets by hand rather than
-            // through the direct-write predicates, so a plain local
-            // receiver keeps the snapshot rebuild it always used.
-            const fieldIndex = structFieldIndex(dot);
-            import quickbite.backends.interpreter.place: Place;
-
-            auto receiverTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(dot.e1),
-                dot.e1.type,
-            ));
-            runExpression(dot.e1, receiverTemporary);
-            const receiver = readStoredValue(receiverTemporary.place);
-            const fieldValue = readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
-            );
-            const outerIndex = scalarOperand!size_t(outer.e2);
-            checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-            const outerElement = readStoredValue(
-                AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
-            );
-            const innerIndex = scalarOperand!size_t(inner.e2);
-            checkStaticArrayIndexInBounds(outerElement, innerIndex);
-            auto rhsTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(rhs),
-                rhs.type,
-            ));
-            runExpression(rhs, rhsTemporary);
-            const value = readStoredValue(rhsTemporary.place);
-            const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                AggregateValue.native(fieldValue),
-                outerIndex,
-                ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
-                    AggregateValue.native(outerElement), innerIndex, value,
-                )),
-            ));
-            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
-                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedField),
-            ));
-            return rhsTemporary.place;
+        } else {
+            base = constructedExpressionPlace(index.e1);
         }
 
-        auto var = outer.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        const current = readBindingValue(variable);
-
-        const outerIndex = scalarOperand!size_t(outer.e2);
-        if (isStaticArrayType(outer.e1.type))
-            checkStaticArrayIndexInBounds(current, outerIndex);
-        const outerElement = readStoredValue(
-            AggregateValue.elementAt(AggregateValue.native(current), outerIndex),
-        );
-        const innerIndex = scalarOperand!size_t(inner.e2);
-        if (isStaticArrayType(inner.e1.type))
-            checkStaticArrayIndexInBounds(outerElement, innerIndex);
-        auto destination = bindingPlace(variable)
-            .index(outerIndex)
-            .index(innerIndex);
-        auto value = assignThroughTypedTemporary(destination, rhs);
-        clearUninitializedBindingAddress(bindingPlace(variable).address);
-        return value;
+        if (index.lengthVar !is null)
+            setLocal(index.lengthVar, base.arrayLength);
+        const arrayIndex = scalarOperand!size_t(index.e2);
+        return base.index(arrayIndex);
     }
 
-    // A slice assignment's destination range must be rejected before `rhs` is
-    // even evaluated -- matching compiled D, which raises before any side
-    // effect in `rhs` runs. `lower > upper` takes priority over an
-    // out-of-range `upper`, the same order druntime's own `ArraySliceError`
-    // (`core.exception`) picks; message text matches it verbatim, so
-    // `SystemLinker` agrees exactly. An unchecked `upper > length` would
-    // additionally index a per-path element buffer out of range with a HOST
-    // `RangeError` rather than raising the guest one.
+    private bool classRootedFieldPlace(
+        imported!"dmd.expression".Expression expression,
+        out Place place,
+    ) {
+        auto dot = expression.isDotVarExp;
+        if (dot is null || dot.var.isVarDeclaration is null)
+            return false;
+
+        if (receiverClassType(dot.e1) !is null) {
+            auto object = classObjectFromReferencePlace(
+                constructedExpressionPlace(dot.e1),
+            );
+            if (object.address is null)
+                throw new Exception("Class field access needs a native address.");
+            place = Place(object.address, object.type)
+                .field(dot.var.isVarDeclaration);
+            return true;
+        }
+
+        Place receiver;
+        if (!classRootedFieldPlace(dot.e1, receiver))
+            return false;
+        place = receiver.field(dot.var.isVarDeclaration);
+        return true;
+    }
+
     private void checkSliceAssignmentBounds(
         in size_t lower,
         in size_t upper,
@@ -10083,310 +8563,144 @@ private struct Walker {
     // caller that goes on to index its elements can read them straight out
     // of this typed storage instead of re-deriving a place from the
     // returned value a second time.
-    private ExpressionResult constructSliceAssignmentRhs(
-        imported!"dmd.expression".Expression rhs,
-        out imported!"quickbite.backends.interpreter.place".Place place,
-    ) {
-        import quickbite.backends.interpreter.place: Place;
-
-        assert(rhs !is null && rhs.type !is null);
-        place = Place(_activationFrame.temporaryAddress(rhs), rhs.type);
-        auto temporary = ConstructionDestination(place);
-        runExpression(rhs, temporary);
-        return readStoredValue(place);
-    }
-
     private Place runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
-        import quickbite.frontend.dmd.types: isPointerType;
-        import std.conv: text;
+        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
 
-        if (isPointerType(slice.e1.type))
-            return runPointerSliceAssignExpression(slice, rhs);
+        const pointer = isPointerType(slice.e1.type);
+        auto destination = sliceAssignmentBasePlace(slice.e1);
+        if (auto var = slice.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (isUninitializedBinding(variable)) {
+                    defaultLocalValue(variable);
+                    clearUninitializedBindingAddress(bindingPlace(variable).address);
+                    destination = bindingPlace(variable);
+                }
 
-        auto var = slice.e1.isVarExp;
-        if (var is null) {
-            if (auto index = slice.e1.isIndexExp)
-                return runIndexedSliceAssignExpression(slice, index, rhs);
-            if (auto dot = slice.e1.isDotVarExp)
-                return runFieldSliceAssignExpression(slice, dot, rhs);
-            if (slice.e1.isCastExp !is null)
-                return runCastedSliceAssignExpression(slice, rhs);
-            throw new Exception(text(
-                "Unsupported interpreter assignment target: slice of ",
-                slice.e1.op,
-            ));
-        }
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception(
-                "Unsupported interpreter assignment target: slice of non-variable.",
-            );
-
-        if (isUninitializedBinding(variable)) {
-            // A `T t = void;` local (e.g. `std.algorithm.mutation.swap`'s
-            // raw-byte fallback `ubyte[T.sizeof] t = void;`) never runs
-            // `setLocal` at its declaration -- there is no meaningful value
-            // to shadow -- so it has no stored value yet the first time it is
-            // used as a slice-assignment target. Compiled D leaves its bytes
-            // unspecified until written; materialising the ordinary default
-            // here is observably identical for the whole-range overwrite
-            // (`t[] = ...`) idiom this local exists for, and is no less
-            // defined than compiled D for a genuine partial write to
-            // still-uninitialized bytes.
-            defaultLocalValue(variable);
-            clearUninitializedBindingAddress(bindingPlace(variable).address);
-        }
-        const current = readBindingValue(variable);
-        auto currentAggregate = AggregateValue.native(current);
+        const length = pointer ? 0 : destination.arrayLength;
+        if (pointer && (slice.lwr is null || slice.upr is null))
+            throw new Exception("Pointer slice assignment needs explicit bounds.");
 
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(currentAggregate)
+            ? length
             : scalarOperand!size_t(slice.upr);
+        if (pointer) {
+            import std.conv: text;
 
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
+            if (lower > upper)
+                throwRangeError(text(
+                    "slice [", lower, " .. ", upper,
+                    "] has a larger lower index than upper index",
+                ));
+        } else {
+            checkSliceAssignmentBounds(lower, upper, length);
+        }
 
-        rejectOverlappingSliceAssignment(
-            variable,
-            rhs,
-            lower,
-            upper,
-            AggregateValue.length(currentAggregate),
-        );
+        if (auto var = slice.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                rejectOverlappingSliceAssignment(
+                    variable,
+                    rhs,
+                    lower,
+                    upper,
+                    length,
+                );
 
+        auto source = constructedExpressionPlace(rhs);
         const block = isBlockSliceAssignment(slice, rhs);
-        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
-        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
+        const arrayCopy = !block && isArrayType(rhs.type);
+        if (arrayCopy && source.arrayLength != upper - lower)
+            throwRangeError("Range violation");
 
-        // A fill assignment (`a[] = scalar;`) evaluates `rhs` to a single
-        // element-typed value, not an array to index into -- only the copy
-        // form (`a[] = otherArray[];`, whose `rhs.type` matches the SLICE's
-        // own array type) yields something `value[index - lower]` can index.
-        // `block` (a fill whose ELEMENT type is itself an array, e.g.
-        // `matrix[] = row;`) already takes the `copyArrayValue` branch;
-        // `value.isArray` distinguishes the remaining two: a genuine array
-        // copy vs. a scalar-element fill, which must reuse `value` itself at
-        // every position instead of indexing into it. Each element read
-        // (from either the untouched tail of `current` or `rhsPlace`)
-        // routes through `readStoredValue` so a delegate/function-pointer/
-        // symbolic-TypeInfo element keeps its out-of-band identity instead
-        // of decoding as all-zero native bytes.
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(currentAggregate))
-            elements ~= index < lower || index >= upper
-                ? readStoredValue(AggregateValue.elementAt(currentAggregate, index))
-                : block ? copyArrayValue(value, variable.type.toBasetype.nextOf)
-                : AggregateValue.isArray(value)
-                    ? readStoredArrayElement(rhsPlace, index - lower)
-                    : value;
+        foreach (offset; 0 .. upper - lower)
+            copySliceAssignmentElement(
+                arrayCopy ? source.index(offset) : source,
+                destination.index(lower + offset),
+            );
 
-        auto destination = bindingPlace(variable);
-        foreach (index; lower .. upper)
-            writeStoredArrayElement(destination.index(index), elements[index]);
-        clearUninitializedBindingAddress(destination.address);
-
-        // This variable's own data pointer denotes the same bytes a native
-        // pointer to it would, so a whole-range write through it establishes
-        // a class's identity exactly as `runPointerSliceAssignExpression`
-        // already records for the pointer form of the same write.
         if (lower == 0)
             recordCopiedClassIdentity(
-                cast(void*) AggregateValue.nativeArrayAddress(currentAggregate),
-                value,
+                pointer
+                    ? destination.loadReference
+                    : destination.type.toBasetype.isTypeDArray !is null
+                        ? destination.sliceDataPointer
+                        : null,
+                source,
             );
-
-        return rhsPlace;
+        clearProjectionRootUninitialized(slice.e1);
+        clearUninitializedBindingAddress(destination.address);
+        return source;
     }
 
-    // Writing one element of an array whose element type is `void`: the
-    // element is a byte of raw storage, because `void` names no value the
-    // place codec could store. Assigning between `void[]` slices is a byte
-    // copy in D -- their bounds and assignment length are measured in bytes
-    // -- so retyping the destination place to `ubyte` stores exactly the
-    // byte its counterpart `readStoredArrayElement` reads as a raw byte too.
-    private void writeStoredArrayElement(
-        imported!"quickbite.backends.interpreter.place".Place element,
-        in ExpressionResult value,
+    private Place sliceAssignmentBasePlace(
+        imported!"dmd.expression".Expression expression,
     ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (isPointerType(expression.type))
+            return pointerOperandPlace(expression);
+        if (auto dot = expression.isDotVarExp)
+            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1))
+                return projectionPlace(dot, true);
+        if (hasProjectionPlace(expression))
+            return projectionPlace(expression, true);
+        if (auto index = expression.isIndexExp)
+            return selectedIndexPlace(index);
+        if (auto dot = expression.isDotVarExp) {
+            Place field;
+            if (classRootedFieldPlace(dot, field))
+                return field;
+            if (auto call = dot.e1.isCallExp)
+                if (
+                    call.f !is null &&
+                    returnsRef(call.f) &&
+                    dot.e1.type.toBasetype.isTypeStruct !is null
+                )
+                    return Place(
+                        refReturningCallAddress(call, EXP.address),
+                        dot.e1.type,
+                    ).field(dot.var.isVarDeclaration);
+        }
+
+        // A cast or other array rvalue holds a native array descriptor whose
+        // data pointer still names the storage that the slice assignment
+        // updates.
+        return constructedExpressionPlace(expression);
+    }
+
+    private void copySliceAssignmentElement(Place source, Place destination) {
         import dmd.astenums: TY;
         import dmd.mtype: Type;
         import quickbite.backends.interpreter.place: Place;
 
-        if (element.type.toBasetype.ty == TY.Tvoid) {
-            writeStoredValue(Place(element.address, Type.tuns8), value);
-            return;
-        }
-        writeStoredValue(element, value);
+        if (source.type.toBasetype.ty == TY.Tvoid)
+            source = Place(source.address, Type.tuns8);
+        if (destination.type.toBasetype.ty == TY.Tvoid)
+            destination = Place(destination.address, Type.tuns8);
+        copyPlaceValue(source, destination);
     }
 
-    // Reading one element of an array whose element type is `void`: the same
-    // retyping as `writeStoredArrayElement`'s write side, so a `void[]`
-    // slice-assignment RHS decodes as the raw byte its destination expects,
-    // rather than failing the place codec, which has no case for `void`
-    // itself.
-    private ExpressionResult readStoredArrayElement(
-        imported!"quickbite.backends.interpreter.place".Place array,
-        in size_t index,
-    ) {
-        import dmd.astenums: TY;
-        import dmd.mtype: Type;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto element = array.index(index);
-        auto darray = array.type.toBasetype.isTypeDArray;
-        if (darray !is null && darray.next.toBasetype.ty == TY.Tvoid)
-            element = Place(element.address, Type.tuns8);
-        return readStoredValue(element);
-    }
-
-    // An indexed array-of-arrays element is already an independently
-    // addressable slice header.  Keep that native header and write its
-    // elements in place; rebuilding its enclosing array would create a second
-    // storage authority for this lvalue shape.
-    private Place runIndexedSliceAssignExpression(
-        imported!"dmd.expression".SliceExp slice,
-        imported!"dmd.expression".IndexExp index,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import std.conv: text;
-
-        const current = runIndexExpression(index);
-        auto currentAggregate = AggregateValue.native(current);
-        const lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-        const upper = slice.upr is null
-            ? AggregateValue.length(currentAggregate)
-            : scalarOperand!size_t(slice.upr);
-
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
-
-        const block = isBlockSliceAssignment(slice, rhs);
-        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
-        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
-        foreach (elementIndex; lower .. upper) {
-            const element = block
-                ? copyArrayValue(value, index.type.toBasetype.nextOf)
-                : AggregateValue.isArray(value)
-                    ? readStoredArrayElement(rhsPlace, elementIndex - lower)
-                    : value;
-            AggregateValue.withArrayElement(currentAggregate, elementIndex, element);
-        }
-        return rhsPlace;
-    }
-
-    // A slice assignment through a pointer (`p[i .. j] = source`) writes
-    // element by element through the pointer — native memory via the FFI
-    // store, D array storage via the tracked pointer — and never converts
-    // the lvalue to a detached Array, which would silently sever aliasing.
-    private Place runPointerSliceAssignExpression(
-        imported!"dmd.expression".SliceExp slice,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import std.conv: text;
-
-        const address = pointerOperandPlace(slice.e1).deref.address;
-        if (slice.lwr is null || slice.upr is null)
-            throw new Exception(text(
-                "Unsupported interpreter assignment target: slice of ",
-                slice.e1.op,
-            ));
-
-        const lower = scalarOperand!size_t(slice.lwr);
-        const upper = scalarOperand!size_t(slice.upr);
-
-        // Reject an inverted range before `rhs` is evaluated -- matching
-        // compiled D, which raises before any side effect in `rhs` runs --
-        // and before the write loop below computes `upper - lower`: with an
-        // unsigned `size_t`, `lower > upper` wraps that subtraction to a huge
-        // count, turning the loop into a runaway walk through native memory
-        // instead of the guest range error compiled D raises. Message text
-        // matches druntime's own `ArraySliceError` verbatim, so
-        // `SystemLinker` agrees exactly.
-        if (lower > upper)
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] has a larger lower index than upper index",
-            ));
-
-        const block = isBlockSliceAssignment(slice, rhs);
-        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
-        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
-
-        // An empty range writes nothing, so the pointer's provenance never
-        // matters — a zero-length assignment through a null pointer is a no-op
-        // in compiled D, not an unsupported target.
-        if (upper == lower)
-            return rhsPlace;
-
-        // A fill assignment (`p[i .. j] = scalar;`, e.g. druntime's own
-        // `(cast(ubyte*)&entry.value)[0 .. V.sizeof] = 0` zeroing a new AA
-        // entry) evaluates `rhs` to a single element-typed value, not an
-        // array to index into -- only the copy form yields something
-        // `value[index - lower]` can index. `AggregateValue.isArray`
-        // distinguishes the two, matching every other slice-assignment path
-        // (`runVariableSliceAssignExpression`, `runFieldSliceAssignExpression`,
-        // `runCastedSliceAssignExpression`), which this one had fallen out of
-        // step with.
-        ExpressionResult elementAt(in size_t index) {
-            return block
-                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.isArray(value)
-                    ? readStoredArrayElement(rhsPlace, index)
-                    : value;
-        }
-
-        if (address !is null) {
-            foreach (index; 0 .. upper - lower)
-                storeNativePointerElement(
-                    slice.e1.type,
-                    ExpressionResult.pointerValue(cast(void*) address),
-                    lower + index,
-                    elementAt(index),
-                );
-            if (lower == 0)
-                recordCopiedClassIdentity(cast(void*) address, value);
-            return rhsPlace;
-        }
-
-        throw new Exception(text(
-            "Unsupported interpreter assignment target: slice of ",
-            slice.e1.op,
-        ));
-    }
-
-    // Copying a class's whole initializer image over storage establishes an
-    // object of that class there: it is exactly the write that precedes any
-    // constructor, and after it the storage holds that class's fields. So the
-    // destination now denotes an object of the source's class, whatever it
-    // denoted before -- the bytes that said otherwise are gone.
-    private void recordCopiedClassIdentity(
-        void* destination,
-        in ExpressionResult source,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        // A destination whose own bytes are its storage (a static-array
-        // lvalue) has no data pointer distinct from its own address, so
-        // there is nothing here to key an identity by; only a destination
-        // reached through a dynamic array's data pointer participates.
-        if (destination is null)
+    // Copying a class's complete initializer image over storage establishes
+    // that class identity at the destination data address.
+    private void recordCopiedClassIdentity(void* destination, Place source) {
+        if (destination is null || source.type is null)
             return;
 
-        auto image = cast(void*) AggregateValue.nativeArrayAddress(source);
-        if (image is null)
+        auto type = source.type.toBasetype;
+        if (type.isTypeDArray is null && type.isTypeSArray is null)
             return;
-
-        if (auto type = image in nativeClassTypes)
-            nativeClassTypes[destination] = *type;
+        auto image = type.isTypeDArray !is null
+            ? source.sliceDataPointer
+            : source.address;
+        if (auto classType = cast(void*) image in nativeClassTypes)
+            nativeClassTypes[destination] = *classType;
     }
 
     private void rejectOverlappingSliceAssignment(
@@ -10401,10 +8715,7 @@ private struct Walker {
             return;
 
         auto var = source.e1.isVarExp;
-        if (var is null)
-            return;
-
-        if (var.var.isVarDeclaration !is variable)
+        if (var is null || var.var.isVarDeclaration !is variable)
             return;
 
         const sourceLower = source.lwr is null
@@ -10413,178 +8724,8 @@ private struct Walker {
         const sourceUpper = source.upr is null
             ? length
             : scalarOperand!size_t(source.upr);
-
         if (lower < sourceUpper && sourceLower < upper)
             throw new Exception("Range violation");
-    }
-
-    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`)
-    // writes the assigned elements one by one through the storage the field
-    // already denotes -- `fieldSliceStorage` below resolves which storage
-    // that is. Rebuilding a whole new array and storing it back into the
-    // field slot instead would replace the field's data pointer with a fresh
-    // allocation's, silently severing an identity its owner may depend on --
-    // e.g. a field backed by a `Mallocator`-returned block whose destructor
-    // later frees the field's pointer: swapping in a differently-sourced
-    // block there corrupts the allocator on free.
-    private Place runFieldSliceAssignExpression(
-        imported!"dmd.expression".SliceExp slice,
-        imported!"dmd.expression".DotVarExp dot,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        auto current = fieldSliceStorage(dot);
-
-        const lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-        const upper = slice.upr is null
-            ? current.arrayLength
-            : scalarOperand!size_t(slice.upr);
-
-        checkSliceAssignmentBounds(lower, upper, current.arrayLength);
-
-        const block = isBlockSliceAssignment(slice, rhs);
-        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
-        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
-
-        // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
-        // scalar;`) evaluates `rhs` to a single element-typed value, not an
-        // array to index into -- only the copy form (`s.field[] =
-        // otherArray[];`) yields something `value[index - lower]` can index.
-        // `AggregateValue.isArray` distinguishes the two, matching the
-        // variable slice-assignment path above.
-        foreach (index; lower .. upper) {
-            const element = block
-                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.isArray(value)
-                    ? readStoredArrayElement(rhsPlace, index - lower)
-                    : value;
-            writeStoredArrayElement(current.index(index), element);
-        }
-
-        // A dynamic-array field's data pointer denotes the same bytes a
-        // native pointer to it would, so a whole-range write through it
-        // establishes a class's identity exactly as
-        // `runPointerSliceAssignExpression` already records for the pointer
-        // form of the same write. A static-array field has no data pointer
-        // distinct from its own address; `recordCopiedClassIdentity` no-ops
-        // for it.
-        if (lower == 0)
-            recordCopiedClassIdentity(
-                current.type.toBasetype.isTypeDArray !is null
-                    ? cast(void*) current.sliceDataPointer
-                    : null,
-                value,
-            );
-
-        return rhsPlace;
-    }
-
-    // The array storage a struct field's own slice assignment must land in,
-    // as a place its caller can index through. D gives an array field two
-    // different storage shapes, and either one composes directly to a
-    // `Place` over the field's own bytes:
-    //
-    // - A dynamic-array field's own bytes are a `{ length, ptr }` header,
-    //   and its elements live wherever `ptr` points. `Place.index` on that
-    //   header place follows the stored `ptr`, so indexing through it
-    //   reaches the field's own elements regardless of whether the
-    //   receiver struct itself was addressable.
-    //
-    // - A static-array field's own bytes ARE its elements. Its storage has
-    //   to be composed from the receiver's own address instead, which is
-    //   what the arm below does; only that address names the bytes the
-    //   struct holds.
-    private imported!"quickbite.backends.interpreter.place".Place fieldSliceStorage(
-        imported!"dmd.expression".DotVarExp dot,
-    ) {
-        import quickbite.backends.interpreter.layout: declaredType;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
-        import dmd.tokens: EXP;
-        import std.conv: text;
-
-        auto field = dot.var.isVarDeclaration;
-        if (field is null || !isStaticArrayType(declaredType(field))) {
-            if (field is null)
-                throw new Exception("Unsupported interpreter field access.");
-
-            auto aggregate = AggregateValue.native(constructedExpressionValue(dot.e1));
-            return Place(aggregate.address, aggregate.type).field(field);
-        }
-
-        auto receiver = addressOfExpression(dot.e1, EXP.address);
-        // `auto`: a receiver `Place` needs a mutable address.
-
-        // A class receiver holds a reference to its object body, so its
-        // fields sit at offsets from the referenced body rather than from
-        // the reference slot itself; a struct receiver's fields sit inline
-        // at its own address.
-        auto receiverPlace = Place(receiver, dot.e1.type);
-        if (dot.e1.type.toBasetype.isTypeClass !is null)
-            receiverPlace = receiverPlace.deref;
-
-        // The receiver is an lvalue that outlives this assignment -- a
-        // frame slot, a dataseg block, or a class body reached through a
-        // live reference -- so this place, composed straight over its own
-        // field bytes, is exactly the assignment's real target.
-        return receiverPlace.field(field);
-    }
-
-    // A slice assignment through a cast (`(cast(char[]) view)[] = "foo"`):
-    // casting a slice changes the element type of the view, never the storage
-    // it denotes, so the assignment must land in the array the cast operand
-    // already points at. Evaluating the cast yields a slice header holding
-    // that same data pointer, so writing elements through it with
-    // `AggregateValue.withArrayElement` reaches the original backing array.
-    // Rebuilding an array from the written elements instead would leave the
-    // result in a fresh allocation the source never sees.
-    private Place runCastedSliceAssignExpression(
-        imported!"dmd.expression".SliceExp slice,
-        imported!"dmd.expression".Expression rhs,
-    ) {
-        const current = constructedExpressionValue(slice.e1);
-        auto currentAggregate = AggregateValue.native(current);
-
-        const lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-        const upper = slice.upr is null
-            ? AggregateValue.length(currentAggregate)
-            : scalarOperand!size_t(slice.upr);
-
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
-
-        const block = isBlockSliceAssignment(slice, rhs);
-        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
-        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
-
-        // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
-        // to a single element-typed value, not an array to index into --
-        // only the copy form yields something `value[index - lower]` can
-        // index. `AggregateValue.isArray` distinguishes the two, matching
-        // the variable slice-assignment path above.
-        foreach (index; lower .. upper) {
-            const element = block
-                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.isArray(value)
-                    ? readStoredArrayElement(rhsPlace, index - lower)
-                    : value;
-            AggregateValue.withArrayElement(currentAggregate, index, element);
-        }
-
-        // A cast changes a view's element type, not the storage it denotes,
-        // so its data pointer still denotes the same bytes a native pointer
-        // to that storage would: a whole-range write through it establishes
-        // a class's identity exactly as `runPointerSliceAssignExpression`
-        // already records for the pointer form of the same write.
-        if (lower == 0)
-            recordCopiedClassIdentity(
-                cast(void*) AggregateValue.nativeArrayAddress(currentAggregate),
-                value,
-            );
-
-        return rhsPlace;
     }
 
     private bool isBlockSliceAssignment(
@@ -10594,27 +8735,11 @@ private struct Walker {
         import quickbite.frontend.dmd.types: arrayElementType, isArrayType;
 
         auto elementType = arrayElementType(slice.type);
-        if (elementType is null || !isArrayType(elementType))
-            return false;
-
-        return rhs.type !is null &&
+        return elementType !is null &&
+            isArrayType(elementType) &&
+            rhs.type !is null &&
             rhs.type.toBasetype.equals(elementType.toBasetype);
     }
-
-    private ExpressionResult copyArrayValue(
-        in ExpressionResult value,
-        imported!"dmd.mtype".Type type,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        auto aggregate = AggregateValue.native(value);
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(aggregate))
-            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
-
-        return reconstructStoredArray(aggregate.type, elements);
-    }
-
     private Place runLoweredAssignExpression(
         imported!"dmd.expression".LoweredAssignExp assign,
     ) {
@@ -10649,7 +8774,7 @@ private struct Walker {
             return lengthValue;
         }
 
-        const current = readBindingValue(variable);
+        auto current = bindingPlace(variable);
 
         const newLength = cast(size_t) lengthValue.loadSignedScalar;
 
@@ -10675,27 +8800,6 @@ private struct Walker {
         writeConcatenationOperand(destination, left.count, right);
     }
 
-    // A `~`/`~=` result array. Both operands are read once each, then their
-    // elements are written directly into the freshly allocated destination:
-    // no intermediate element array ever mirrors either operand or the
-    // result.
-    private ExpressionResult concatenatedArray(
-        imported!"dmd.mtype".Type resultType,
-        imported!"dmd.expression".Expression e1,
-        imported!"dmd.expression".Expression e2,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto left = concatenationOperand(resultType, e1);
-        auto right = concatenationOperand(resultType, e2);
-        auto owner = AggregateValue.allocateArray(resultType, left.count + right.count);
-        auto destination = Place(owner.address, resultType);
-        writeConcatenationOperand(destination, 0, left);
-        writeConcatenationOperand(destination, left.count, right);
-        return ExpressionResult.nativeAggregateValue(owner);
-    }
-
     // One concatenation operand's contribution. An array operand's elements
     // stay a borrowed view of its own storage -- never a copy of it, since
     // the source array's identity is capacity-bearing and its own append
@@ -10705,13 +8809,13 @@ private struct Walker {
     // single value otherwise).
     private struct ConcatenationOperand {
         bool isArray;
-        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
-        ExpressionResult[] scalarElements;
+        Place value;
+        string encodedCharacters;
 
         size_t count() @safe {
-            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-            return isArray ? AggregateValue.elementCount(aggregate) : scalarElements.length;
+            return isArray
+                ? value.arrayLength
+                : encodedCharacters is null ? 1 : encodedCharacters.length;
         }
     }
 
@@ -10719,20 +8823,54 @@ private struct Walker {
         imported!"dmd.mtype".Type resultType,
         imported!"dmd.expression".Expression operand,
     ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.frontend.dmd.types: isArrayType;
+        import quickbite.frontend.dmd.types: arrayElementType, isArrayType;
 
-        const value = constructedExpressionValue(operand);
-        if (!isArrayType(operand.type)) {
-            ConcatenationOperand result;
-            result.scalarElements = nativeAppendElements(resultType, value);
+        auto value = constructedExpressionPlace(operand);
+        ConcatenationOperand result;
+        result.value = value;
+        auto elementType = arrayElementType(resultType);
+        const contributesOneElement = elementType !is null &&
+            operand.type !is null &&
+            operand.type.toBasetype.equals(elementType.toBasetype);
+        if (contributesOneElement || !isArrayType(operand.type)) {
+            result.encodedCharacters = encodedAppendCharacters(resultType, value);
             return result;
         }
 
-        ConcatenationOperand result;
         result.isArray = true;
-        result.aggregate = AggregateValue.native(value);
         return result;
+    }
+
+    // A wide character appended to `char[]` contributes its UTF-8 code units.
+    // `null` means that the operand contributes one ordinary typed value.
+    private string encodedAppendCharacters(
+        imported!"dmd.mtype".Type arrayType,
+        Place value,
+    ) {
+        import dmd.astenums: TY;
+        import std.utf: encode;
+
+        auto array = arrayType.toBasetype.isTypeDArray;
+        if (array is null || array.next.toBasetype.ty != TY.Tchar)
+            return null;
+
+        char[4] encoded;
+        size_t length;
+        switch (value.type.toBasetype.ty) with (TY) {
+            case Tchar:
+                encoded[0] = value.loadNativeScalar!char;
+                length = 1;
+                break;
+            case Twchar:
+                length = encode(encoded, cast(dchar) value.loadNativeScalar!wchar);
+                break;
+            case Tdchar:
+                length = encode(encoded, value.loadNativeScalar!dchar);
+                break;
+            default:
+                return null;
+        }
+        return encoded[0 .. length].idup;
     }
 
     private void writeConcatenationOperand(
@@ -10740,40 +8878,38 @@ private struct Walker {
         in size_t startIndex,
         ConcatenationOperand operand,
     ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
         if (!operand.isArray) {
-            foreach (offset, element; operand.scalarElements)
-                writeStoredValue(destination.index(startIndex + offset), element);
+            if (operand.encodedCharacters is null) {
+                copyPlaceValue(operand.value, destination.index(startIndex));
+            } else {
+                foreach (offset, character; operand.encodedCharacters)
+                    destination.index(startIndex + offset).storeNativeScalar(character);
+            }
             return;
         }
 
-        foreach (index; 0 .. AggregateValue.elementCount(operand.aggregate))
-            writeStoredValue(
+        foreach (index; 0 .. operand.value.arrayLength)
+            copyPlaceValue(
+                operand.value.index(index),
                 destination.index(startIndex + index),
-                readStoredValue(AggregateValue.elementAt(operand.aggregate, index)),
             );
     }
 
     private Place runArrayAppendAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
         // A field or a dereferenced pointer (`*log ~= id`, e.g. a
         // destructor appending through a captured `int[]*` field) both read
         // through their own typed places and write through the generic
         // `writeLocation` -- neither needs the ref-array-parameter or
         // bounds-check handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
-            const element = constructedExpressionValue(assign.e2);
-            auto appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
-                AggregateValue.native(constructedExpressionValue(assign.e1)),
-                element,
-            ));
+            auto appended = appendArrayPlace(
+                constructedExpressionPlace(assign.e1),
+                assign.e2,
+            );
             writeLocation(assign.e1, appended);
-            auto aggregate = AggregateValue.native(appended);
-            return Place(aggregate.address, aggregate.type);
+            return appended;
         }
 
         if (auto index = assign.e1.isIndexExp)
@@ -10787,81 +8923,34 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter array append target.");
 
-        const current = readBindingValue(variable);
+        auto appended = appendArrayPlace(bindingPlace(variable), assign.e2);
+        clearUninitializedBindingAddress(bindingPlace(variable).address);
+        return appended;
+    }
 
-        const value = constructedExpressionValue(assign.e2);
-        {
-            import dmd.astenums: TY;
+    private Place appendArrayPlace(
+        Place current,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.frontend.dmd.types: arrayElementType;
 
-            // Begin each append from the binding's current native slice
-            // header (already read above as `current`) so captured slices
-            // observe prior iterations. Explicit LHS type: `auto` would infer
-            // `const(ExpressionResult)` from the `current` arm, and the loop
-            // below reassigns `appended` on every iteration.
-            ExpressionResult[] noElements;
-            ExpressionResult appended = current == ExpressionResult.null_
-                ? reconstructStoredArray(variable.type, noElements)
-                : current;
-            auto elementType = variable.type.toBasetype.isTypeDArray !is null
-                ? variable.type.toBasetype.isTypeDArray.next
-                : null;
-            foreach (rawElement; nativeAppendElements(variable.type, value)) {
-                const index = AggregateValue.elementCount(appended);
-                const previousData = AggregateValue.nativeArrayAddress(appended);
-                // The appended element itself may be a live delegate value
-                // (a fresh closure or a copied delegate local), which has no
-                // native ABI function address -- `place_value.writeValue`'s
-                // Tdelegate arm only ever accepts `ExpressionResult.null_`. Substitute
-                // null bytes for the write and register the live value
-                // out-of-band in `nativeDelegateSlots`, keyed by the newly
-                // appended element's own address, mirroring the sub-field
-                // relocation below and `structLiteralValue`'s identical
-                // substitute-then-register handling.
-                const isLiveDelegate = elementType !is null
-                    && elementType.toBasetype.ty == TY.Tdelegate
-                    && rawElement != ExpressionResult.null_;
-                auto element = isLiveDelegate ? ExpressionResult.null_ : rawElement;
-                appended = ExpressionResult.nativeAggregateValue(
-                    AggregateValue.withAppendedArrayElement(AggregateValue.native(appended), element),
-                );
-                if (elementType !is null)
-                    relocatePriorAppendedElementSlots(
-                        elementType,
-                        previousData,
-                        appended,
-                        index,
-                    );
-                if (isLiveDelegate) {
-                    nativeDelegateSlots[
-                        AggregateValue.elementAddress(appended, index)
-                    ] = delegateSlotValue(rawElement);
-                } else if (elementType !is null && element.isNativeAggregate)
-                    // `withAppendedArrayElement`'s native-aggregate arm only
-                    // copies `element`'s bytes into the array's own backing
-                    // storage; any Tdelegate-typed (sub)field's live
-                    // `nativeDelegateSlots` registration is keyed by `element`'s
-                    // own (temporary) address, so it needs the same relocation
-                    // `setLocal` already does for a whole-value local binding,
-                    // here to the newly appended element's real address.
-                    copyStoredMetadata(
-                        elementType,
-                        AggregateValue.native(element).address,
-                        AggregateValue.elementAddress(appended, index),
-                        true,
-                    );
-            }
-            // A native `ref T[]` parameter already names the caller's slice
-            // header. Appending rebinds that header, so it must use the same
-            // binding write route as ordinary assignment instead of replacing
-            // only this activation's local expression handle.
-            copyPlaceValue(
-                Place(AggregateValue.native(appended).address, variable.type),
-                bindingPlace(variable),
-                true,
-            );
-            clearUninitializedBindingAddress(bindingPlace(variable).address);
-            return bindingPlace(variable);
-        }
+        auto contribution = concatenationOperand(current.type, rhs);
+        const oldLength = current.arrayLength;
+        const previousData = current.sliceDataPointer;
+        auto resized = AggregateValue.withArrayLength(
+            borrowedAggregate(current),
+            oldLength + contribution.count,
+        );
+        auto appended = Place(resized.address, current.type);
+        relocatePriorAppendedElementSlots(
+            arrayElementType(current.type),
+            previousData,
+            appended,
+            oldLength,
+        );
+        writeConcatenationOperand(appended, oldLength, contribution);
+        return appended;
     }
 
     // `withAppendedArrayElement` reallocates a fresh backing block as soon
@@ -10882,7 +8971,7 @@ private struct Walker {
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
         in const(void)* previousData,
-        in ExpressionResult appended,
+        Place appended,
         in size_t count,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
@@ -10890,7 +8979,7 @@ private struct Walker {
         if (count == 0)
             return;
 
-        const appendedData = AggregateValue.nativeArrayAddress(appended);
+        const appendedData = appended.sliceDataPointer;
         if (previousData is appendedData)
             return;
 
@@ -10899,25 +8988,6 @@ private struct Walker {
             cast(void*) appendedData,
             count * typeByteSize(elementType),
         );
-    }
-
-    // Appending a wide character to `string` writes its UTF-8 code units,
-    // not the low byte of the code point. Native element writes require
-    // spelling that conversion out before storing char-sized slots.
-    private ExpressionResult[] nativeAppendElements(
-        imported!"dmd.mtype".Type arrayType,
-        in ExpressionResult value,
-    ) {
-        import dmd.astenums: TY;
-
-        auto array = arrayType.toBasetype.isTypeDArray;
-        if (array is null || array.next.toBasetype.ty != TY.Tchar || !value.isCharacter)
-            return [value];
-
-        ExpressionResult[] elements;
-        foreach (character; value.asUtf8Character)
-            elements ~= ExpressionResult(character);
-        return elements;
     }
 
     private Place runArrayConcatenateAssignExpression(
@@ -10931,10 +9001,16 @@ private struct Walker {
                 );
         }
 
-        auto concatenated = concatenatedArray(assign.e1.type, assign.e1, assign.e2);
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        auto owner = AggregateValue.allocateArray(assign.e1.type, 0);
+        auto concatenated = Place(owner.address, assign.e1.type);
+        constructConcatenationInto(
+            cast(imported!"dmd.expression".CatExp) assign,
+            concatenated,
+        );
         writeLocation(assign.e1, concatenated);
-        auto aggregate = AggregateValue.native(concatenated);
-        return Place(aggregate.address, aggregate.type);
+        return concatenated;
     }
 
     private Place runIndexedArrayAppendAssignExpression(
@@ -10949,19 +9025,13 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter array append target.");
 
-        const current = readBindingValue(variable);
-
         const arrayIndex = scalarOperand!size_t(index.e2);
-        const currentElement = readStoredValue(
-            AggregateValue.elementAt(AggregateValue.native(current), arrayIndex),
+        auto appended = appendArrayPlace(
+            bindingPlace(variable).index(arrayIndex),
+            rhs,
         );
-        const element = constructedExpressionValue(rhs);
-        auto appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
-            AggregateValue.native(currentElement), element,
-        ));
-        writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
-        return bindingPlace(variable).index(arrayIndex);
+        return appended;
     }
 
     private bool constructCastInto(
@@ -11209,19 +9279,6 @@ private struct Walker {
         }
     }
 
-    private ExpressionResult reconstructStoredArray(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult[] elements,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto owner = AggregateValue.allocateArray(type, elements.length);
-        auto destination = Place(owner.address, type);
-        foreach (index, element; elements)
-            writeStoredValue(destination.index(index), element);
-        return ExpressionResult.nativeAggregateValue(owner);
-    }
 
     private bool canContainStoredMetadata(
         imported!"dmd.mtype".Type type,
@@ -11349,16 +9406,6 @@ private struct Walker {
         runExpression(expression, destination);
     }
 
-    private ExpressionResult structLiteralValue(
-        imported!"dmd.expression".StructLiteralExp literal,
-    ) {
-        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-        import quickbite.backends.interpreter.place: placeAt;
-
-        auto storage = NativeAggregate.allocate(literal.type);
-        constructStructLiteral(literal, placeAt(storage.storage, literal.type));
-        return ExpressionResult.nativeAggregateValue(storage);
-    }
 
     // A struct declared inside a function gets a hidden context field
     // (DMD's `AggregateDeclaration.vthis`) naming the enclosing activation.
@@ -11413,288 +9460,6 @@ private struct Walker {
         return addresses;
     }
 
-    private ExpressionResult runSliceExpression(imported!"dmd.expression".SliceExp slice) {
-        size_t lower;
-        return runSliceExpression(slice, lower);
-    }
-
-    private ExpressionResult runSliceExpression(
-        imported!"dmd.expression".SliceExp slice,
-        out size_t lower,
-    ) {
-        auto baseType = slice.e1.type.toBasetype;
-        if (
-            (baseType.isTypeSArray !is null ||
-                baseType.isTypeDArray !is null) &&
-            hasArrayProjectionPlace(slice.e1)
-        )
-            return runAddressableSliceExpression(slice, lower);
-
-        // Pointer slicing forms a native view; it does not read the
-        // pointed-to elements. Reads happen only when that view is later
-        // indexed, just as they do for compiled D. Detect a pointer source
-        // from the static operand type, not a runtime carrier tag:
-        // `pointerOperandPlace` reads the operand's real address (null
-        // included) the same way every other pointer-typed operand in this
-        // file does, rather than depending on a value carrier read tagging
-        // the result as `Pointer` -- a tag druntime's array-growth hooks'
-        // `(auto p = cast(void*) arr.ptr; p[0 .. n])` idiom does not
-        // reliably get once that read is routed through construction.
-        if (baseType.isTypePointer !is null) {
-            if (slice.upr is null) {
-                import std.conv: text;
-                throw new Exception(
-                    text("Unsupported eval expression: ", slice.op),
-                );
-            }
-
-            lower = slice.lwr is null
-                ? 0
-                : scalarOperand!size_t(slice.lwr);
-            const upper = scalarOperand!size_t(slice.upr);
-            if (lower > upper) {
-                import std.conv: text;
-
-                throwRangeError(text(
-                    "slice [",
-                    lower,
-                    " .. ",
-                    upper,
-                    "] has a larger lower index than upper index",
-                ));
-            }
-
-            import quickbite.backends.interpreter.layout: typeByteSize;
-
-            const pointerAddress = pointerOperandPlace(slice.e1).deref.address;
-            const address = cast(const(ubyte)*) pointerAddress + lower *
-                typeByteSize(baseType.nextOf);
-            return ExpressionResult.nativeAggregateValue(
-                AggregateValue.borrowArrayOwner(
-                    slice.type,
-                    upper - lower,
-                    address,
-                ),
-            );
-        }
-
-        // What remains is an array-typed source the fast path above
-        // declined. A non-ref call result or a literal is a genuine rvalue
-        // with no backing to preserve; nothing appends through either in
-        // place. A captured (non-frame-slot) variable's closure storage has
-        // no static predicate that resolves it yet either. All three
-        // construct into an activation-frame temporary below, whose
-        // `NativeAggregate` borrows that temporary's storage rather than
-        // copying it -- fine precisely because none of the three has a
-        // backing to alias against. A struct-typed `DotVarExp` receiver --
-        // an implicit `this.field`, a deeper `this.inner.arr`, or any other
-        // chain the fast path above declined -- still derives its live
-        // address just below, through the same `projectionPlace` composer a
-        // direct field write already uses.
-        const source = constructedExpressionValue(slice.e1);
-        if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar,
-                AggregateValue.length(AggregateValue.native(source)));
-        lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-
-        const upper = slice.upr is null
-            ? AggregateValue.length(AggregateValue.native(source))
-            : scalarOperand!size_t(slice.upr);
-
-        if (
-            AggregateValue.isArray(source) &&
-            (lower > upper || upper > AggregateValue.length(AggregateValue.native(source)))
-        )
-            throwRangeError("Range violation");
-
-        auto nativeAddress = AggregateValue.nativeArrayAddress(source);
-        if (auto dot = slice.e1.isDotVarExp)
-            if (auto field = dot.var.isVarDeclaration) {
-                // A class receiver's field has no projection place below
-                // (unlike a struct receiver, already routed through
-                // `runAddressableSliceExpression` or derived just below):
-                // dereferencing the class reference also performs
-                // dynamic-object metadata handling the projection-place
-                // machinery does not replace, so it stays hand-composed
-                // here.
-                if (auto receiver = dot.e1.isVarExp)
-                    if (auto variable = receiver.var.isVarDeclaration)
-                        if (variable.type.toBasetype.isTypeClass !is null) {
-                            auto place = bindingPlace(variable).deref.field(field);
-                            nativeAddress = place.type.toBasetype.isTypeDArray !is null
-                                ? cast(const(ubyte)*) place.sliceDataPointer
-                                : cast(const(ubyte)*) place.address;
-                        }
-
-                // Every struct-typed receiver chain this tail can still
-                // reach -- an implicit `this.field[a..b]`, a deeper
-                // `this.inner.arr[a..b]`, or any other struct-typed chain
-                // the fast path above declined -- derives the same live
-                // address `projectionPlace` already composes for a direct
-                // field write, recursing through the full `DotVarExp` chain
-                // instead of hand-matching a single `VarExp` level.
-                if (hasProjectionPlace(dot)) {
-                    auto place = projectionPlace(dot);
-                    nativeAddress = place.type.toBasetype.isTypeDArray !is null
-                        ? cast(const(ubyte)*) place.sliceDataPointer
-                        : cast(const(ubyte)*) place.address;
-                }
-            }
-        if (nativeAddress !is null) {
-            import quickbite.backends.interpreter.layout: typeByteSize;
-
-            nativeAddress = cast(const(ubyte)*) nativeAddress + lower *
-                typeByteSize(slice.e1.type.toBasetype.nextOf);
-        }
-
-        import dmd.astenums: TY;
-        if (
-            nativeAddress !is null &&
-            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
-        ) {
-            import quickbite.backends.interpreter.layout: typeByteSize;
-
-            return ExpressionResult.nativeAggregateValue(
-                AggregateValue.borrowArrayOwner(
-                    slice.type,
-                    (upper - lower) *
-                        typeByteSize(slice.e1.type.toBasetype.nextOf),
-                    nativeAddress,
-                ),
-            );
-        }
-        if (
-            nativeAddress !is null &&
-            slice.e1.type.toBasetype.isTypeSArray !is null
-        )
-            return ExpressionResult.nativeAggregateValue(
-                AggregateValue.borrowArrayOwner(
-                    slice.type,
-                    upper - lower,
-                    nativeAddress,
-                ),
-            );
-        if (!source.isNativeAggregate)
-            throw new Exception("Array slice needs native aggregate storage.");
-        return ExpressionResult.nativeAggregateValue(
-            AggregateValue.slice(
-                AggregateValue.native(source),
-                slice.type,
-                lower,
-                upper,
-            ),
-        );
-    }
-
-    // Slicing an addressable array reads only its header/length and forms a
-    // view over its existing bytes. Materialising the complete array first is
-    // both unnecessary and wrong for a static-array field: the resulting
-    // slice must alias the field, not a detached snapshot.
-    private ExpressionResult runAddressableSliceExpression(
-        imported!"dmd.expression".SliceExp slice,
-        out size_t lower,
-    ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        materializeProjectionRoot(slice.e1);
-        // Mutable because a slice exposes a writable view of this place. A
-        // pointer-dereferencing receiver (druntime's `(*p).field[..]`
-        // growth-hook idiom) has no direct-write projection place -- that
-        // path declines pointer dereferences for its own null/provenance
-        // diagnostics, irrelevant to a plain read here -- so fall back to
-        // the general lvalue composer, which does resolve it.
-        auto source = hasDirectWriteProjectionPlace(slice.e1)
-            ? directWriteProjectionPlace(slice.e1)
-            : projectionPlace(slice.e1);
-        const sourceLength = source.arrayLength;
-        if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, sourceLength);
-
-        lower = slice.lwr is null
-            ? 0
-            : scalarOperand!size_t(slice.lwr);
-        const upper = slice.upr is null
-            ? sourceLength
-            : scalarOperand!size_t(slice.upr);
-        if (lower > upper || upper > sourceLength)
-            throwRangeError("Range violation");
-
-        auto sourceType = source.type.toBasetype;
-        auto data = sourceType.isTypeDArray !is null
-            ? source.sliceDataPointer
-            : source.address;
-        const elementSize = typeByteSize(sourceType.nextOf);
-        data = nativeElementAddress(data, lower, elementSize);
-
-        const length =
-            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
-            ? (upper - lower) * elementSize
-            : upper - lower;
-        return ExpressionResult.nativeAggregateValue(
-            AggregateValue.borrowArrayOwner(slice.type, length, data),
-        );
-    }
-
-    private ExpressionResult runIndexExpression(imported!"dmd.expression".IndexExp index) {
-        size_t arrayIndex;
-        return runIndexExpression(index, arrayIndex);
-    }
-
-    // Read an element from native (C heap) memory addressed by a
-    // Pointer: a snapshot ExpressionResult built from the pointee's bytes (a
-    // scalar, a pointer, or a whole struct such as std.stdio.File's malloc'd
-    // Impl).
-    private ExpressionResult loadNativePointerElement(
-        imported!"dmd.mtype".Type pointerType,
-        in ExpressionResult pointer,
-        in size_t index,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto elementType = pointerType.toBasetype.nextOf.toBasetype;
-        auto address = nativeElementAddress(
-            pointer.pointerAddress,
-            index,
-            typeByteSize(elementType),
-        );
-        return readStoredValue(Place(address, elementType));
-    }
-
-    private void storeNativePointerElement(
-        imported!"dmd.mtype".Type pointerType,
-        in ExpressionResult pointer,
-        in size_t index,
-        in ExpressionResult value,
-    ) {
-        import dmd.astenums: TY;
-        import dmd.mtype: Type;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto elementType = pointerType.toBasetype.nextOf.toBasetype;
-        // Indexing a `void*` addresses raw bytes, so the destination is a
-        // byte: `void` itself carries no value the place codec could store.
-        if (elementType.ty == TY.Tvoid)
-            elementType = Type.tuns8;
-        auto address = nativeElementAddress(
-            pointer.pointerAddress,
-            index,
-            typeByteSize(elementType),
-        );
-        writeStoredValue(Place(address, elementType), value);
-        // A native pointer can denote a still-void frame binding directly.
-        // Once the first element is written, a later aggregate read must use
-        // those frame bytes rather than materializing `.init` over them.
-        clearUninitializedBindingAddress(pointer.pointerAddress);
-    }
-
-    // Pointer arithmetic on a native allocation the interpreted program
-    // itself obtained (e.g. from malloc); no more unsafe than the compiled
-    // code it mirrors.
     private static void* nativeElementAddress(
         void* base,
         in size_t index,
@@ -12115,143 +9880,6 @@ private struct Walker {
         return type is null ? null : type.vtinfo;
     }
 
-    private ExpressionResult runIndexExpression(
-        imported!"dmd.expression".IndexExp index,
-        out size_t arrayIndex,
-    ) {
-        import quickbite.frontend.dmd.types:
-            isPointerType;
-
-        // DMD's `IndexExp::semantic` (expressionsem.d) always rewrites a
-        // non-modifiable `aa[key]` into `_d_aaGetRvalueX!(K, V)(aa, key)[0]`
-        // (`lowerAAIndexRead`) and a modifiable one into a `_d_aaGetY` call
-        // chain (`rewriteAAIndexAssign`) before the interpreter ever sees
-        // this AST, so an `IndexExp` with an associative-array-typed `e1`
-        // never reaches here.
-
-        // Compose an addressable array/pointer
-        // receiver once and load only the selected element. The returned
-        // `ExpressionResult` remains a by-value result; call and other rvalue
-        // receivers retain the original materialisation path below.
-        if (
-            isPointerType(index.e1.type)
-                ? hasProjectionPlace(index.e1)
-                : hasArrayProjectionPlace(index.e1)
-        ) {
-            // `auto`: `Place.index`/`arrayLength` are mutable-qualified.
-            auto sourcePlace = projectionPlace(index.e1);
-            if (isPointerType(index.e1.type)) {
-                arrayIndex = scalarOperand!size_t(index.e2);
-                if (_evaluatedReferenceArgumentIndices !is null)
-                    (*_evaluatedReferenceArgumentIndices)[
-                        cast(const(void)*) index.e2
-                    ] = arrayIndex;
-                return readStoredValue(sourcePlace.index(arrayIndex));
-            }
-
-            const sourceLength = sourcePlace.arrayLength;
-            if (index.lengthVar !is null)
-                setLocal(index.lengthVar, sourceLength);
-            arrayIndex = scalarOperand!size_t(index.e2);
-            if (_evaluatedReferenceArgumentIndices !is null)
-                (*_evaluatedReferenceArgumentIndices)[
-                    cast(const(void)*) index.e2
-                ] = arrayIndex;
-            if (arrayIndex >= sourceLength) {
-                import quickbite.backends.interpreter.messages:
-                    indexOutOfBoundsMessage;
-
-                throwRangeError(indexOutOfBoundsMessage(
-                    arrayIndex,
-                    sourceLength,
-                    isSliceValue(index.e1),
-                    runningCalledFunction,
-                ));
-            }
-            return readStoredValue(sourcePlace.index(arrayIndex));
-        }
-
-        // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so it
-        // must see the array's current length: run index.e1 and seed
-        // lengthVar from its result before evaluating index.e2, the same
-        // order runSliceExpression already uses for the same `$` binding.
-        // Evaluating e2 first left lengthVar holding a stale (or default
-        // zero) length, so `arr[$ - 1]` on a just-grown array underflowed to
-        // size_t.max instead of the intended last-element index.
-        const source = constructedExpressionValue(index.e1);
-        if (isPointerType(index.e1.type)) {
-            arrayIndex = scalarOperand!size_t(index.e2);
-            if (_evaluatedReferenceArgumentIndices !is null)
-                // Keyed by `index.e2` (the index subexpression), not the
-                // outer `IndexExp` itself: `lvalue_place.placeOfLvalue`'s
-                // `evalIndex` callback is invoked with `indexExpIndex(index)`
-                // (`index.e2`) when composing a `ref`-argument's address
-                // (`bindReferenceSlot`/`evaluatedIndex`), so a mismatched key
-                // here always missed the lookup -- silently, since
-                // `bindReferenceSlot` catches the resulting exception and
-                // declines to bind the reference slot at all. A `ref`
-                // parameter bound to `arr[runtimeVariable]` (as opposed to a
-                // constant index) therefore never wrote back to the caller's
-                // array: the callee mutated its own unbound local copy.
-                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
-                    arrayIndex;
-
-            return loadNativePointerElement(index.e1.type, source, arrayIndex);
-        }
-
-        auto sourceAggregate = AggregateValue.native(source);
-        const sourceLength = AggregateValue.length(sourceAggregate);
-        if (index.lengthVar !is null)
-            setLocal(index.lengthVar, sourceLength);
-
-        // matches CTFE, which formats the index as unsigned
-        arrayIndex = scalarOperand!size_t(index.e2);
-        if (_evaluatedReferenceArgumentIndices !is null)
-            // See the `isPointerType` arm above: keyed by `index.e2`, matching
-            // `evaluatedIndex`'s lookup key.
-            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
-                arrayIndex;
-
-        if (AggregateValue.isArray(sourceAggregate) && arrayIndex >= sourceLength) {
-            import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
-
-            throwRangeError(indexOutOfBoundsMessage(
-                arrayIndex,
-                sourceLength,
-                isSliceValue(index.e1),
-                runningCalledFunction,
-            ));
-        }
-
-        if (auto var = index.e1.isVarExp)
-            if (auto variable = var.var.isVarDeclaration) {
-                if (hasBindingPlace(variable)) {
-                    import dmd.astenums: TY;
-                    // A live delegate element's bytes are the all-zero ABI
-                    // value (`place_value.writeValue`'s Tdelegate arm only
-                    // ever accepts `ExpressionResult.null_`), so a plain `readValue`
-                    // here cannot tell a genuinely null element from one
-                    // whose live callable ExpressionResult was substituted out-of-band
-                    // -- check `nativeDelegateSlots`, keyed by the element's
-                    // own address, first, exactly as `nativeArrayElementAt`
-                    // already does for the native-aggregate branch below.
-                    auto elementType = index.e1.type.toBasetype.nextOf;
-                    if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
-                        if (
-                            auto delegate_ = bindingPlace(variable).index(arrayIndex).address
-                                in nativeDelegateSlots
-                        )
-                            return delegateSlotResult(*delegate_);
-
-                    return readStoredValue(
-                        bindingPlace(variable).index(arrayIndex),
-                    );
-                }
-            }
-
-        return nativeArrayElementAt(source, arrayIndex);
-    }
-
     private void throwRangeError(in string message) {
         import core.exception: RangeError;
 
@@ -12299,20 +9927,6 @@ private struct Walker {
     // The single ordered route through data-pointer writes. Direct
     // dereference and compound-assignment/atomic write-back use this gate, so
     // they cannot update different interim authorities.
-    private void writePointerElements(
-        imported!"dmd.expression".Expression expression,
-        in ExpressionResult pointer,
-        in ExpressionResult[] values,
-    ) {
-        if (auto cast_ = expression.isCastExp) {
-            writePointerElements(cast_.e1, pointer, values);
-            return;
-        }
-
-        foreach (index, value; values)
-            storeNativePointerElement(expression.type, pointer, index, value);
-    }
-
     private imported!"dmd.expression".Expression addressTarget(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -12424,8 +10038,16 @@ private struct Walker {
             if (new_.member !is null) {
                 import quickbite.frontend.dmd.functions: hasNoAvailableSource;
 
-                if (hasNoAvailableSource(new_.member))
-                    return false;
+                if (hasNoAvailableSource(new_.member)) {
+                    runExpression(type.defaultInitLiteral(Loc.initial), allocated);
+                    constructNewStructNativeConstructor(
+                        new_,
+                        allocated.place,
+                        block,
+                        destination,
+                    );
+                    return true;
+                }
 
                 import dmd.funcsem: functionSemantic3;
                 if (!functionSemantic3(new_.member))
@@ -12541,219 +10163,21 @@ private struct Walker {
         }
     }
 
-    private ExpressionResult runNewExpression(imported!"dmd.expression".NewExp new_) {
-        import dmd.astenums: TY;
-        import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
-        import std.conv: text;
-
-        if (new_.placement !is null || new_.thisexp !is null)
-            throw new Exception(text("Unsupported eval expression: ", new_.op));
-
-        if (new_.type.toBasetype.ty == TY.Tclass)
-            return runNewClassExpression(new_);
-
-        if (
-            isPointerType(new_.type) &&
-            isStructType(new_.type.toBasetype.nextOf)
-        )
-            return runNewStructPointerExpression(new_);
-
-        if (isPointerType(new_.type))
-            return runNewScalarPointerExpression(new_);
-
-        if (
-            !isDynamicArrayType(new_.type) ||
-            new_.member !is null ||
-            new_.arguments is null ||
-            new_.arguments.length == 0
-        )
-            throw new Exception(text("Unsupported eval expression: ", new_.op));
-
-        size_t[] lengths;
-        foreach (argument; *new_.arguments)
-            lengths ~= scalarOperand!size_t(argument);
-
-        return newArrayValue(new_.type, lengths);
-    }
-
-    private ExpressionResult runNewScalarPointerExpression(
+    private void constructNewStructNativeConstructor(
         imported!"dmd.expression".NewExp new_,
+        Place receiver,
+        NativeBlock owner,
+        Place destination,
     ) {
-        import std.conv: text;
-
-        if (new_.member !is null)
-            throw new Exception(text("Unsupported eval expression: ", new_.op));
-
-        auto targetType = new_.type.toBasetype.nextOf;
-        ExpressionResult value = defaultValueResult(targetType);
-        if (new_.arguments !is null) {
-            if (new_.arguments.length != 1)
-                throw new Exception(text("Unsupported eval expression: ", new_.op));
-
-            value = constructedExpressionValue((*new_.arguments)[0]);
-        }
-
-        return allocateNativePointer(targetType, value);
-    }
-
-    // Handles `new T(args)` where T is a struct type, returning a `T*` value.
-    // When new_.member is null (no user-defined constructor) the arguments are
-    // used as positional aggregate field initialisers.  When new_.member is a
-    // constructor the constructor body is executed with a default-initialised
-    // receiver and the post-construction `this` value is used.
-    private ExpressionResult runNewStructPointerExpression(
-        imported!"dmd.expression".NewExp new_,
-    ) {
-        import std.conv: text;
-
-        auto targetType = new_.type.toBasetype.nextOf;
-        ExpressionResult structVal = defaultValueResult(targetType);
-
-        if (new_.member !is null) {
-            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
-
-            // A body-less native constructor cannot have its (null) body run;
-            // route it through the FFI bridge so the heap struct is constructed
-            // natively instead of left default-initialised.
-            if (hasNoAvailableSource(new_.member))
-                return runNewStructNativeConstructor(
-                    new_,
-                    targetType,
-                    Place(
-                        AggregateValue.native(structVal).address,
-                        AggregateValue.native(structVal).type,
-                    ),
-                );
-
-            // A non-root-module constructor may still be a raw parse tree;
-            // resolve its body before walking it.
-            {
-                import dmd.funcsem: functionSemantic3;
-                if (!functionSemantic3(new_.member))
-                    throw new Exception(text("Unsupported eval expression: ", new_.op));
-            }
-
-            // User-defined constructor: run it and capture the resulting this.
-            auto callArguments = CallArguments(
-                new_.arguments is null ? 0 : new_.arguments.length,
-                &_executionState.callArgumentStorage,
-            );
-            scope(exit) callArguments.release;
-            auto argumentPlaces = callArguments.places;
-            if (new_.arguments !is null)
-                foreach (index, argument; *new_.arguments) {
-                    auto argumentDestination = ConstructionDestination(Place(
-                        _activationFrame.temporaryAddress(argument),
-                        argument.type,
-                    ));
-                    runExpression(argument, argumentDestination);
-                    argumentPlaces[index] = argumentDestination.place;
-                }
-
-            Walker child;
-            child.runningCalledFunction = true;
-            child.currentFunction = new_.member;
-            auto layout = cachedFrameLayout(new_.member);
-            child._activationFrame = FrameBlock.allocate(layout);
-            child.bindStructReceiver(Place(
-                AggregateValue.native(structVal).address,
-                AggregateValue.native(structVal).type,
-            ));
-            // DMD's constructor semantic appends an implicit `return this;`;
-            // route it into the receiver's own storage and discard it, same
-            // as `structVal`'s own read-back from `child.thisValue` below.
-            auto returnDestination = ConstructionDestination(child.thisValue);
-            child._returnDestination = &returnDestination;
-            child.hasThis = true;
-            forkExecutionStateInto(child);
-            scope(exit) child.retireActivationFrameMetadata;
-            child.bindThisReferenceAddress(new_.member, child.thisValue);
-            child.bindFunctionParameters(
-                new_.member,
-                argumentPlaces,
-                null,
-                FrameBlock.init,
-                null,
-            );
-            child.runStatement(new_.member.fbody);
-            structVal = receiverValue(child.thisValue);
-        } else if (new_.arguments !is null) {
-            // Aggregate initialiser: assign arguments positionally to fields.
-            // `withStoredStructField` (not the raw `AggregateValue.
-            // withStructField` call `withStoredStructField` itself uses) is
-            // needed here rather than a direct call: a live delegate or
-            // function-pointer argument (e.g. `new Entry!(K, V)(key, value)`
-            // inside interpreted druntime's own `core.internal.newaa`,
-            // called with a real function pointer for `value`) is a distinct
-            // `RuntimeDelegate`/`FunctionPointer` `ExpressionResult` variant,
-            // not a `Pointer`, so `place_value.writeValue` throws for it --
-            // `withStoredStructField` seeds the field with `null` and
-            // registers the live value out-of-band instead, exactly as the
-            // struct-literal and field-copy call sites already do.
-            import quickbite.backends.interpreter.layout: structFields;
-
-            auto structType = targetType.isTypeStruct;
-            foreach (index, argument; *new_.arguments) {
-                if (index >= structFields(structType).length)
-                    throw new Exception(text(
-                        "Unsupported eval expression: ", new_.op,
-                    ));
-
-                structVal = withStoredStructField(structVal,
-                    targetType,
-                    index,
-                    constructedExpressionValue(argument),
-                );
-            }
-        }
-
-        return allocateNativePointer(targetType, structVal);
-    }
-
-    // `new T` establishes one GC-owned native object and returns its address.
-    // Its owner remains in the enclosing expression's lexical owner scope
-    // until that address reaches scanned guest storage. Guest pointer identity
-    // is exactly the allocation address.
-    private ExpressionResult allocateNativePointer(
-        imported!"dmd.mtype".Type targetType,
-        in ExpressionResult value,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto block = NativeBlock.allocate(
-            typeByteSize(targetType),
-            typeHasPointers(targetType)
-                ? NativeBlock.Scan.conservative
-                : NativeBlock.Scan.no,
-        );
-        writeStoredValue(Place(block.address, targetType), value, true);
-        retainTemporaryPointerOwner(block);
-        return ExpressionResult.pointerValue(block.address);
-    }
-
-    // `new T(args)` where T's constructor is a body-less native leaf: construct
-    // the struct through the FFI bridge (seeding `this` from `.init`) and return
-    // a pointer to the constructed value.
-    private ExpressionResult runNewStructNativeConstructor(
-        imported!"dmd.expression".NewExp new_,
-        imported!"dmd.mtype".Type targetType,
-        imported!"quickbite.backends.interpreter.place".Place initPlace,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
         import quickbite.backends.interpreter.native_call_adapter:
             NativeCallException, NativeCallResult;
-        import dmd.expression: Expression;
+        import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
 
-        auto callArguments = CallArguments(
+        auto arguments = CallArguments(
             new_.arguments is null ? 0 : new_.arguments.length,
             &_executionState.callArgumentStorage,
         );
-        scope(exit) callArguments.release;
-        auto argumentPlaces = callArguments.places;
-        auto argumentExpressions = callArguments.expressions;
+        scope(exit) arguments.release;
         if (new_.arguments !is null)
             foreach (index, argument; *new_.arguments) {
                 auto argumentDestination = ConstructionDestination(Place(
@@ -12761,44 +10185,33 @@ private struct Walker {
                     argument.type,
                 ));
                 runExpression(argument, argumentDestination);
-                argumentPlaces[index] = argumentDestination.place;
-                argumentExpressions[index] = argument;
+                arguments.places[index] = argumentDestination.place;
+                arguments.expressions[index] = argument;
             }
 
-        auto constructed = NativeBlock.allocate(
-            typeByteSize(targetType),
-            typeHasPointers(targetType)
-                ? NativeBlock.Scan.conservative
-                : NativeBlock.Scan.no,
-        );
-        auto constructedPlace = Place(constructed.address, targetType);
-        copyPlaceValue(initPlace, constructedPlace);
         try {
-            NativeCallResult nativeResult;
+            NativeCallResult result;
             if (invokeNativeDeclaration(
                 new_.member,
-                nativeConstructorReceiverPlace(
-                    new_.member,
-                    constructedPlace,
-                ),
-                targetType.isTypeStruct,
+                nativeConstructorReceiverPlace(new_.member, receiver),
+                receiver.type.toBasetype.isTypeStruct,
                 null,
-                argumentPlaces,
-                argumentExpressions,
+                arguments.places,
+                arguments.expressions,
                 null,
                 true,
-                nativeResult,
-                constructed.address,
-                constructed.address,
-            ))
-            {
-                if (nativeResult.value.address != constructed.address)
+                result,
+                receiver.address,
+                receiver.address,
+            )) {
+                if (result.value.address != receiver.address)
                     copyPlaceValue(
-                        Place(nativeResult.value.address, targetType),
-                        constructedPlace,
+                        Place(result.value.address, receiver.type),
+                        receiver,
                     );
-                retainTemporaryPointerOwner(constructed);
-                return ExpressionResult.pointerValue(constructed.address);
+                destination.storeReference(receiver.address);
+                retainTemporaryPointerOwner(owner);
+                return;
             }
         } catch (NativeCallException exception) {
             throwNativeException(exception);
@@ -12807,122 +10220,10 @@ private struct Walker {
         throw new Exception(noAvailableSourceMessage(new_.member));
     }
 
-    private ExpressionResult runNewClassExpression(
-        imported!"dmd.expression".NewExp new_,
-    ) {
-        import std.conv: text;
-
-        auto allocationType = new_.newtype is null ? new_.type : new_.newtype;
-        auto classType = allocationType.toBasetype.isTypeClass;
-        if (classType is null || classType.sym is null)
-            throw new Exception(text("Unsupported eval expression: ", new_.op));
-
-        auto callArguments = CallArguments(
-            new_.arguments is null ? 0 : new_.arguments.length,
-            &_executionState.callArgumentStorage,
-        );
-        scope(exit) callArguments.release;
-        auto argumentPlaces = callArguments.places;
-        if (new_.arguments !is null)
-            foreach (index, argument; *new_.arguments) {
-                auto argumentDestination = ConstructionDestination(Place(
-                    _activationFrame.temporaryAddress(argument),
-                    argument.type,
-                ));
-                runExpression(argument, argumentDestination);
-                argumentPlaces[index] = argumentDestination.place;
-            }
-
-        auto object = AggregateValue.allocateClass(allocationType);
-        const objectValue = ExpressionResult.nativeAggregateValue(object);
-        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
-        initializeNativeClassBody(this, allocationType, object);
-        if (new_.member is null)
-            return objectValue;
-
-        if (isThrowableConstructor(new_.member)) {
-            applyThrowableConstructor(
-                Place(AggregateValue.nativeClassBodyAddress(object), allocationType),
-                argumentPlaces,
-            );
-            return objectValue;
-        }
-
-        // A non-root-module constructor (e.g. a private phobos class) may
-        // still be a raw parse tree; resolve its body before walking it.
-        {
-            import dmd.funcsem: functionSemantic3;
-            if (!functionSemantic3(new_.member))
-                throw new Exception(text("Unsupported eval expression: ", new_.op));
-        }
-
-        Walker child;
-        child.runningCalledFunction = true;
-        child.currentFunction = new_.member;
-        auto layout = cachedFrameLayout(new_.member);
-        child._activationFrame = FrameBlock.allocate(layout);
-        forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
-        child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object), allocationType);
-        // DMD's constructor semantic appends an implicit `return this;`;
-        // route it into the receiver's own storage and discard it, same as
-        // `objectValue` returned below.
-        auto returnDestination = ConstructionDestination(child.thisValue);
-        child._returnDestination = &returnDestination;
-        child.hasThis = true;
-        child.bindFunctionParameters(
-            new_.member,
-            argumentPlaces,
-            null,
-            FrameBlock.init,
-            null,
-        );
-        try {
-            child.runStatement(new_.member.fbody);
-        } catch (InterpretedException exception) {
-            mergeNewClassExpressionState(child);
-            throw exception;
-        }
-        mergeNewClassExpressionState(child);
-        return objectValue;
-    }
-
     private void mergeNewClassExpressionState(ref Walker child) {
         mergeLazyArgumentMapsFrom(child);
     }
 
-    private ExpressionResult newArrayValue(
-        imported!"dmd.mtype".Type type,
-        in size_t[] lengths,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import dmd.tokens: EXP;
-        import quickbite.frontend.dmd.types: arrayElementType;
-        import std.conv: text;
-
-        // `auto` because DMD returns a mutable class reference
-        auto elementType = arrayElementType(type);
-        if (elementType is null)
-            throw new Exception(text("Unsupported eval expression: ", EXP.new_));
-
-        ExpressionResult[] elements;
-        foreach (_; 0 .. lengths[0])
-            elements ~= lengths.length > 1
-                ? newArrayValue(elementType, lengths[1 .. $])
-                : defaultValueResult(elementType);
-
-        return reconstructStoredArray(type, elements);
-    }
-
-    // Decision 7's no-result operation for a declaration: the initializer
-    // constructs the variable's own storage and there is no value left over.
-    //
-    // Mirrors `Dsymbol_toElem` in DMD's `e2ir.d`: once construction succeeds,
-    // arm the variable's destructor (`vd.edtor`) so it runs at a later
-    // full-expression boundary, the same as any other constructed temporary.
-    // `constructDeclaredVariable` throws on failed construction, so a
-    // throwing constructor never reaches the arming below -- matching the
-    // oracle fact that a throwing constructor's destructor does not run.
     private void executeDeclaration(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -13596,7 +10897,9 @@ destinationFallback:
                 destination.markConstructed;
                 return true;
             }
-            return storeConstructionResult(destination, ExpressionResult.null_);
+            clearPlaceValue(place);
+            destination.markConstructed;
+            return true;
         }
 
         if (auto array = rvalue.isArrayLiteralExp)
@@ -13641,10 +10944,7 @@ destinationFallback:
             return constructAssignmentInto(assign, destination);
 
         if (auto lowered = rvalue.isLoweredAssignExp)
-            return storeConstructionResult(
-                destination,
-                runLoweredAssignExpression(lowered),
-            );
+            return storeConstructionResult(destination, runLoweredAssignExpression(lowered));
 
         if (auto construct = rvalue.isConstructExp)
             return constructAssignmentInto(construct, destination);
@@ -13654,22 +10954,16 @@ destinationFallback:
 
         import dmd.tokens: EXP;
         if (rvalue.op == EXP.concatenateAssign)
-            return storeConstructionResult(
-                destination,
-                runArrayConcatenateAssignExpression(
-                    cast(imported!"dmd.expression".BinExp) rvalue,
-                ),
-            );
+            return storeConstructionResult(destination, runArrayConcatenateAssignExpression(
+                cast(imported!"dmd.expression".BinExp) rvalue,
+            ));
         if (
             rvalue.op == EXP.concatenateElemAssign ||
             rvalue.op == EXP.concatenateDcharAssign
         )
-            return storeConstructionResult(
-                destination,
-                runArrayAppendAssignExpression(
-                    cast(imported!"dmd.expression".BinExp) rvalue,
-                ),
-            );
+            return storeConstructionResult(destination, runArrayAppendAssignExpression(
+                cast(imported!"dmd.expression".BinExp) rvalue,
+            ));
 
         if (auto comma = rvalue.isCommaExp) {
             executeForEffectImpl(comma.e1);
@@ -13688,22 +10982,11 @@ destinationFallback:
             return true;
         }
 
-        if (auto arrayLength = rvalue.isArrayLengthExp)
-            return storeConstructionResult(
-                destination,
-                ExpressionResult(AggregateValue.length(
-                    AggregateValue.native(constructedExpressionValue(arrayLength.e1)),
-                )),
-            );
-
-        if (auto slice = rvalue.isSliceExp)
-            return storeConstructionResult(destination, runSliceExpression(slice));
-
-        if (auto index = rvalue.isIndexExp)
-            return storeConstructionResult(destination, runIndexExpression(index));
-
-        if (auto new_ = rvalue.isNewExp)
-            return storeConstructionResult(destination, runNewExpression(new_));
+        if (auto arrayLength = rvalue.isArrayLengthExp) {
+            place.storeNativeScalar(constructedExpressionPlace(arrayLength.e1).arrayLength);
+            destination.markConstructed;
+            return true;
+        }
 
         if (auto dot = rvalue.isDotVarExp) {
             constructDotVarInto(dot, place);
@@ -13718,18 +11001,6 @@ destinationFallback:
         }
 
         return false;
-    }
-
-    private bool storeConstructionResult(
-        ref ConstructionDestination destination,
-        in ExpressionResult value,
-    ) {
-        writeStoredValue(
-            destination.place,
-            storageValue(destination.place.type, value),
-        );
-        destination.markConstructed;
-        return true;
     }
 
     private bool storeConstructionResult(
@@ -13762,25 +11033,50 @@ destinationFallback:
         )
             return false;
 
+        if (destination.place.type.toBasetype.ty == TY.Tsarray) {
+            constructStructLiteralField(expression, destination);
+            return true;
+        }
+
         auto source = ConstructionDestination(Place(
             _activationFrame.temporaryAddress(expression, expression.type),
             expression.type,
         ));
         runExpression(expression, source);
-        return storeConstructionResult(
-            destination,
-            readStoredValue(source.place),
-        );
+        if (
+            destination.place.type.toBasetype.ty == TY.Taarray &&
+            source.place.type.toBasetype.ty == TY.Tpointer
+        ) {
+            destination.place.storeReference(source.place.loadReference);
+            destination.markConstructed;
+            return true;
+        }
+        if (
+            isVoidSliceType(destination.place.type) &&
+            (
+                source.place.type.toBasetype.ty == TY.Tstruct ||
+                source.place.type.toBasetype.ty == TY.Tsarray
+            )
+        ) {
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            AggregateValue.initializeBorrowedArray(
+                destination.place,
+                typeByteSize(source.place.type),
+                source.place.address,
+            );
+            destination.markConstructed;
+            return true;
+        }
+        return storeConstructionResult(destination, source.place);
     }
 
     private bool constructAssignmentInto(
         imported!"dmd.expression".BinExp assignment,
         ref ConstructionDestination destination,
     ) {
-        return storeConstructionResult(
-            destination,
-            runAssignExpression(assignment),
-        );
+        return storeConstructionResult(destination, runAssignExpression(assignment));
     }
 
     private void constructTupleInto(
@@ -13975,28 +11271,24 @@ destinationFallback:
         return true;
     }
 
-    // An addressable index composes the receiver place once, evaluates its
-    // index once, and copies the selected typed bytes into fresh caller-owned
-    // storage. The static result type must retain the element representation:
-    // a cast mismatch follows the established value fallback instead.
+    // An index composes or constructs its receiver once, evaluates its index
+    // once, and copies the selected typed bytes into caller-owned storage.
     private bool constructIndexInto(
         imported!"dmd.expression".IndexExp index,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        if (
-            index.type is null ||
-            !destination.type.toBasetype.equals(index.type.toBasetype) ||
-            !(isPointerType(index.e1.type)
-                ? hasProjectionPlace(index.e1)
-                : hasArrayProjectionPlace(index.e1))
-        )
+        if (index.type is null ||
+            !destination.type.toBasetype.equals(index.type.toBasetype))
             return false;
 
-        // `auto`: `Place.index` and `Place.arrayLength` are mutable-qualified.
-        auto source = projectionPlace(index.e1);
         const pointer = isPointerType(index.e1.type);
+        auto source = pointer
+            ? pointerOperandPlace(index.e1)
+            : hasArrayProjectionPlace(index.e1)
+                ? projectionPlace(index.e1)
+                : constructedExpressionPlace(index.e1);
         const length = pointer ? 0 : source.arrayLength;
         if (!pointer && index.lengthVar !is null)
             setLocal(index.lengthVar, length);
@@ -15068,28 +12360,33 @@ destinationFallback:
             retainTemporaryPointerOwner(backingStorage);
     }
 
-    // A slice initializer is a native header construction.  When its source
-    // has an authoritative place, write the new header directly into the
-    // caller's destination.  This keeps the slice's backing bytes as the
-    // only storage authority and avoids an aggregate result carrier.
+    // A slice initializer constructs one native header over its source bytes.
     private bool constructSliceInto(
         imported!"dmd.expression".SliceExp slice,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
-        if (
-            !hasDirectWriteProjectionPlace(slice.e1) ||
-            !hasArrayProjectionPlace(slice.e1)
-        )
-            return false;
-
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.frontend.dmd.types: isPointerType;
 
-        materializeProjectionRoot(slice.e1);
-        auto source = directWriteProjectionPlace(slice.e1);
-        const sourceLength = source.arrayLength;
-        if (slice.lengthVar !is null)
+        const pointer = isPointerType(slice.e1.type);
+        if (pointer && slice.upr is null)
+            return false;
+        Place source;
+        if (pointer)
+            source = pointerOperandPlace(slice.e1);
+        else if (hasArrayProjectionPlace(slice.e1))
+            source = projectionPlace(slice.e1);
+        else if (
+            slice.e1.isDotVarExp !is null &&
+            hasProjectionPlace(slice.e1)
+        )
+            source = projectionPlace(slice.e1);
+        else if (!classRootedFieldPlace(slice.e1, source))
+            source = constructedExpressionPlace(slice.e1);
+        const sourceLength = pointer ? 0 : source.arrayLength;
+        if (!pointer && slice.lengthVar !is null)
             setLocal(slice.lengthVar, sourceLength);
 
         const lower = slice.lwr is null
@@ -15098,11 +12395,24 @@ destinationFallback:
         const upper = slice.upr is null
             ? sourceLength
             : scalarOperand!size_t(slice.upr);
-        if (lower > upper || upper > sourceLength)
+        if (pointer && lower > upper) {
+            import std.conv: text;
+
+            throwRangeError(text(
+                "slice [",
+                lower,
+                " .. ",
+                upper,
+                "] has a larger lower index than upper index",
+            ));
+        }
+        if (lower > upper || !pointer && upper > sourceLength)
             throwRangeError("Range violation");
 
         auto sourceType = source.type.toBasetype;
-        auto data = sourceType.isTypeDArray !is null
+        auto data = pointer
+            ? source.loadReference
+            : sourceType.isTypeDArray !is null
             ? source.sliceDataPointer
             : source.address;
         const elementSize = typeByteSize(sourceType.nextOf);
