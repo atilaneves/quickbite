@@ -1,9 +1,11 @@
 module benchmarks.cli;
 
-import benchmarks.harness: measure, measureWithResults, Result;
+import benchmarks.cgroup_peak: CgroupPeakMeter;
+import benchmarks.harness:
+    measure, measureVerdictsWithResults, Result, VerdictKind;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner:
-    CompileTimeReporter, Runner, TestResult, runTests;
+    CompileTimeReporter, DgcAllocationReporter, Runner, TestResult, runTests;
 import core.time: Duration;
 import std.typecons: Nullable;
 import quickbite.benchmarks: moduleDisplayName;
@@ -207,7 +209,13 @@ public int run(string[] args) {
                     "n/a",
                 );
             else
-                printRow(unit.displayName, "frontend", "n/a", unit.frontend);
+                printRow(
+                    unit.displayName,
+                    "frontend",
+                    "n/a",
+                    "n/a",
+                    unit.frontend,
+                );
         }
         writeln;
     }
@@ -231,7 +239,11 @@ public int run(string[] args) {
                 // some backends), so the split comes from sampling the
                 // backend's own compile clock around each iteration.
                 auto compileReporter = cast(CompileTimeReporter) runner;
+                auto allocationReporter = cast(DgcAllocationReporter) runner;
                 Duration[] compileDeltas;
+                auto cgroupPeakMeter = CgroupPeakMeter.fromEnvironment;
+                Nullable!ulong firstCgroupPeak;
+                ulong[] repeatedCgroupPeaks;
                 TestResult[] runAndSampleCompileTime() {
                     if (compileReporter is null)
                         return runTests(runner, modules);
@@ -240,39 +252,61 @@ public int run(string[] args) {
                     compileDeltas ~= compileReporter.compileTime - before;
                     return results;
                 }
+                void beforeSample(VerdictKind kind) {
+                    cgroupPeakMeter.reset;
+                }
+                void afterSample(VerdictKind kind) {
+                    if (!cgroupPeakMeter.available)
+                        return;
+
+                    const peak = cgroupPeakMeter.read;
+                    final switch (kind) {
+                        case VerdictKind.first:
+                            firstCgroupPeak = Nullable!ulong(peak);
+                            break;
+                        case VerdictKind.repeated:
+                            repeatedCgroupPeaks ~= peak;
+                            break;
+                    }
+                }
 
                 try {
-                    if (skipCheck) {
-                        const timing = measure(
-                            () { runAndSampleCompileTime; },
-                            warmup,
-                            runs,
-                        );
-                        rows ~= BenchmarkRow(
-                            unit.displayName,
-                            name,
-                            "unchecked",
-                            timing,
-                            medianCompileTime(compileDeltas, warmup),
-                        );
-                    } else {
-                        auto measured = measureWithResults(
-                            () { return runAndSampleCompileTime; },
-                            warmup,
-                            runs,
-                        );
+                    auto measured = measureVerdictsWithResults(
+                        () { return runAndSampleCompileTime; },
+                        warmup,
+                        runs,
+                        () => allocationReporter is null
+                            ? 0
+                            : allocationReporter.dGcAllocation,
+                        &beforeSample,
+                        &afterSample,
+                    );
+                    measured.first.cgroupPeakMemory = firstCgroupPeak;
+                    measured.repeated.cgroupPeakMemory =
+                        medianCgroupPeak(repeatedCgroupPeaks);
+                    if (!skipCheck) {
                         warmupResults[pairKey(unit.displayName, name)] =
                             measured.warmupResults;
                         measuredResults[pairKey(unit.displayName, name)] =
-                            measured.results;
-                        rows ~= BenchmarkRow(
-                            unit.displayName,
-                            name,
-                            "",
-                            measured.timing,
-                            medianCompileTime(compileDeltas, warmup),
-                        );
+                            [measured.firstResult] ~ measured.results;
                     }
+                    const tests = skipCheck ? "unchecked" : "";
+                    rows ~= BenchmarkRow(
+                        unit.displayName,
+                        name,
+                        "first",
+                        tests,
+                        measured.first,
+                        firstCompileTime(compileDeltas),
+                    );
+                    rows ~= BenchmarkRow(
+                        unit.displayName,
+                        name,
+                        "repeated",
+                        tests,
+                        measured.repeated,
+                        medianCompileTime(compileDeltas, warmup + 1),
+                    );
                 } catch (Exception e) {
                     executionFailed = true;
                     stderr.writefln(
@@ -319,6 +353,7 @@ public int run(string[] args) {
         printRow(
             row.fixture,
             row.backend,
+            row.verdict,
             skipCheck
                 ? row.tests
                 : checkedTestsDisplay(checkedResults, unit, row.backend),
@@ -726,6 +761,7 @@ public struct BenchmarkUnit {
 public struct BenchmarkRow {
     public string fixture;
     public string backend;
+    public string verdict;
     public string tests;
     public Result result;
     // Median per-iteration compile time; null for backends that do not
@@ -755,6 +791,27 @@ public Nullable!Duration medianCompileTime(
                 (measured[$ / 2 - 1].total!"hnsecs"
                  + measured[$ / 2].total!"hnsecs") / 2,
             ),
+    );
+}
+
+private Nullable!Duration firstCompileTime(Duration[] deltas) {
+    return deltas.length == 0
+        ? Nullable!Duration.init
+        : Nullable!Duration(deltas[0]);
+}
+
+private Nullable!ulong medianCgroupPeak(ulong[] peaks) {
+    import std.algorithm.sorting: sort;
+
+    if (peaks.length == 0)
+        return Nullable!ulong.init;
+
+    peaks.sort;
+    return Nullable!ulong(
+        peaks.length % 2 == 1
+            ? peaks[$ / 2]
+            : peaks[$ / 2 - 1]
+                + (peaks[$ / 2] - peaks[$ / 2 - 1]) / 2,
     );
 }
 
@@ -889,9 +946,9 @@ public DubInfo dubInfoFromDescribeData(
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s %10s",
-        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC used ram delta",
+        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s",
+        "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
+        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
     );
     writeln;
 }
@@ -899,6 +956,7 @@ void printHeader() {
 public void printRow(
     in string fixture,
     in string backendName,
+    in string verdict,
     in string tests,
     in Result result,
     in Nullable!Duration compileTime = Nullable!Duration.init,
@@ -907,16 +965,18 @@ public void printRow(
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %7.1f KiB",
+        "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s",
         fixture,
         backendName,
+        verdict,
         tests,
-        "disabled",
+        "enabled",
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
         compileDisplay(compileTime),
-        result.ramKiB,
+        result.dGcKiB,
+        cgroupPeakDisplay(result.cgroupPeakMemory),
     );
 }
 
@@ -932,6 +992,14 @@ private string compileDisplay(in Nullable!Duration compileTime) {
         );
 }
 
+private string cgroupPeakDisplay(in Nullable!ulong peak) {
+    import std.format: format;
+
+    return peak.isNull
+        ? "n/a"
+        : format("%.1f KiB", peak.get / 1024.0);
+}
+
 public string renderBenchmarkSection(
     in string title,
     in BenchmarkRow[] rows,
@@ -942,31 +1010,33 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s %10s\n\n",
-        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC used ram delta",
+        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s\n\n",
+        "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
+        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %7.1f KiB\n",
+            "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s\n",
             row.fixture,
             row.backend,
+            row.verdict,
             row.tests,
-            "disabled",
+            "enabled",
             row.result.min.total!"hnsecs" / hnsecsPerMs,
             row.result.median.total!"hnsecs" / hnsecsPerMs,
             row.result.stddevHnsecs / hnsecsPerMs,
             compileDisplay(row.compileMedian),
-            row.result.ramKiB,
+            row.result.dGcKiB,
+            cgroupPeakDisplay(row.result.cgroupPeakMemory),
         ));
     }
     output.put("\n");
     return output.data;
 }
 
-private double ramKiB(in Result result) {
-    return result.maxGcUsedSizeDelta / 1024.0;
+private double dGcKiB(in Result result) {
+    return result.dGcAllocation / 1024.0;
 }
 
 public struct PreparedFixtures {
@@ -1096,8 +1166,16 @@ void printRunHeader(in size_t warmup, in size_t runs) {
         writefln("governor:    %s", governor.readText.strip);
 
     writefln("os:          %s", os);
-    writefln("gc:          disabled during timed loop");
-    writefln("sampling:    %s warmup + %s runs", warmup, runs);
+    writefln("gc:          enabled during measurements");
+    writefln(
+        "allocation:  GC.allocatedInCurrentThread delta "
+        ~ "(host + executor where used)",
+    );
+    writefln(
+        "sampling:    1 first + %s repeated warmup + %s repeated runs",
+        warmup,
+        runs,
+    );
     writeln;
 }
 

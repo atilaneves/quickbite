@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cgroup_root=${QUICKBITE_CGROUP_ROOT:-/sys/fs/cgroup}
+if [[ ! -f "$cgroup_root/cgroup.controllers" ]]; then
+    printf '%s\n' \
+        'cgroup peak memory: unsupported (cgroup v2 unavailable)'
+    exit 0
+fi
+
+backend_count=0
+backend_value_follows=0
+for argument in "$@"; do
+    if ((backend_value_follows)); then
+        ((backend_count += 1))
+        backend_value_follows=0
+    elif [[ $argument == --backend || $argument == -b ]]; then
+        backend_value_follows=1
+    elif [[ $argument == --backend=* ]]; then
+        ((backend_count += 1))
+    fi
+done
+if ((backend_count != 1)); then
+    printf '%s\n' \
+        'bench-cgroup requires exactly one --backend option' >&2
+    exit 2
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+script_path=$script_dir/bench-cgroup
+
+if [[ ${QUICKBITE_CGROUP_IN_SCOPE:-0} != 1 ]]; then
+    if [[ -n ${QUICKBITE_CGROUP_LAUNCHER:-} ]]; then
+        exec "$QUICKBITE_CGROUP_LAUNCHER" \
+            env QUICKBITE_CGROUP_IN_SCOPE=1 "$script_path" "$@"
+    fi
+    exec systemd-run --user --scope --quiet \
+        --property=MemoryAccounting=yes \
+        env QUICKBITE_CGROUP_IN_SCOPE=1 "$script_path" "$@"
+fi
+
+bench=${QUICKBITE_BENCH:-$script_dir/bench}
+cgroup_file=${QUICKBITE_CGROUP_FILE:-/proc/self/cgroup}
+cgroup_path=$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' \
+    "$cgroup_file")
+peak_path=$cgroup_root${cgroup_path%/}/memory.peak
+if [[ ! -r $peak_path || ! -w $peak_path ]]; then
+    printf '%s\n' \
+        'cgroup peak memory: unsupported (cgroup v2 unavailable)'
+    exit 0
+fi
+
+exec {peak_fd}<>"$peak_path"
+if QUICKBITE_CGROUP_PEAK_FD=$peak_fd "$bench" "$@"; then
+    bench_status=0
+else
+    bench_status=$?
+fi
+
+exit "$bench_status"

@@ -868,6 +868,44 @@ static foreach (backend; Matrix!()) {
 }
 
 
+// A label directly on a `switch` statement is a valid `break` target (D's
+// `break label;` accepts a loop or a switch label; only `continue label;` is
+// restricted to a loop) from inside a loop nested in one of its cases, not
+// just from the switch's own top level. `label:` must reach the switch
+// itself, not fall through to whatever wraps it.
+static foreach (backend; Matrix!()) {
+    @("switch.labeledBreakFromNestedLoop." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int result;
+
+            outerSwitch: switch (2) {
+                case 1:
+                    result = 10;
+                    break;
+
+                case 2:
+                    foreach (i; 0 .. 5) {
+                        if (i == 3)
+                            break outerSwitch;
+                        result = i;
+                    }
+                    break;
+
+                default:
+                    result = 30;
+                    break;
+            }
+
+                assert(result == 2);
+            }
+        });
+    }
+}
+
+
 /++
     Switch, switch control transfer, and labeled breaks.
 +/

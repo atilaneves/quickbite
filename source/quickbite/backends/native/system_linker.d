@@ -7,7 +7,8 @@ private:
 public class SystemLinker:
     imported!"quickbite.backends".Backend,
     imported!"quickbite.backends.runner".GroupedRunner,
-    imported!"quickbite.backends.runner".CompileTimeReporter
+    imported!"quickbite.backends.runner".CompileTimeReporter,
+    imported!"quickbite.backends.runner".DgcAllocationReporter
 {
     import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
@@ -17,6 +18,7 @@ public class SystemLinker:
 
     private const SystemLinkerInputs _inputs;
     private Duration _compileTime;
+    private ulong _dGcAllocation;
 
     public alias eval = Evaluator.eval;
 
@@ -43,6 +45,12 @@ public class SystemLinker:
         _compileTime = Duration.zero;
     }
 
+    public override ulong dGcAllocation()
+        @safe @nogc nothrow pure const scope
+    {
+        return _dGcAllocation;
+    }
+
     // Derives the dependency import paths from the raw dub import paths and the
     // package root: the driver forwards what dub reported and lets the backend
     // decide what is already compiled into the dependency image. The filtering uses
@@ -65,6 +73,7 @@ public class SystemLinker:
                 dependencyImportPathsOutside(importPaths, packageRoot),
                 FrontendFlags(frontendFlags.compilerArguments.dup),
                 dubPackage,
+                packageRoot,
             ),
         );
     }
@@ -74,13 +83,19 @@ public class SystemLinker:
     }
 
     public override TestResult[] runTests(Module[] modules) {
+        _dGcAllocation = 0;
         // An LDC-built host cannot run DMD-codegen'd unittests in-process (the
         // extern(D) ABI and DMD-only EH symbols diverge, ai/spikes/ldc-eh/
         // FINDINGS.md), so hand the linked .so to the DMD-built run executor
         // across a process boundary instead. DMD-built hosts (bin/ut, the DMD
         // benchmark build) keep running the tests in-process, unchanged.
         version (LDC)
-            return runTestsViaExecutor(modules, _inputs, _compileTime);
+            return runTestsViaExecutor(
+                modules,
+                _inputs,
+                _compileTime,
+                _dGcAllocation,
+            );
         else
             return runTestsInProcess(modules);
     }
@@ -153,6 +168,9 @@ public struct SystemLinkerInputs {
     // no member pruning -- that apparatus is for the single-snippet path. See
     // emitObjectFilesForDubPackage.
     public DubPackage dubPackage;
+    // The executor mirrors `dub test`, including its package-root working
+    // directory. Empty for standalone fixtures, which inherit the host cwd.
+    public string workingDirectory;
 }
 
 // A codegen'd-and-linked shared library on disk. The caller owns dir, deleting
@@ -223,6 +241,7 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     imported!"dmd.dmodule".Module[] modules,
     in SystemLinkerInputs inputs,
     ref imported!"core.time".Duration compileTime,
+    ref ulong dGcAllocation,
 ) {
     import core.time: MonoTime;
     import quickbite.backends.runner: TestResult;
@@ -259,11 +278,18 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
         symbols,
     )));
 
-    import quickbite.backends.native.run_executor: runExecutor;
-    runExecutor(requestFile, resultsFile);
+    import quickbite.backends.native.run_executor:
+        RunExecutorConfig, runExecutor;
+    runExecutor(
+        requestFile,
+        resultsFile,
+        RunExecutorConfig(inputs.workingDirectory),
+    );
 
+    const response = decodeResults(cast(ubyte[]) read(resultsFile));
+    dGcAllocation = response.dGcAllocation;
     TestResult[] cases;
-    foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
+    foreach (result; response.results)
         cases ~= TestResult(result.passed, result.name, result.location, result.message);
     return cases;
 }

@@ -10,34 +10,6 @@ module quickbite.backends.bytecode.core.native_call;
 
 private:
 
-// One reusable argument array per native-call nesting depth. Native calls are
-// synchronous, so nested calls acquire and release these slots in strict LIFO
-// order. A slot keeps its largest array: calls that fit reuse it, and only a
-// larger argument list allocates again.
-private struct NativeArgumentStorageSlot {
-    private imported!"quickbite.ffi.ffi".TypedAddress[] arguments;
-}
-
-private NativeArgumentStorageSlot[] _nativeArgumentStorageSlots;
-private size_t _nativeArgumentStorageDepth;
-
-private imported!"quickbite.ffi.ffi".TypedAddress[]
-    acquireNativeArgumentStorage(in size_t count)
-{
-    assert(count > 1);
-    const depth = _nativeArgumentStorageDepth++;
-    if (depth == _nativeArgumentStorageSlots.length)
-        _nativeArgumentStorageSlots ~= NativeArgumentStorageSlot.init;
-    auto slot = &_nativeArgumentStorageSlots[depth];
-    if (slot.arguments.length < count)
-        slot.arguments.length = count;
-    return slot.arguments[0 .. count];
-}
-
-private void releaseNativeArgumentStorage() @safe @nogc nothrow {
-    --_nativeArgumentStorageDepth;
-}
-
 // The address-only bridge's complete call shape. Preparation selects the typed
 // addresses; execution may invoke the bridge only once every field the shape
 // needs is present.
@@ -48,8 +20,6 @@ private struct NativeInvocation {
     public imported!"quickbite.ffi.ffi".TypedAddress receiver;
     public bool hasReceiver;
     public bool returnsRef;
-    private size_t _argumentCount;
-    private imported!"quickbite.ffi.ffi".TypedAddress _singleArgument;
     // A ref return yields the referenced address rather than a value; the
     // bridge writes that pointer here and the frame receives what it names.
     public void* reference;
@@ -65,24 +35,6 @@ private struct NativeInvocation {
         return !hasReceiver ||
             receiver.type !is null && receiver.address !is null;
     }
-
-    public void initializeArguments(in size_t count) {
-        _argumentCount = count;
-        if (count == 0)
-            return;
-        if (count == 1) {
-            arguments = (&_singleArgument)[0 .. 1];
-            return;
-        }
-        arguments = acquireNativeArgumentStorage(count);
-    }
-
-    public void releaseArguments() @safe @nogc nothrow {
-        if (_argumentCount > 1)
-            releaseNativeArgumentStorage;
-        arguments = null;
-        _argumentCount = 0;
-    }
 }
 
 // Returns false for any call shape the bridge declines, leaving the caller's
@@ -95,7 +47,6 @@ package(quickbite.backends.bytecode) bool callNative(
     in size_t destination,
 ) {
     NativeInvocation invocation;
-    scope(exit) invocation.releaseArguments;
     if (!prepareNativeInvocation(
             native, stack, base, argumentArea, destination, invocation,
         ) ||
@@ -149,7 +100,7 @@ private bool prepareNativeInvocation(
     );
 
     const fixedCount = signature.parameterList.length;
-    invocation.initializeArguments(native.argumentTypes.length);
+    invocation.arguments.length = native.argumentTypes.length;
     // `argumentOffsets` locates every argument, direct call or indirect: a
     // direct call's own per-argument staging layout
     // (`nativeArgumentOffsets`, `compiler.d`), or, for a native-leaf

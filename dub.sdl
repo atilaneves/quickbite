@@ -41,9 +41,11 @@ configuration "unittest" {
     // The frontend-free ORC loader (module namespace orc.*) lives in the
     // top-level orc/ directory; resolving `import orc.loader` needs the
     // directory *containing* orc/ — the package root "." — on the import path.
-    sourcePaths "tests" "benchmarks" "orc"
+    sourcePaths "tests" "benchmarks" "bench-exec" "orc"
+    excludedSourceFiles "bench-exec/main.d"
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d" "benchmarks/backends.d"
-    importPaths "tests" "benchmarks" "."
+        "bench-exec/run_wire.d"
+    importPaths "tests" "benchmarks" "bench-exec" "."
     versions "unitUnthreaded"
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
     // libraries it builds.
@@ -70,9 +72,11 @@ configuration "unittest-cov" {
 
     mainSourceFile "tests/main.d"
     // orc/ holds the frontend-free ORC loader; "." resolves orc.* imports.
-    sourcePaths "tests" "tests/coverage" "benchmarks" "orc"
+    sourcePaths "tests" "tests/coverage" "benchmarks" "bench-exec" "orc"
+    excludedSourceFiles "bench-exec/main.d"
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d" "benchmarks/backends.d"
-    importPaths "tests" "benchmarks" "."
+        "bench-exec/run_wire.d"
+    importPaths "tests" "benchmarks" "bench-exec" "."
     versions "unitUnthreaded"
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
     // libraries it builds.

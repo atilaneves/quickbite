@@ -2,19 +2,6 @@
 
 Write a bytecode VM for the D programming language.
 
-# Design
-
-Optimise for unittest result latency from any edit — this overrides
-all other concerns. JIT would improve runtime but tests run in
-milliseconds; JIT compile time would dominate.
-
-Avoid the linker tax: no object files, no whole-program
-compilation. Drive compilation from unittest blocks; generate only the
-bytecode needed for each test and its transitive dependencies.
-
-Keep code isolated from dmd internals behind a stable interface that
-wraps dmd-as-a-library.
-
 # Plan
 
 Consult `ai/plans` for implementation plans.
@@ -43,12 +30,9 @@ Use ASD-STE100 - Simplified Technical English in all communication.
 
 ## Git worktrees
 
-Do work in a git worktree unless instructed otherwise. Name worktrees
-the same as their branch, e.g. worktree named "foo" →
-`./worktrees/foo` at repo root. Always use the `worktrees` directory
-in this repo unless instructed otherwise.
+Do work in a git worktree unless instructed otherwise.
 
-## Style
+## Code Style
 
 ### General
 
@@ -101,8 +85,7 @@ the relevant test names to `bin/ut`.
 To build `/bin/ut`, run `dub run reggae --compiler=ldc -- -b ninja` if
 `build.ninja` does not exist, then `ninja bin/ut`. Do not assume you
 can run `bin/ut`. It might be stale, and running ninja is either 1)
-required anyway or 2) so fast it doesn't matter, so don't skip running
-ninja.
+required anyway or 2) so fast it doesn't matter.
 
 If the sandbox blocks these commands, request escalation for the same
 command instead of trying alternate test runners.

@@ -23,6 +23,10 @@ public interface CompileTimeReporter {
     void resetCompileTime() @safe @nogc nothrow pure scope;
 }
 
+public interface DgcAllocationReporter {
+    ulong dGcAllocation() @safe @nogc nothrow pure const scope;
+}
+
 public TestResult[] runTests(Runner runner, imported!"dmd.dmodule".Module[] modules) {
     if (auto grouped = cast(GroupedRunner) runner)
         return grouped.runTests(modules);
