@@ -5267,7 +5267,7 @@ static foreach (backend; Matrix!(
                     static Config config;
                     return config.retries;
                 }
-                assert(retries() == 3);
+                assert(retries == 3);
             }
         });
     }
@@ -5343,7 +5343,7 @@ static foreach (backend; Matrix!(
                     static Outer o;
                     return o;
                 }
-                const o = stash();
+                const o = stash;
                 assert(o.inner.x == 5);
                 assert(o.f != o.f);
             }
@@ -5372,6 +5372,69 @@ static foreach (backend; Matrix!(
             unittest {
                 assert(o.inner.x == 5);
                 assert(o.f != o.f);
+            }
+        });
+    }
+}
+
+// A `union` member shares its storage with every other member declared at
+// the same offset. DMD's own default-initializer builder writes each
+// member's default in declaration order and skips a later member whose
+// offset falls inside a region an earlier member already wrote, so only
+// the first member (`a`) contributes its default to `S.init`; the second
+// member (`b`) never overwrites it, leaving `a`'s own `int.init == 0` in
+// place. `Ctfe` cannot read dataseg storage at compile time. `Interpreter`
+// has this same overlap gap in its own module-default writer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `s` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "2143289344 != 0"),
+)) {
+    @("dataseg.unionFirstMemberDefaultAppliesToWholeStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    int a;
+                    float b;
+                }
+            }
+
+            __gshared S s;
+
+            unittest {
+                assert(s.a == 0);
+            }
+        });
+    }
+}
+
+// The reverse member order of the fixture above: the first declared
+// member (`f`, a `float`) is the one whose default actually gets written,
+// so reading the storage back through the second member (`i`, an `int`)
+// observes `float.init`'s NaN bit pattern reinterpreted as an integer, not
+// `int.init`'s own `0`. `Ctfe` cannot read dataseg storage at compile
+// time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `u` cannot be read at compile time"),
+)) {
+    @("dataseg.unionFirstMemberDefaultOverwritesLaterMemberStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float f;
+                int i;
+            }
+
+            __gshared U u;
+
+            unittest {
+                assert(u.i == 0x7FC00000);
             }
         });
     }

@@ -36,8 +36,9 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     // registration-time bytes (`Compiler.resetModuleData`), then every
     // module's constructors run again -- `syncInitialModuleData` only
     // snapshots newly allocated slots at registration time, so a ctor's
-    // writes are never part of that snapshot -- before that module's
-    // unittests run.
+    // writes are never part of that snapshot -- before any unittest runs.
+    // Every module's constructors run before any module's unittests, the
+    // same order a real process runs every module ctor before `main`.
     public override imported!"quickbite.backends.runner".TestResult[] runTests(
         imported!"dmd.dmodule".Module[] modules,
     ) {
@@ -46,9 +47,11 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         if (_compiler !is null)
             _compiler.resetModuleData;
 
+        foreach (module_; modules)
+            runModuleConstructors(module_);
+
         imported!"quickbite.backends.runner".TestResult[] cases;
         foreach (module_; modules) {
-            runModuleConstructors(module_);
             foreachUnitTestDeclaration(module_, (unitTest) {
                 cases ~= runUnitTest(unitTest);
             });
@@ -108,11 +111,7 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     }
 
     // Runs a module's `shared static this`/`static this` bodies, matching
-    // compiled D's startup order. Called from `runTests` for every module on
-    // every call, after module storage has been reset to its
-    // registration-time bytes: a fresh reset-then-rerun each time matches a
-    // fresh process running the module's startup sequence from scratch, so
-    // there is nothing here to memoise across calls.
+    // compiled D's startup order.
     private void runModuleConstructors(Module module_) {
         import quickbite.frontend.util: foreachStaticCtorDeclaration;
 

@@ -360,6 +360,15 @@ package(quickbite.backends.bytecode) struct Compiler {
     }
 
     private void compileFunctionBody(in size_t index) {
+        // A declaration compiled partway through this body (e.g. a module
+        // variable's registration) can already have grown `moduleData`
+        // before an unrelated later statement throws (an "Unsupported ..."
+        // diagnostic). Catching `initialModuleData` up on every exit, not
+        // only a normal return, keeps `resetModuleData`'s `moduleData[] =
+        // initialModuleData[]` a same-length slice assignment on the next
+        // call instead of a length-mismatch `RangeError`.
+        scope(exit) syncInitialModuleData;
+
         // Only the entry can be a unittest body; any lazily compiled callee
         // is an ordinary function.
         if (index != _entryIndex)
@@ -486,7 +495,6 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
-        syncInitialModuleData;
     }
 
     private void syncInitialModuleData() {
@@ -10121,28 +10129,48 @@ package(quickbite.backends.bytecode) struct Compiler {
             auto elementBytes = bytes[
                 index * elementSize .. (index + 1) * elementSize
             ];
-            switch (elementType.toBasetype.ty) with (TY) {
-                case Tstruct:
+            // Every element takes the element type's own `.init`, the
+            // array counterpart of a struct field with no initializer
+            // below -- gated on `typeFacts`' representation rather than
+            // `elementType.toBasetype.ty` directly the same way, since a
+            // string element (`string[2] names;`) reports `ScalarType
+            // .void_` from `scalarType` (a zero-width scalar, not the
+            // element's real 16-byte slice) and a nested array or delegate
+            // element throws from `scalarType` entirely.
+            final switch (typeFacts(elementType).representation)
+                with (DeclarationRepresentation)
+            {
+                case struct_:
                     if (!writeStructDefaultInitializerBytes(
                             elementType, elementBytes,
                         ))
                         return false;
                     break;
-                case Tsarray:
+                case staticArray:
                     if (!writeStaticArrayDefaultInitializerBytes(
                             elementType, elementBytes,
                         ))
                         return false;
                     break;
-                default:
-                    // A scalar element (e.g. `float[2] fs;`) has no
-                    // `VarDeclaration` of its own to carry an `_init` --
-                    // every element always takes the element type's own
-                    // `.init`, the array counterpart of a struct field with
-                    // no initializer below.
-                    elementBytes[] =
-                        moduleScalarDefaultBytes(scalarType(elementType))[];
+                case scalar:
+                case pointer:
+                case classPointer:
+                case assocArray:
+                    elementBytes[] = moduleScalarDefaultBytes(
+                        elementType, scalarType(elementType),
+                    )[];
                     break;
+                case dynamicArray:
+                case delegate_:
+                    // Already all-zero from `bytes`'s allocation: a null
+                    // slice or a `{null, null}` delegate is the correct
+                    // default.
+                    break;
+                case unavailable:
+                case vector:
+                case complexDouble:
+                case lazyDelegate:
+                    return false;
             }
         }
         return true;
@@ -10160,8 +10188,29 @@ package(quickbite.backends.bytecode) struct Compiler {
         if (bytes.length != typeFacts(type).byteWidth)
             return false;
 
+        // DMD's own `defaultInitLiteral` (`typesem.d`) walks `fields` in
+        // declaration order and skips any field whose offset falls below
+        // the end of the last field it actually wrote, leaving that
+        // region holding whatever the earlier overlapping field already
+        // put there -- the mechanism that gives a union its "only the
+        // first member's default survives" behaviour (`union { int a;
+        // float b; }` has `.a == 0`, from `int`'s default, even though
+        // `b`'s own `float.init` is NaN). `nextOffset` mirrors that same
+        // running end offset here.
+        uint nextOffset = 0;
         foreach (field; declaration.fields) {
+            // A bit field's `offset`/byte width describe its containing
+            // storage unit, not its own bit range, so writing its default
+            // through this whole-field byte-copy machinery would corrupt
+            // any sibling bit field packed into the same bytes.
+            if (field.isBitFieldDeclaration !is null)
+                return false;
+
             const fieldSize = typeFacts(field.type).byteWidth;
+            if (field.offset < nextOffset)
+                continue;
+            nextOffset = field.offset + fieldSize;
+
             auto fieldBytes = bytes[field.offset .. field.offset + fieldSize];
 
             // No initializer on the field at all: fall back to the field's
@@ -10195,16 +10244,22 @@ package(quickbite.backends.bytecode) struct Compiler {
                     case classPointer:
                     case assocArray:
                         fieldBytes[] = moduleScalarDefaultBytes(
-                            scalarType(field.type),
+                            field.type, scalarType(field.type),
                         )[];
+                        break;
+                    case dynamicArray:
+                    case delegate_:
+                    case lazyDelegate:
                         break;
                     case unavailable:
                     case vector:
-                    case dynamicArray:
-                    case delegate_:
                     case complexDouble:
-                    case lazyDelegate:
-                        break;
+                        // `float4.init` is per-lane NaN and `cdouble.init`
+                        // is NaN+NaNi, neither the all-zero bytes leaving
+                        // this branch would give, and `unavailable` has no
+                        // known layout to write at all -- decline rather
+                        // than silently zero.
+                        return false;
                 }
                 continue;
             }
@@ -10576,7 +10631,7 @@ package(quickbite.backends.bytecode) struct Compiler {
         // (`Type.init`), not an all-zero block -- the scalar counterpart of
         // `allocateModuleComplexVariable`'s NaN default for `cdouble`.
         if (initializer is null)
-            return moduleScalarDefaultBytes(type);
+            return moduleScalarDefaultBytes(declaration.type, type);
 
         auto expression = initializerExpression(initializer.exp);
         if (isNullLiteral(expression))
@@ -10601,50 +10656,50 @@ package(quickbite.backends.bytecode) struct Compiler {
         ));
     }
 
-    // A scalar's own `.init` bytes, for a module variable with no
-    // initializer at all: `bool`/the signed and unsigned integer widths
-    // default to `0`, which `allocateModuleBytes`'s zero-filled growth
-    // already gives for free -- only the floating-point widths (default
-    // NaN, confirmed against the `SystemLinker` real-compile oracle, the
-    // same way `allocateModuleComplexVariable`'s own NaN default for
-    // `cdouble` already is) and the narrow character types (default
-    // `char.init == 0xFF`, `wchar.init == 0xFFFF`, `dchar.init == 0xFFFF`,
-    // D's own all-bits-set-per-code-unit convention for a "no character"
-    // value -- note `dchar.init` is not `0xFFFFFFFF`) need bytes written
-    // explicitly here. Each character width's default comes straight from
-    // the host D language's own `.init` rather than a hand-written
-    // constant, so it cannot drift from what `SystemLinker` compiles. A
-    // pointer/associative-array/class-reference reaches this function
-    // reinterpreted as `ScalarType.ulong_` (`allocateModuleScalarVariable`),
-    // whose own zero default is also free.
-    private static ubyte[] moduleScalarDefaultBytes(in ScalarType type)
-    @safe pure nothrow {
+    // A scalar/pointer/associative-array/class-reference field, array
+    // element, or module variable with no initializer of its own: derive
+    // its default bytes from DMD's own `Type.defaultInit` (`typesem.d`)
+    // rather than a hand-written `ScalarType`-keyed table. A hand-written
+    // table cannot represent an enum's actual default value -- `scalarType`
+    // collapses `enum E { a = 3 }` to its `int` base representation before
+    // the value is ever read, so a table keyed on `ScalarType` alone always
+    // reads back `0` for `E e;` instead of `E.a`. `defaultInit` resolves
+    // that itself: it returns an `IntegerExp`/`RealExp` for a basic type or
+    // enum member (already carrying the enum's real default value) and a
+    // `NullExp` for a pointer/class/associative-array default -- the same
+    // expression shapes `moduleScalarInitializerBytes` above already knows
+    // how to write for an explicit initializer.
+    private ubyte[] moduleScalarDefaultBytes(
+        Type type,
+        in ScalarType scalarTypeValue,
+    ) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInit;
         import std.bitmanip: nativeToLittleEndian;
+        import std.conv: text;
 
-        switch (type) with (ScalarType) {
-            case char_:
-                return nativeToLittleEndian(char.init).dup;
-            case wchar_:
-                return nativeToLittleEndian(wchar.init).dup;
-            case dchar_:
-                return nativeToLittleEndian(dchar.init).dup;
-            case float_:
-                return nativeToLittleEndian(float.nan).dup;
-            case double_:
-                return nativeToLittleEndian(double.nan).dup;
-            case real_: {
-                union RealBytes {
-                    real value;
-                    ubyte[real.sizeof] bytes;
-                }
+        auto expression = type.defaultInit(Loc.initial);
+        if (isNullLiteral(expression))
+            return new ubyte[size(scalarTypeValue)];
 
-                RealBytes raw;
-                raw.value = real.nan;
-                return raw.bytes.dup;
-            }
-            default:
-                return new ubyte[size(type)];
+        if (auto integer = expression.isIntegerExp) {
+            const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+            return raw[0 .. size(scalarTypeValue)].dup;
         }
+
+        if (auto real_ = expression.isRealExp) {
+            if (scalarTypeValue == ScalarType.real_)
+                return realBytes(real_).dup;
+
+            const raw =
+                nativeToLittleEndian(floatBits(real_, scalarTypeValue));
+            return raw[0 .. size(scalarTypeValue)].dup;
+        }
+
+        throw new Exception(text(
+            "Unsupported module scalar default in bytecode core: ",
+            typeChars(type),
+        ));
     }
 
     private void resolveNonRootInitializer(VarDeclaration declaration) {

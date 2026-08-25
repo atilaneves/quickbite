@@ -744,3 +744,8 @@
 - A hook called from a base-class method is silently bypassed when a
   subclass overrides that method directly instead of calling `super`:
   check every override of a method that other logic hooks into.
+
+- When replacing a `default: break;` (or relaxing a type gate) with real
+  work, add a red-first oracle fixture for every representation the branch
+  now reaches, not just the one motivating fixture -- it can leave sibling
+  shapes untested and green by accident.

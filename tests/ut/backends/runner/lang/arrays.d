@@ -3012,6 +3012,125 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The non-scalar-element counterpart of the fixture above: a static
+// array's own element still has no `VarDeclaration` to carry an `_init`
+// (only the array variable does), so every element still takes its own
+// type's default the same way a scalar element's `0` does -- but a
+// `string` element's default is `null`, a value with no fixed-width
+// numeric representation the way `int`'s `0` or `float`'s NaN have.
+// `Ctfe` cannot read dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `names` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleStringElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared string[2] names;
+
+            unittest {
+                assert(names[0] is null);
+                assert(names.length == 2);
+            }
+        });
+    }
+}
+
+// The local (`static immutable`, not module-level `__gshared`) sibling of
+// the fixture above: a `static`/`immutable` local reaches the same
+// dataseg default-bytes writer as a module variable, so it needs the same
+// element-shape gate.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `names` cannot be read at compile time"),
+)) {
+    @("staticArray.localImmutableStringElementDefaultsToNull." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static immutable string[2] names;
+
+                assert(names[0] is null);
+                assert(names.length == 2);
+            }
+        });
+    }
+}
+
+// The delegate-element sibling of the two string-element fixtures above: a
+// `delegate` element has no fixed-width `ScalarType` either, so `scalarType`
+// throws for it the same way it does for a `string` element -- a static
+// array's own storage is already all-zero (`allocateModuleBytes`'s
+// zero-filled growth), which already matches a defaulted delegate's own
+// `{null, null}` value.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `fns` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleDelegateElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int delegate()[2] fns;
+
+            unittest {
+                assert(fns[0] is null);
+                assert(fns.length == 2);
+            }
+        });
+    }
+}
+
+// The pointer-element sibling: a pointer element's default (`null`) does
+// have a `ScalarType` (`scalarType` maps every `T*` to `ScalarType.ulong_`),
+// so this shape already reaches the scalar-default write the same way a
+// plain `int` element does.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `ps` cannot be read at compile time"),
+)) {
+    @("staticArray.modulePointerElementDefaultsToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int*[2] ps;
+
+            unittest {
+                assert(ps[0] is null);
+                assert(ps.length == 2);
+            }
+        });
+    }
+}
+
+// The class-reference-element sibling: a class reference element's default
+// (`null`) likewise has a `ScalarType` (`scalarType` maps every class type
+// to `ScalarType.ulong_`), reaching the same scalar-default write as a
+// pointer element.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `widgets` cannot be read at compile time"),
+)) {
+    @("staticArray.moduleClassReferenceElementDefaultsToNull." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            __gshared Widget[2] widgets;
+
+            unittest {
+                assert(widgets[0] is null);
+                assert(widgets.length == 2);
+            }
+        });
+    }
+}
+
 // A `static`/`__gshared` local's storage is not a fresh call frame: it
 // exists once, for the module's whole lifetime, and every call to the
 // enclosing function shares it. A second call therefore sees the first
@@ -3034,8 +3153,8 @@ static foreach (backend; Matrix!(
                     return calls;
                 }
 
-                assert(nextId() == 1);
-                assert(nextId() == 2);
+                assert(nextId == 1);
+                assert(nextId == 2);
             }
         });
     }
@@ -3063,8 +3182,8 @@ static foreach (backend; Matrix!(
                     return calls++;
                 }
 
-                assert(nextId() == 5);
-                assert(nextId() == 6);
+                assert(nextId == 5);
+                assert(nextId == 6);
             }
         });
     }
@@ -3092,8 +3211,8 @@ static foreach (backend; Matrix!(
                     return state.calls;
                 }
 
-                assert(nextId() == 1);
-                assert(nextId() == 2);
+                assert(nextId == 1);
+                assert(nextId == 2);
             }
         });
     }
@@ -3135,7 +3254,8 @@ static foreach (backend; Matrix!(
 // cannot read dataseg storage at compile time. `LLVMJit` never applies
 // this default either, the same known gap
 // `datasegLocal.structFieldDefaultInitializerApplies` already pins for a
-// struct field's own default.
+// struct field's own default. The `LLVMJit` note below is not the verbatim
+// red: the uninitialised value it reads back varies from run to run.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `value` cannot be read at compile time"),
@@ -3151,7 +3271,7 @@ static foreach (backend; Matrix!(
                     static double value;
                     return value;
                 }
-                const value = stash();
+                const value = stash;
                 assert(value != value);
             }
         });
@@ -3175,7 +3295,7 @@ static foreach (backend; Matrix!(
                     static char c;
                     return c;
                 }
-                assert(letter() == 0xFF);
+                assert(letter == 0xFF);
             }
         });
     }
@@ -3198,7 +3318,7 @@ static foreach (backend; Matrix!(
                     static dchar c;
                     return c;
                 }
-                assert(glyph() == 0xFFFF);
+                assert(glyph == 0xFFFF);
             }
         });
     }

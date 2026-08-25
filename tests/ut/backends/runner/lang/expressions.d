@@ -6450,6 +6450,55 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An enum's default value is its own declared member, not its base type's
+// `0`: `enum E { a = 3 }` gives every unset `E` variable the value `E.a`,
+// the same way `int x = 3;` would give `x` the value `3` rather than an
+// arbitrary bit pattern. `Ctfe` cannot read dataseg storage at compile
+// time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `e` cannot be read at compile time"),
+)) {
+    @("dataseg.moduleEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E { a = 3 }
+
+            __gshared E e;
+
+            unittest {
+                assert(e == E.a);
+            }
+        });
+    }
+}
+
+// The struct-field counterpart of the fixture above: an enum-typed field
+// with no initializer of its own still takes the enum's own declared
+// default member, the same way a nested-struct field's own declared
+// default applies. `Ctfe` cannot read dataseg storage at compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `s` cannot be read at compile time"),
+)) {
+    @("dataseg.moduleStructEnumFieldDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E { a = 3 }
+            struct S { E e; }
+
+            __gshared S s;
+
+            unittest {
+                assert(s.e == E.a);
+            }
+        });
+    }
+}
+
 // A module-level pointer variable (`__gshared int* quickbiteDatasegPointer;`)
 // -- `moduleScalarVariableOrNull` used to decline every `Tpointer` dataseg
 // declaration outright ("pointer ... dataseg variables remain entirely

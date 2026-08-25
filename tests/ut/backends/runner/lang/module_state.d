@@ -128,7 +128,7 @@ static foreach (backend; Matrix!(
             }
 
             unittest {
-                assert(vtable().x == 42);
+                assert(vtable.x == 42);
                 assert(_tab.x == 42);
             }
         });
@@ -358,9 +358,7 @@ static foreach (backend; Matrix!(
 
 // A module constructor in an imported module runs before any unittest in
 // the importing module, the same way it runs before any unittest in its
-// own module. `Bytecode` does not walk imports yet (issue #547, filed
-// alongside this test and deliberately out of scope for #541), so it is
-// pinned rather than fixed here.
+// own module.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `seed` cannot be read at compile time"),
