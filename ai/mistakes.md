@@ -374,7 +374,7 @@
   is easy to get wrong when a commit is driven from a plan or a review finding —
   the framing that produced the change is not the framing that explains it. A
   bare section citation to a live design document (for example,
-  `ai/plans/interpreter.md`'s storage contract) is different and remains fine:
+  `AGENTS.md`'s "Runtime semantics" contract) is different and remains fine:
   it points at a stable specified contract, not at narrative.
 
 - When a fixture carries a `SystemLinker`-oracle expectation, give it
