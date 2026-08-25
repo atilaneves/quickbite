@@ -855,7 +855,8 @@ package(quickbite.backends.bytecode) struct Compiler {
         const value = asmLocal("value");
         const type = destination.pointerElement;
         const isDword = type == ScalarType.int_ || type == ScalarType.uint_;
-        if ((!isDword && type != ScalarType.long_ && type != ScalarType.ulong_) ||
+        const isQword = type == ScalarType.long_ || type == ScalarType.ulong_;
+        if ((!isDword && !isQword) ||
             value.type != type || functionResultType(asmOwner).scalar != type)
             throw new Exception(text(
                 "Unsupported inline asm atomic-fetch-add operand: dest type=",

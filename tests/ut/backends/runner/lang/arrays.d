@@ -6923,8 +6923,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // source bytes become 12 `ushort` elements.
 // Ctfe omitted: dmd's own CTFE engine refuses an element-size-changing array
 // cast outright (verified directly against dmd), permanently, not a
-// quickbite backend gap. Interpreter omitted: its native-argument path
-// rejects a static-array-to-narrower-element reinterpreting cast.
+// quickbite backend gap.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "array cast from `uint[3]` to `ushort[]` is not supported at "

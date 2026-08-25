@@ -34,3 +34,28 @@ unittest {
     backend.runTests(module_)[0].passed.should == true;
     backend.runTests(module_)[0].passed.should == true;
 }
+
+// A module constructor that throws must not be memoised as having run: the
+// memo is only set after both ctor loops finish, so a failing constructor
+// reruns (and rethrows) on the next `runTests` call instead of being
+// silently treated as already constructed.
+@("runTests.throwingModuleCtorIsNotMemoised")
+@Tags("Bytecode")
+unittest {
+    import quickbite.backends.bytecode: Bytecode;
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+
+    auto backend = new Bytecode;
+    auto module_ = parseSnippetWithCheckActionContext(q{
+        shared static this() {
+            int zero = 0;
+            assert(zero == 1, "module constructor failed");
+        }
+
+        unittest {
+        }
+    }, []).module_;
+
+    backend.runTests(module_).shouldThrow;
+    backend.runTests(module_).shouldThrow;
+}

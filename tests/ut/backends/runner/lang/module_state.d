@@ -204,6 +204,28 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A module-scope `immutable string` with a string-literal initializer
+// reads through the AST-rematerialise fallback: the module-storage
+// registration path only folds array-literal initializers into module
+// data, so a `StringExp` initializer is declined and every read
+// re-evaluates the initializer expression instead of loading from module
+// storage.
+static foreach (backend; Matrix!()) {
+    @("immutableGlobal.stringInitializerRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            immutable string hexDigits = "0123456789ABCDEF";
+
+            unittest {
+                int index = 10;
+                assert(hexDigits[index] == 'A');
+                assert(hexDigits.length == 16);
+            }
+        });
+    }
+}
+
 // A `shared static this()` inside a template's members runs like any other
 // module constructor, even though it is only reachable by instantiating the
 // template: the eponymous member function `vtable` and the module

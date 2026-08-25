@@ -46,7 +46,7 @@ private void foreachUnitTestDeclaration(
 // `isStaticCtorDeclaration` matches both.
 public void foreachStaticCtorDeclaration(
     imported!"dmd.dmodule".Module module_,
-    scope void delegate(imported!"dmd.func".FuncDeclaration) visit,
+    scope void delegate(imported!"dmd.func".StaticCtorDeclaration) visit,
 ) @safe {
     if (module_.members is null)
         return;
@@ -54,9 +54,11 @@ public void foreachStaticCtorDeclaration(
     foreachStaticCtorDeclaration(module_.members, visit);
 }
 
+// `Dsymbols*` and `include(null)` are DMD-owned pointers this walk only
+// reads.
 private void foreachStaticCtorDeclaration(
     imported!"dmd.arraytypes".Dsymbols* symbols,
-    scope void delegate(imported!"dmd.func".FuncDeclaration) visit,
+    scope void delegate(imported!"dmd.func".StaticCtorDeclaration) visit,
 ) @trusted {
     import dmd.dsymbolsem: include;
 

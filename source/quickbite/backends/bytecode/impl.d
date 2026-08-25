@@ -12,7 +12,8 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     import quickbite.backends.bytecode.core.machine: CompileFunction;
     import core.time: Duration, MonoTime;
     import dmd.dmodule: Module;
-    import dmd.func: FuncDeclaration, UnitTestDeclaration;
+    import dmd.func: FuncDeclaration, StaticCtorDeclaration,
+        UnitTestDeclaration;
 
     private Duration _compileTime;
     // Compiled functions, class infos, and module-variable slots persist
@@ -91,8 +92,8 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         if (module_ in _moduleConstructorsRun)
             return;
 
-        FuncDeclaration[] sharedCtors;
-        FuncDeclaration[] plainCtors;
+        StaticCtorDeclaration[] sharedCtors;
+        StaticCtorDeclaration[] plainCtors;
 
         foreachStaticCtorDeclaration(module_, (ctor) {
             if (ctor.isSharedStaticCtorDeclaration)

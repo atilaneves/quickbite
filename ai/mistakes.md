@@ -703,15 +703,13 @@
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
 
-- Before deleting a fallback branch believed dead, add a temporary probe
-  and run the full relevant test sweep; do not infer dead code from
-  structural reasoning alone -- a distinct representation kind can still
-  reach it for both mutable and immutable declarations.
+- A zero-hit probe over the current suite does not prove a fallback dead:
+  if the condition it guards can still arise (a registration that may
+  decline), keep the fallback and pin it with a fixture that reaches it.
 
 - A path that routes declarations to module storage needs an explicit
-  fallback or refusal for a declined registration: the bytecode
-  module-storage literal writers decline non-scalar element shapes. A
-  "decline" helper must itself never throw on the shape it declines.
+  fallback or refusal for a declined registration, and a "decline"
+  helper must itself never throw on the shape it declines.
 
 - When manually stripping a cast chain to find a source place, size the
   result from the argument's own outermost (post-cast) type, not from
