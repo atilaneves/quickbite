@@ -729,3 +729,31 @@
   simplified by DMD before bytecode compilation, leaving no runtime handler
   to test. Keep a runtime branch that can throw, and trigger the later throw
   from a separate callee after the return so handler lifetime is observable.
+
+- A zero-hit probe over the current suite does not prove a fallback dead:
+  if a registration that may decline can still arise, keep the fallback
+  and pin it with a fixture that reaches it; a "decline" helper must
+  itself never throw on the shape it declines.
+
+- When manually stripping a cast chain to find a source place, size the
+  result from the argument's own outermost (post-cast) type, not from
+  whatever type the unwrap lands on -- `cast(void[]) s[]` for `ulong[3]
+  s` must report 24 bytes, not a 3-element count.
+
+- A hook called from a base-class method is silently bypassed when a
+  subclass overrides that method directly instead of calling `super`:
+  check every override of a method that other logic hooks into.
+
+- When replacing a `default: break;` (or relaxing a type gate) with real
+  work, add a red-first oracle fixture for every representation the branch
+  now reaches, not just the one motivating fixture -- it can leave sibling
+  shapes untested and green by accident.
+
+- A non-scalar-base enum's own declared default cannot be derived by
+  recursing structurally into its base type's own default (e.g. a
+  struct-base enum's field-wise `.init`): call `Type.defaultInit` on the
+  enum type itself, which already returns the real default expression.
+
+- Before wording an `Omit` as a storage-shape gap, read the dispatch
+  helper: the refusal may be a type-tag match that never unwraps enums
+  (issue #517).
