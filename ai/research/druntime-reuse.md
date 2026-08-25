@@ -37,9 +37,10 @@ check against ground truth:
   separate interception tables.
 
 The Interpreter is carrier-free: guest data lives in native typed places, and
-native calls consume typed addresses. `ai/plans/interpreter.md` owns that
-storage boundary and the druntime-first and no-interception contracts. The
-remaining deviations have explicit issue owners: monitors [#561],
+native calls consume typed addresses. AGENTS.md's "Runtime semantics" section
+owns that storage boundary and the druntime-first and no-interception
+contracts. The remaining deviations have explicit issue owners: monitors
+[#561],
 `_d_arrayctor` and its `TypeInfo` path [#562], allocation and length [#565],
 append and reserve [#566], exception chaining [#568], concatenation [#569],
 and dead policy cleanup [#570]. Bytecode convergence remains in
