@@ -193,18 +193,12 @@ static foreach (backend; Matrix!(
 // `decoy`.
 // CTFE cannot read a function's parameter once that function has returned:
 // `variable 'value' cannot be read at compile time`, reproduced with stock
-// dmd on the same shape. The Interpreter segfaults (signal 11) on this
-// shape, a separate pre-existing defect outside this fixture's scope; no
-// in-process assertion can observe a crash.
+// dmd on the same shape.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a function's parameter once that function has "
         ~ "returned: `variable 'value' cannot be read at compile time`, "
         ~ "reproduced with stock dmd on the same shape"),
-    Omit!(Interpreter, Because.unassertable,
-        "segfaults (signal 11) reading a nested struct's context out of a "
-        ~ "dynamic-array field: https://github.com/atilaneves/quickbite/"
-        ~ "issues/551"),
 )) {
     @("struct.nestedStructDynamicArrayFieldPreservesContext." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -244,18 +238,12 @@ static foreach (backend; Matrix!(
 // `decoy`.
 // CTFE cannot read a function's parameter once that function has returned:
 // `variable 'value' cannot be read at compile time`, reproduced with stock
-// dmd on the same shape. The Interpreter segfaults (signal 11) on this
-// shape, a separate pre-existing defect outside this fixture's scope; no
-// in-process assertion can observe a crash.
+// dmd on the same shape.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a function's parameter once that function has "
         ~ "returned: `variable 'value' cannot be read at compile time`, "
         ~ "reproduced with stock dmd on the same shape"),
-    Omit!(Interpreter, Because.unassertable,
-        "segfaults (signal 11) reading a nested struct's context out of a "
-        ~ "static-array field: https://github.com/atilaneves/quickbite/"
-        ~ "issues/551"),
 )) {
     @("struct.nestedStructStaticArrayFieldPreservesContext." ~ backend.stringof)
     @Tags(backend.stringof)
