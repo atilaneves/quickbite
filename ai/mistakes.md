@@ -722,3 +722,8 @@
   `MAP_NORESERVE`, committing pages on first touch) so the buffer never
   moves, and fail loudly (throw) on genuine overflow instead of silently
   reallocating.
+
+- A `try`/`catch` fixture with only an unconditional `return` may be
+  simplified by DMD before bytecode compilation, leaving no runtime handler
+  to test. Keep a runtime branch that can throw, and trigger the later throw
+  from a separate callee after the return so handler lifetime is observable.
