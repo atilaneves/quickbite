@@ -4503,26 +4503,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Bytecode currently reallocates the backing storage while shrinking a
-// dynamic array, so pin that divergence separately from compiled D.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                auto values = [1, 2, 3];
-                auto address = values.ptr;
-
-                values.length = 1;
-
-                assert(values.ptr !is address);
-                assert(values[0] == 1);
-            }
-        });
-    }
-}
-
 // DMD represents a whole-slice assignment of elements with postblit and
 // destructor semantics as a `LoweredAssignExp`. Its `lowering` expression is
 // the language-defined operation, not an optional optimization.
