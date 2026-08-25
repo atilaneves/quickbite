@@ -187,6 +187,10 @@ static foreach (backend; Matrix!(
 
 // A nested struct held in a returned container's dynamic-array field needs
 // its declaring function's context just like a direct struct field does.
+// `decoy` sits immediately before `value` in the enclosing scope: an
+// uninitialized hidden context field would misresolve the captured read to
+// whatever the current frame holds instead, so a stray read lands on
+// `decoy`.
 // CTFE cannot read a function's parameter once that function has returned:
 // `variable 'value' cannot be read at compile time`, reproduced with stock
 // dmd on the same shape. The Interpreter segfaults (signal 11) on this
@@ -199,7 +203,8 @@ static foreach (backend; Matrix!(
         ~ "reproduced with stock dmd on the same shape"),
     Omit!(Interpreter, Because.unassertable,
         "segfaults (signal 11) reading a nested struct's context out of a "
-        ~ "dynamic-array field"),
+        ~ "dynamic-array field: https://github.com/atilaneves/quickbite/"
+        ~ "issues/551"),
 )) {
     @("struct.nestedStructDynamicArrayFieldPreservesContext." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -233,6 +238,10 @@ static foreach (backend; Matrix!(
 
 // A nested struct held in a returned container's static-array field needs
 // its declaring function's context just like a direct struct field does.
+// `decoy` sits immediately before `value` in the enclosing scope: an
+// uninitialized hidden context field would misresolve the captured read to
+// whatever the current frame holds instead, so a stray read lands on
+// `decoy`.
 // CTFE cannot read a function's parameter once that function has returned:
 // `variable 'value' cannot be read at compile time`, reproduced with stock
 // dmd on the same shape. The Interpreter segfaults (signal 11) on this
@@ -245,7 +254,8 @@ static foreach (backend; Matrix!(
         ~ "reproduced with stock dmd on the same shape"),
     Omit!(Interpreter, Because.unassertable,
         "segfaults (signal 11) reading a nested struct's context out of a "
-        ~ "static-array field"),
+        ~ "static-array field: https://github.com/atilaneves/quickbite/"
+        ~ "issues/551"),
 )) {
     @("struct.nestedStructStaticArrayFieldPreservesContext." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -277,9 +277,10 @@ package(quickbite.backends.bytecode) struct Compiler {
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
     private imported!"dmd.statement".CompoundAsmStatement _currentAsm;
-    // The frame offset of the current method's hidden `this` block when it is a
-    // nested struct whose first field (`vthis`) holds the enclosing-frame
-    // context index; 0 otherwise. Set while compiling such a method.
+    // True while compiling a method of a nested struct (`_thisLocal` is that
+    // struct's hidden `this` block, whose `vthis` field holds the enclosing
+    // frame's context index): a captured enclosing local read routes through
+    // that context pointer instead of the current frame. False otherwise.
     private bool _hasNestedContext;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -1443,6 +1444,9 @@ package(quickbite.backends.bytecode) struct Compiler {
         in size_t count,
         scope bool delegate(in CatchProtection) @safe exits = null,
     ) {
+        // `const` would prevent restoring it below: assigning back to
+        // the mutable `_catchProtectedDepths` field cannot take a
+        // `const(CatchProtection)[]`.
         auto savedCatchDepths = _catchProtectedDepths;
 
         void popExitedHandlersDeeperThan(in size_t tryFinallyIndex) {
@@ -6837,11 +6841,14 @@ package(quickbite.backends.bytecode) struct Compiler {
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         if (_nestedContextOffset == ushort.max && _hasThis &&
             _thisLocal.declaration !is null &&
-            _thisLocal.declaration.isNested)
+            _thisLocal.declaration.isNested) {
             // DMD appends `vthis` after every declared field, so it is not
             // at the receiver's offset 0; `emitPointerLoad`'s index is
             // scaled by `width` (`size_t.sizeof` here), so the byte offset
-            // is divided down to an element index.
+            // is divided down to an element index. `vthis` is itself
+            // pointer-sized and DMD aligns every field to its own size, so
+            // the byte offset is always an exact multiple.
+            assert(_thisLocal.declaration.vthis.offset % size_t.sizeof == 0);
             emitPointerLoad(
                 contextBase, _thisLocal.offset,
                 compileSizeConstant(
@@ -6849,7 +6856,7 @@ package(quickbite.backends.bytecode) struct Compiler {
                 ),
                 cast(uint) size_t.sizeof,
             );
-        else
+        } else
             _code ~= Instruction(
                 Op.copy,
                 contextBase,

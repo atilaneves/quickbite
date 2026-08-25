@@ -167,7 +167,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-
 // A `return` inside a `catch`-protected try body must drop that try's
 // handler before an enclosing `finally` runs, even though the enclosing
 // `finally` is itself lexically inside the same protected try body: the
@@ -179,7 +178,10 @@ static foreach (backend; Matrix!(
 // same message either way, so `finallyRuns` -- not just the message --
 // tells the two apart.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges, "CTFE wraps uncaught exception messages"),
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a module-level variable mutated across a "
+        ~ "function call: `static variable 'finallyRuns' cannot be read "
+        ~ "at compile time`, reproduced with stock dmd on the same shape"),
 )) {
     @("exception.returnPopsHandlerBeforeEnclosingFinallyRuns." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -218,12 +220,13 @@ static foreach (backend; Matrix!(
     }
 }
 
-
 // A `break` out of a `catch`-protected try body must drop that try's handler:
 // once the loop containing it has finished, a later exception must not be
 // caught by a handler for a try body no loop iteration is inside any more.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges, "CTFE wraps uncaught exception messages"),
+    Omit!(Ctfe, Because.diverges,
+        "see sibling pin above (CTFE wraps in \"uncaught CTFE exception\" "
+        ~ "message)"),
 )) {
     @("exception.breakPopsCatchProtectedTryHandler." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -809,7 +809,6 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-
 // A labeled `break` reaches out of a loop nested inside a `do`/`while` to
 // exit the `do`/`while` itself, not just the nested loop.
 static foreach (backend; Matrix!()) {
@@ -1839,7 +1838,6 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
-
 
 // A labeled `break` reaches out of a loop nested inside a compile-time tuple
 // `foreach` (an unrolled loop, one copy of the body per tuple element) to
