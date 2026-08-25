@@ -813,6 +813,45 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+// A Ctfe backend evaluating a wide-character-array display earlier in the
+// same process must not corrupt a *later* Interpreter backend's own display
+// of a wide string. Both drive DMD's UTF-mismatch `foreach` apply lowering
+// (`_aApplywd1` and friends) to decode the array/string into `dchar`s.
+// `_aApplywd1` is a synthetic declaration that DMD's lowering never runs
+// through `Type.merge`, so its delegate parameter's `.deco` stays null;
+// `sameNativeStorageType` (`native_call_adapter.d`) used to trust
+// `Type.equals`, which shortcuts on reference identity and otherwise
+// compares `.deco` -- always false once neither side is merged, unless the
+// two sides happen to share the same unmerged object. Running the Ctfe
+// evaluation first disturbed that incidental sharing (both backends resolve
+// `_aApplywd1` to the same process-global `FuncDeclaration`) and made the
+// later Interpreter call see two byte-for-byte identical but non-identical
+// delegate types, so it fell back to native call rejection and then to
+// `noAvailableSourceMessage`ing `_aApplywd1` as if it had no callable
+// implementation at all. Explicit two-backend order here, rather than
+// relying on `AliasSeq!(Ctfe, Interpreter)`'s declaration order, pins the
+// exact sequence that exposed it.
+@("repl.backend.priorCtfeWideCharacterArrayDisplayDoesNotBreakLaterInterpreterWideStringDisplay")
+unittest {
+    import quickbite.repl: runReplLoop;
+
+    runReplLoop(
+        newBackend!Ctfe,
+        [
+            `[cast(wchar) 'a', cast(wchar) 'b']`,
+            `[cast(dchar) 'a', cast(dchar) 'b']`,
+            ":q",
+        ],
+    );
+
+    const output = runReplLoop(
+        newBackend!Interpreter,
+        [`"wide"w`, `"wide"d`, ":q"],
+    );
+
+    output.should == [`"wide"w`, `"wide"d`];
+}
+
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {

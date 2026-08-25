@@ -759,9 +759,58 @@ private bool sameNativeStorageType(
             return leftBase.isTypeStruct.sym is rightBase.isTypeStruct.sym;
         case Tclass:
             return leftBase.isTypeClass.sym is rightBase.isTypeClass.sym;
+        // `Type.equals` (DMD's own `mtype.d`) shortcuts on reference identity
+        // and otherwise compares `.deco`, requiring both sides non-null.
+        // A delegate synthesized for a lowered call (e.g. DMD's UTF-mismatch
+        // `foreach` apply lowering, `_aApplywd1` and friends) is never run
+        // through `Type.merge`, so its `.deco` stays null and `equals`
+        // always answers false for it -- even against a byte-for-byte
+        // identical signature. Whether the two sides here happen to be the
+        // *same* unmerged object (so the reference-identity shortcut still
+        // saves it) depends on incidental sharing between the argument
+        // expression's type and the call-site declaration's parameter type,
+        // which an earlier, unrelated evaluation in the same process can
+        // disturb (issue-555 profiling turned this up as a process-global
+        // FuncDeclaration mutation). Compare delegate ABI shape structurally
+        // instead of trusting `equals`.
+        case Tdelegate:
+            return sameFunctionSignature(
+                leftBase.isTypeDelegate.next.isTypeFunction,
+                rightBase.isTypeDelegate.next.isTypeFunction,
+            );
         default:
             return mutableOf(leftBase).equals(mutableOf(rightBase));
     }
+}
+
+// ABI-relevant structural equality for two function signatures: calling
+// convention, parameter count/types, variadic-ness, and return type. Purity,
+// `@safe`/`@trusted`/`@system`, `nothrow`, and `@nogc` are deliberately not
+// compared -- none of them changes the native calling convention, so two
+// signatures differing only in those attributes still lay out and call
+// identically.
+private bool sameFunctionSignature(
+    imported!"dmd.mtype".TypeFunction left,
+    imported!"dmd.mtype".TypeFunction right,
+) {
+    if (left is null || right is null)
+        return left is right;
+    if (
+        left.linkage != right.linkage ||
+        left.parameterList.varargs != right.parameterList.varargs ||
+        left.parameterList.length != right.parameterList.length ||
+        !sameNativeStorageType(left.next, right.next)
+    )
+        return false;
+
+    foreach (index; 0 .. left.parameterList.length)
+        if (!sameNativeStorageType(
+            left.parameterList[index].type,
+            right.parameterList[index].type,
+        ))
+            return false;
+
+    return true;
 }
 
 private const(void)* loadReference(const(void)* address) @trusted {
