@@ -15053,6 +15053,48 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A dynamic-array row is a slice header stored in the outer static array.
+// Compiled D evaluates the second bracket before it selects that header,
+// then evaluates the first bracket twice while resolving the scalar element.
+// Each call records the order so a repeated call is observable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+)) {
+    @("dynamicArray.doubleIndexEvaluatesSecondIndexOnceBeforeFirstIndexTwice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][3] m;
+            int outerCalls;
+            int innerCalls;
+            int callOrder;
+
+            int outerIndex() {
+                outerCalls++;
+                callOrder = callOrder * 10 + 1;
+                return 0;
+            }
+
+            int innerIndex() {
+                innerCalls++;
+                callOrder = callOrder * 10 + 2;
+                return 0;
+            }
+
+            unittest {
+                m[0] = [42];
+                int value = m[outerIndex()][innerIndex()];
+                assert(value == 42);
+                assert(outerCalls == 2);
+                assert(innerCalls == 1);
+                assert(callOrder == 211);
+            }
+        });
+    }
+}
+
 // When BOTH brackets are out of range, compiled D's second-bracket-first
 // order means the first bracket's index function never runs at all: the
 // second bracket's own bounds check against the row's statically known

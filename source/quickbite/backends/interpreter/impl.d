@@ -10968,8 +10968,9 @@ destinationFallback:
         return true;
     }
 
-    // An index composes or constructs its receiver once, evaluates its index
-    // once, and copies the selected typed bytes into caller-owned storage.
+    // An index copies the selected typed bytes into caller-owned storage.
+    // Most receivers compose once before their index runs. A nested dynamic
+    // row follows DMD's bounds-check order below instead.
     private bool constructIndexInto(
         imported!"dmd.expression".IndexExp index,
         imported!"quickbite.backends.interpreter.place".Place destination,
@@ -10981,6 +10982,38 @@ destinationFallback:
             return false;
 
         const pointer = isPointerType(index.e1.type);
+        if (
+            !pointer &&
+            index.lengthVar is null &&
+            index.e1.isIndexExp !is null &&
+            index.e1.type.toBasetype.isTypeDArray !is null &&
+            hasArrayProjectionPlace(index.e1)
+        ) {
+            // Without `$`, DMD evaluates the final index before it selects a
+            // dynamic row. The first selection supplies the row bounds; the
+            // second supplies the element's live address.
+            const arrayIndex = scalarOperand!size_t(index.e2);
+            if (_evaluatedReferenceArgumentIndices !is null)
+                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
+                    arrayIndex;
+
+            const length = projectionPlace(index.e1).arrayLength;
+            if (arrayIndex >= length) {
+                import quickbite.backends.interpreter.messages:
+                    indexOutOfBoundsMessage;
+
+                throwRangeError(indexOutOfBoundsMessage(
+                    arrayIndex,
+                    length,
+                    isSliceValue(index.e1),
+                    runningCalledFunction,
+                ));
+            }
+
+            copyPlaceValue(projectionPlace(index.e1).index(arrayIndex), destination);
+            return true;
+        }
+
         auto source = pointer
             ? pointerOperandPlace(index.e1)
             : hasArrayProjectionPlace(index.e1)

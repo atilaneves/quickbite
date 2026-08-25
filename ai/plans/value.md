@@ -42,14 +42,10 @@ An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would create a second storage authority.
 
-A doubly-indexed receiver's evaluation-order contract only covers a static-
-array row (`m[outer][inner]` where `m[outer]` is a fixed-size array, e.g.
-`P[2][3]`). A dynamic-array row (e.g. `int[][3] m`) is a distinct,
-unimplemented case, not just the pre-existing fallback order: confirmed
-against `SystemLinker` (`bin/qb` probe, both a struct method-call receiver and
-a plain scalar read), compiled D calls the first bracket's index expression
-*twice* while still calling the second bracket's once, first. Neither this
-fix's fast path nor the old fallback reproduces that.
+A doubly-indexed method-call receiver whose first bracket selects a
+dynamic-array row remains unimplemented. Compiled D calls the first bracket's
+index expression twice while still calling the second bracket's once, first.
+The plain scalar-read path already follows this order.
 
 An associative-array `ref` parameter reads the caller's typed handle place,
 like other native-layout reference values; autovivifying a null handle
