@@ -703,6 +703,17 @@
   a small part of total VM time. Also, `ffi_call` timing includes the native
   callee, so it is only an upper bound on FFI crossing overhead.
 
+- Build performance benchmark binaries with debug metadata by default. Debug
+  sections do not change optimized code, and a special profiling build risks
+  measuring a binary that differs from the normal benchmark. Keep the same
+  optimization and inlining settings for profiling and timing.
+
+- Do not profile a binary through a path that a later build can overwrite.
+  `perf` can hard-link that file into its build-ID cache, so overwriting the
+  build path can also corrupt the cached copy. Copy each completed binary to
+  a unique immutable path, execute that copy, and verify that the profile and
+  binary build IDs match before symbolizing samples.
+
 - Do not use an existing task worktree only because its name matches the
   current task. Treat every existing worktree as owned by another person or
   agent unless ownership is explicit; create a new branch and worktree.
