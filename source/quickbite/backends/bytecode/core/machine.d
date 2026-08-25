@@ -54,8 +54,11 @@ package(quickbite.backends.bytecode) RunResult run(
     // Guest locals and temporaries -- including slice/class/struct pointers
     // a real druntime allocation hook returned -- live here as raw bytes;
     // scan them like compiled D scans its own stack frames: only the prefix
-    // frames have reached, extended as callee frames grow it.
-    scanStack(stack);
+    // frames have reached, extended as callee frames grow it. The registered
+    // range itself reaches further, in `scanChunkSize` steps, so re-
+    // registering (`scanStack`'s remove/add window) stays rare.
+    size_t registeredEnd = roundedScanEnd(stack.length, reservation.length);
+    scanStack(reservation[0 .. registeredEnd]);
     // Lazy compilation can add module slots while this machine is running, so
     // access the program-owned segment directly. The compiler reserves its
     // maximum addressable capacity before execution, keeping raw addresses
@@ -1799,14 +1802,25 @@ package(quickbite.backends.bytecode) RunResult run(
                 const calleeBase = reusableBase > preservedFrameEnd
                     ? reusableBase
                     : preservedFrameEnd;
-                if (callee.preservesFrame)
-                    preservedFrameEnd = calleeBase + callee.frameSize;
                 const calleeEnd = calleeBase + callee.frameSize;
+                if (calleeEnd > reservation.length)
+                    throw stackOverflow(
+                        calleeEnd, reservation.length, preservedFrameEnd,
+                    );
+                // Only commit the preserved-frame watermark once the call is
+                // known to fit: reporting a frame that never actually got
+                // allocated (because this very call is the one that
+                // overflowed) would overstate the total in the exception
+                // above.
+                if (callee.preservesFrame)
+                    preservedFrameEnd = calleeEnd;
                 if (stack.length < calleeEnd) {
-                    if (calleeEnd > reservation.length)
-                        throw stackOverflow(calleeEnd, reservation.length);
                     stack = reservation[0 .. calleeEnd];
-                    scanStack(stack);
+                    if (calleeEnd > registeredEnd) {
+                        registeredEnd =
+                            roundedScanEnd(calleeEnd, reservation.length);
+                        scanStack(reservation[0 .. registeredEnd]);
+                    }
                 }
 
                 stack[calleeBase .. calleeBase + callee.parameterBytes] =
@@ -2053,10 +2067,16 @@ package(quickbite.backends.bytecode) RunResult run(
 // The whole `stackCapacity` reservation as one slice; see `stackCapacity`.
 // `MAP_NORESERVE` keeps the untouched remainder out of the process's commit
 // charge. `mmap` hands back an unbounded raw pointer, hence `@trusted`.
+// `MAP_NORESERVE` itself is Linux-only; elsewhere the reservation still
+// succeeds, just without that commit-charge saving.
 private ubyte[] reserveStack() @trusted {
-    import core.sys.linux.sys.mman: MAP_NORESERVE;
     import core.sys.posix.sys.mman:
         MAP_ANON, MAP_FAILED, MAP_PRIVATE, mmap, PROT_READ, PROT_WRITE;
+
+    version (linux)
+        import core.sys.linux.sys.mman: MAP_NORESERVE;
+    else
+        enum MAP_NORESERVE = 0;
 
     auto memory = mmap(
         null,
@@ -2085,7 +2105,11 @@ private void releaseStack(ubyte[] reservation) @trusted {
 // for the stack, replacing the previous prefix: the GC sees every guest
 // pointer stored in a frame and scans no further than the frames reach.
 // `GC.removeRange` is a no-op for a pointer with no range yet. Both take the
-// reservation's raw base pointer, hence `@trusted`.
+// reservation's raw base pointer, hence `@trusted`. Between the two calls no
+// range is registered at all, so a collection running at that exact instant
+// would not scan the stack; callers make that window rare by growing the
+// registered range in large rounded chunks (`roundedScanEnd`) rather than
+// calling this on every frame growth.
 private void scanStack(ubyte[] stack) @trusted {
     import core.memory: GC;
 
@@ -2093,12 +2117,36 @@ private void scanStack(ubyte[] stack) @trusted {
     GC.addRange(stack.ptr, stack.length);
 }
 
-private Exception stackOverflow(in size_t needed, in size_t reserved) @safe pure {
+// The GC-registered prefix reaches at least `length` in bytes, rounded up to
+// this chunk size, so ordinary frame-by-frame growth re-registers the range
+// only once every so often instead of on every call.
+private enum size_t scanChunkSize = 64 * 1024;
+
+// `length` rounded up to `scanChunkSize`, capped at `reservationLength`: the
+// registered range never needs to exceed the whole reservation.
+private size_t roundedScanEnd(
+    in size_t length, in size_t reservationLength,
+) @safe @nogc nothrow pure {
+    const rounded =
+        (length + scanChunkSize - 1) / scanChunkSize * scanChunkSize;
+    return rounded < reservationLength ? rounded : reservationLength;
+}
+
+// `preserved` is `preservedFrameEnd`: frames kept alive for the lifetime of
+// the whole run because an escaping closure (`CompiledFunction.preservesFrame`)
+// might still read them, never reclaimed the way an ordinary call's frame is.
+// A loop over many calls to a function needing one can exhaust the reservation
+// even though no single call nests anywhere near that deep; naming that
+// portion here is what tells the two failures apart.
+private Exception stackOverflow(
+    in size_t needed, in size_t reserved, in size_t preserved,
+) @safe pure {
     import std.conv: text;
 
     return new Exception(text(
         "Bytecode stack overflow: ", needed, " bytes needed, ",
-        reserved, " reserved",
+        reserved, " reserved; ", preserved,
+        " bytes are frames kept alive for escaping closures",
     ));
 }
 

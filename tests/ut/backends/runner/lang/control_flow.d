@@ -809,6 +809,34 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A labeled `break` reaches out of a loop nested inside a `do`/`while` to
+// exit the `do`/`while` itself, not just the nested loop.
+static foreach (backend; Matrix!()) {
+    @("doWhile.labeledBreakFromNestedLoop." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int count;
+                int iterations;
+
+            outer:
+                do {
+                    ++iterations;
+                    for (int j = 0; j < 3; ++j) {
+                        ++count;
+                        if (j == 1)
+                            break outer;
+                    }
+                } while (iterations < 5);
+
+                assert(count == 2);
+                assert(iterations == 1);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("labeledBreak.exitsOuterForLoop." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1806,6 +1834,42 @@ static foreach (backend; Matrix!()) {
                 }
 
                 assert(sum == 2);
+            }
+        });
+    }
+}
+
+// A labeled `break` reaches out of a loop nested inside a compile-time tuple
+// `foreach` (an unrolled loop, one copy of the body per tuple element) to
+// exit the whole unrolled loop, not just the nested loop or the current
+// unrolled copy.
+static foreach (backend; Matrix!()) {
+    @("foreach.labeledBreakFromNestedLoopInExpressionTuple." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.meta: AliasSeq;
+
+            int helper(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int first = helper(1);
+                int second = helper(3);
+                int third = helper(5);
+                int count;
+
+            outer:
+                foreach (value; AliasSeq!(first, second, third)) {
+                    for (int j = 0; j < 3; ++j) {
+                        ++count;
+                        if (value == second && j == 1)
+                            break outer;
+                    }
+                }
+
+                assert(count == 5);
             }
         });
     }

@@ -167,6 +167,95 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `return` inside a `catch`-protected try body must drop that try's
+// handler before an enclosing `finally` runs, even though the enclosing
+// `finally` is itself lexically inside the same protected try body: the
+// `finally`'s own throw must reach whatever wraps the whole
+// try/catch/finally, not the sibling catch it is textually nested beside.
+// A stale handler would route the finally's throw into that catch instead,
+// running the finally a second time (once for the try body's own return,
+// once more for the catch body's) before the throw finally escapes with the
+// same message either way, so `finallyRuns` -- not just the message --
+// tells the two apart.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a module-level variable mutated across a "
+        ~ "function call: `static variable 'finallyRuns' cannot be read "
+        ~ "at compile time`, reproduced with stock dmd on the same shape"),
+)) {
+    @("exception.returnPopsHandlerBeforeEnclosingFinallyRuns." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int finallyRuns;
+
+            // The `if (cond) throw` keeps the compiler from proving the try
+            // body can never throw and eliding the catch entirely -- it
+            // still runs the `return` path below at runtime.
+            int f(bool cond) {
+                try {
+                    try {
+                        if (cond)
+                            throw new Exception("nope");
+                        return 1;
+                    } catch (Exception) {
+                        return 2;
+                    }
+                } finally {
+                    finallyRuns++;
+                    throw new Exception("fin");
+                }
+            }
+
+            unittest {
+                try {
+                    f(false);
+                    assert(0, "expected an exception");
+                } catch (Exception e) {
+                    assert(e.msg == "fin");
+                    assert(finallyRuns == 1);
+                }
+            }
+        });
+    }
+}
+
+// A `break` out of a `catch`-protected try body must drop that try's handler:
+// once the loop containing it has finished, a later exception must not be
+// caught by a handler for a try body no loop iteration is inside any more.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see sibling pin above (CTFE wraps in \"uncaught CTFE exception\" "
+        ~ "message)"),
+)) {
+    @("exception.breakPopsCatchProtectedTryHandler." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            // The `if (cond) throw` keeps the compiler from proving the try
+            // body can never throw and eliding the catch entirely -- the
+            // `break` below is what actually runs at runtime.
+            void g(bool cond) {
+                foreach (i; 0 .. 3) {
+                    try {
+                        if (cond)
+                            throw new Exception("nope");
+                        if (i == 0)
+                            break;
+                    } catch (Exception) {
+                        assert(0, "stale");
+                    }
+                }
+                throw new Exception("later");
+            }
+
+            unittest {
+                g(false);
+            }
+        }).shouldThrowWithMessage("later");
+    }
+}
+
 // A runtime bounds failure creates a RangeError object whose reference remains
 // an ordinary class value when passed to native code. The native function must
 // receive the same object pointer that compiled D passes.
