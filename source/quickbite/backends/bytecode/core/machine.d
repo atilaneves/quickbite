@@ -1802,14 +1802,19 @@ package(quickbite.backends.bytecode) RunResult run(
                 const calleeBase = reusableBase > preservedFrameEnd
                     ? reusableBase
                     : preservedFrameEnd;
-                if (callee.preservesFrame)
-                    preservedFrameEnd = calleeBase + callee.frameSize;
                 const calleeEnd = calleeBase + callee.frameSize;
+                if (calleeEnd > reservation.length)
+                    throw stackOverflow(
+                        calleeEnd, reservation.length, preservedFrameEnd,
+                    );
+                // Only commit the preserved-frame watermark once the call is
+                // known to fit: reporting a frame that never actually got
+                // allocated (because this very call is the one that
+                // overflowed) would overstate the total in the exception
+                // above.
+                if (callee.preservesFrame)
+                    preservedFrameEnd = calleeEnd;
                 if (stack.length < calleeEnd) {
-                    if (calleeEnd > reservation.length)
-                        throw stackOverflow(
-                            calleeEnd, reservation.length, preservedFrameEnd,
-                        );
                     stack = reservation[0 .. calleeEnd];
                     if (calleeEnd > registeredEnd) {
                         registeredEnd =
