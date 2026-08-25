@@ -160,11 +160,12 @@ compiled D stores callable identity, delegate context, dynamic class
 type, and TypeInfo identity as pointer-sized words inside the value,
 and so does each other backend. No table keyed by a guest address
 supplements a stored value. The only permitted side structure is a
-lookup keyed by the stored value itself — an identity pointer resolved
-to an interpreted callable, or a trampoline address aliased to that
-same identity. An ordinary byte copy, move, or clear carries the value
-with no reconciliation. Known deviations: the Interpreter class object
-header (#578) and retention of address-keyed tables (#563).
+lookup keyed by the stored value itself. Examples: an identity pointer
+resolved to an interpreted callable, and a trampoline address aliased
+to that same identity. An ordinary byte copy, move, or clear carries
+the value with no reconciliation. Known deviations: the Interpreter
+class object header (#578) and retention of address-keyed tables
+(#563).
 
 
 # Do nots

@@ -5,9 +5,9 @@
 This document is the precedent survey behind the Interpreter's carrier-free
 storage and typed-address native-call boundaries. The current contracts live
 in AGENTS.md's "Runtime semantics" section; display belongs to
-`ai/plans/repl.md`. This file
-records the surveyed projects, the questions each was evaluated against, the
-conclusions the survey supports, and the pinned primary sources.
+`ai/plans/repl.md`. This file records the surveyed projects, the questions
+each was evaluated against, the conclusions the survey supports, and the
+pinned primary sources.
 
 Research date: 2026-08-11.
 
