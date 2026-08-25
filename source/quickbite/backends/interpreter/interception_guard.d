@@ -17,7 +17,7 @@ public void enforceInterceptionPolicy(
             interceptorName,
             "` intercepted `",
             function_ is null ? "<null>" : text(function_.toPrettyChars),
-            "`, which is not one of the two recorded retirement blockers. ",
+            "`, which is not the recorded retirement blocker. ",
             "Execute the D source or real native hook instead.",
         ),
     );
@@ -74,8 +74,7 @@ private bool isRetainedInterception(
     import std.conv: text;
 
     const prettyName = text(function_.toPrettyChars);
-    return isStringForeachApplyName(prettyName) ||
-        isInterpreterBuiltinName(function_);
+    return isStringForeachApplyName(prettyName);
 }
 
 private bool isStringForeachApplyName(in string prettyName) {
@@ -86,14 +85,4 @@ private bool isStringForeachApplyName(in string prettyName) {
         prettyName.canFind("_aApplywd1") ||
         prettyName.canFind("_aApplydc1") ||
         prettyName.canFind("_aApplyRwd1");
-}
-
-private bool isInterpreterBuiltinName(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import quickbite.backends.interpreter.builtins:
-        InterpreterBuiltin, tryInterpreterBuiltin;
-
-    InterpreterBuiltin builtin;
-    return tryInterpreterBuiltin(function_, builtin);
 }

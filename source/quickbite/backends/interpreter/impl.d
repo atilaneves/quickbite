@@ -5406,11 +5406,6 @@ private struct Walker {
         ConstructionDestination* constructionDestination,
     ) {
         import dmd.expression: Expression;
-        import quickbite.backends.interpreter.builtins:
-            binaryBuiltinCall,
-            interpreterBuiltinArgumentCount,
-            tryInterpreterBuiltin,
-            unaryBuiltinCall;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
         import quickbite.backends.interpreter.place: Place;
@@ -5429,66 +5424,6 @@ private struct Walker {
 
             nativeCall = hasNoInterpretableSource(call.f) ||
                 bodyContainsAsm(call.f);
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
-
-            InterpreterBuiltin builtin;
-            if (
-                tryInterpreterBuiltin(call.f, builtin) &&
-                call.arguments !is null &&
-                call.arguments.length == interpreterBuiltinArgumentCount(builtin)
-            ) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "tryInterpreterBuiltin");
-
-                if (constructionDestination is null) {
-                    foreach (argument; *call.arguments)
-                        executeForEffect(argument);
-                } else with (InterpreterBuiltin) final switch (builtin) {
-                    case fabs:
-                    case sqrt:
-                        auto argument = (*call.arguments)[0];
-                        auto argumentDestination = ConstructionDestination(Place(
-                            _activationFrame.temporaryAddress(argument),
-                            argument.type,
-                        ));
-                        runExpression(argument, argumentDestination);
-                        unaryBuiltinCall(
-                            builtin,
-                            argumentDestination.place,
-                            constructionDestination.place,
-                        );
-                        constructionDestination.markConstructed;
-                        break;
-
-                    case pow:
-                        auto lhs = (*call.arguments)[0];
-                        auto lhsDestination = ConstructionDestination(Place(
-                            _activationFrame.temporaryAddress(lhs),
-                            lhs.type,
-                        ));
-                        runExpression(lhs, lhsDestination);
-                        auto rhs = (*call.arguments)[1];
-                        auto rhsDestination = ConstructionDestination(Place(
-                            _activationFrame.temporaryAddress(rhs),
-                            rhs.type,
-                        ));
-                        runExpression(rhs, rhsDestination);
-                        binaryBuiltinCall(
-                            builtin,
-                            lhsDestination.place,
-                            rhsDestination.place,
-                            constructionDestination.place,
-                        );
-                        constructionDestination.markConstructed;
-                        break;
-                }
-                return;
-            }
         }
 
         auto stringForeachApply = call.f is null
@@ -5554,6 +5489,24 @@ private struct Walker {
                 }
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
+            }
+        }
+
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.compiler_builtins:
+                executeCompilerBuiltin, isExecutableCompilerBuiltin;
+
+            if (isExecutableCompilerBuiltin(call.f)) {
+                if (constructionDestination !is null) {
+                    executeCompilerBuiltin(
+                        call.loc,
+                        call.f,
+                        argumentPlaces,
+                        constructionDestination.place,
+                    );
+                    constructionDestination.markConstructed;
+                }
+                return;
             }
         }
 

@@ -444,20 +444,19 @@ blocked package waits and re-earns its rows at the authority switch.
 **Interception policy.** The target has no name-based interception. A
 function with interpretable D source executes that source. A bodyless or
 inline-asm native leaf uses the ordinary typed-address FFI path to its real
-symbol or hook. `Walker.runCallExpression` has two temporary retirement
-blockers only; neither is an accepted end state:
+symbol or hook. A DMD-recognized compiler builtin is a compiler operation,
+not an interception: DMD's semantic builtin identity and the declaration's
+scalar signature select one generic operation over typed places and the
+caller-owned typed destination. The Interpreter has no second builtin enum,
+function-name list, or per-function dispatch.
 
-- DMD recognizes `fabs`, `sqrt`, and `pow` as compiler builtins, but the
-  frontend-only session supplies neither an interpretable body nor a native
-  symbol that `resolveCallable` can resolve. Add one generic compiler-builtin
-  execution mechanism, then delete `tryInterpreterBuiltin`, its helper
-  module, and its guard entry.
-- DMD lowers UTF-mismatch string `foreach` to `_aApplycd1`, `_aApplywd1`,
+`Walker.runCallExpression` has one temporary retirement blocker. DMD lowers
+UTF-mismatch string `foreach` to `_aApplycd1`, `_aApplywd1`,
   `_aApplydc1`, or `_aApplyRwd1`. The synthetic declaration does not carry the
   real call-site parameter list. Native dispatch must use the function-pointer
   signature without adding a delegate-context receiver, and reverse callback
   re-entry must preserve the runtime helper's ABI and root execution lifetime.
-  Then delete `runStringForeachApplyCall` and its guard entry.
+Then delete `runStringForeachApplyCall` and its guard entry.
 
 The mechanical guard rejects every other name match. It also retains the
 bodyless/inline-asm predicate used to classify ordinary native leaves; this

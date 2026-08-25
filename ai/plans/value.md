@@ -39,19 +39,21 @@ caller-owned typed destination, a void call has no destination or result, and
 a `ref` return supplies its address. Native results use the destination's
 address directly when the ABI permits it.
 
-Two name-based call interceptions still block the no-interception target and
-must retire before the carrier can be deleted:
+Compiler builtins are not call interceptions. DMD's semantic builtin identity
+and the declaration's scalar signature select one generic operation. Its
+operands come from typed places, DMD evaluates the builtin, and the result is
+stored directly in the caller's typed destination. The Interpreter has no
+second builtin identity enum, function-name list, or per-function result path.
 
-- `fabs`, `sqrt`, and `pow` need generic execution of DMD-recognized compiler
-  builtins. Their declarations have no resolvable native symbol or
-  interpretable body in the frontend-only session.
-- `_aApplycd1`, `_aApplywd1`, `_aApplydc1`, and `_aApplyRwd1` need native
+One name-based call interception still blocks the no-interception target and
+must retire before the carrier can be deleted. `_aApplycd1`, `_aApplywd1`,
+`_aApplydc1`, and `_aApplyRwd1` need native
   runtime-apply dispatch with the call-site function-pointer signature and a
   correct reverse-callback ABI. Calling the resolved runtime symbol through
   the current native delegate route supplies a delegate context that a plain
   function pointer does not have and crashes during callback re-entry.
 
-These are retirement prerequisites, not accepted exemptions. Do not add a
+This is a retirement prerequisite, not an accepted exemption. Do not add a
 carrier bridge or another name-based result path.
 
 Stored bindings, module variables, and class field defaults remain typed

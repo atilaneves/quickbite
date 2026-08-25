@@ -743,3 +743,7 @@
   field declaration's initializer; a static array of structs then repeats the
   wrong element image. Evaluate the semantic default expression directly into
   the destination place.
+
+- D's built-in complex types do not have a two-argument constructor, and their
+  `.re` and `.im` properties are not writable lvalues. Rebuild a generic
+  complex result as `cast(T)(re + im * 1i)` before storing its native bytes.
