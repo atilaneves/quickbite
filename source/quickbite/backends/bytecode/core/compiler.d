@@ -486,6 +486,19 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+        syncInitialModuleData;
+    }
+
+    private void syncInitialModuleData() {
+        if (_program.initialModuleData.length >= _program.moduleData.length)
+            return;
+
+        const start = _program.initialModuleData.length;
+        _program.initialModuleData ~= _program.moduleData[start .. $];
+    }
+
+    public void resetModuleData() {
+        _program.moduleData[] = _program.initialModuleData[];
     }
 
     private void registerFrameParameter(

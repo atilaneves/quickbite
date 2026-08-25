@@ -3,6 +3,7 @@ module quickbite.backends.bytecode.impl;
 private:
 
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
+    imported!"quickbite.backends.runner".GroupedRunner,
     imported!"quickbite.backends.runner".CompileTimeReporter
 {
     import quickbite.backends: TreeNodeBackend;
@@ -34,6 +35,28 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     private bool[Module] _moduleConstructorsRun;
 
     public alias eval = Evaluator.eval;
+
+    public override imported!"quickbite.backends.runner".TestResult[] runTests(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        return runTests([module_]);
+    }
+
+    public override imported!"quickbite.backends.runner".TestResult[] runTests(
+        imported!"dmd.dmodule".Module[] modules,
+    ) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        if (_compiler !is null)
+            _compiler.resetModuleData;
+
+        imported!"quickbite.backends.runner".TestResult[] cases;
+        foreach (module_; modules)
+            foreachUnitTestDeclaration(module_, (unitTest) {
+                cases ~= runUnitTest(unitTest);
+            });
+        return cases;
+    }
 
     public this() @safe @nogc nothrow pure {
     }
