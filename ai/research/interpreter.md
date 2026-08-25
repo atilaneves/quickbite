@@ -4,7 +4,8 @@
 
 This document is the precedent survey behind the Interpreter's carrier-free
 storage and typed-address native-call boundaries. The current contracts live
-in `ai/plans/interpreter.md`; display belongs to `ai/plans/repl.md`. This file
+in AGENTS.md's "Runtime semantics" section; display belongs to
+`ai/plans/repl.md`. This file
 records the surveyed projects, the questions each was evaluated against, the
 conclusions the survey supports, and the pinned primary sources.
 
@@ -602,9 +603,9 @@ assignment different aliasing, postblit, move, destruction, and failure
 semantics from initialization. Statically typed host locals can carry scalar
 intermediates without becoming a guest-value currency.
 
-`ai/plans/interpreter.md`'s "Storage and value boundary" section is the
-normative evaluator contract. This survey records why that contract was
-chosen; it does not define its operations or invariants.
+AGENTS.md's "Runtime semantics" section is the normative evaluator contract.
+This survey records why that contract was chosen; it does not define its
+operations or invariants.
 
 ### 4. Locals and expression temporaries have different lifetimes
 
@@ -640,8 +641,8 @@ use separate lifetime-aware `Block` and `Descriptor` machinery.
 The existing Interpreter caches whole-body frame layout for one root
 execution. That cache does not survive a new root or a source edit, so the
 survey gives neither candidate presumed cross-edit reuse credit. The
-addressable-temporary guardrail in `ai/plans/interpreter.md` requires a new
-measurement before a different storage strategy.
+Interpreter's addressable-temporary guardrail requires a new measurement
+before a different storage strategy.
 
 Primary source for D temporary lifetime rules: [D expressions][d-expressions].
 
@@ -662,9 +663,10 @@ The surveyed representation pattern is:
 
 This evidence rules out treating an internal descriptor address as executable
 code. A real native crossing needs a native-valid representation; metadata
-beside a null or fake slot does not provide one. `ai/plans/interpreter.md`
-owns the storage and callback-adapter contracts; `quickbite.ffi.ffi` owns the
-typed physical call mechanism.
+beside a null or fake slot does not provide one. AGENTS.md's "Runtime
+semantics" section owns the storage contract; the Interpreter backend adapter
+owns the callback-adapter contract; `quickbite.ffi.ffi` owns the typed
+physical call mechanism.
 
 ### 6. Native calls split into reusable facts and a small hot path
 
@@ -704,8 +706,8 @@ invalidation rules:
 That independence supports separate reuse and invalidation. A prepared
 `ffi_cif` is process-local and retains its `ffi_type` graph, while a target
 address is tied to an image generation. The `quickbite.ffi.ffi` module owns
-these physical-call caches; `ai/plans/interpreter.md` owns the Interpreter
-adapter and callback lifetime.
+these physical-call caches; the Interpreter backend adapter owns callback
+lifetime.
 
 ### 7. Inbound re-entry is a separate direction
 
@@ -725,8 +727,8 @@ not universal properties of every callback.
 
 Both shapes are separate from outbound calls and may share ABI classification.
 The contrast supports lazy construction at an actual escape rather than a
-cost on every interpreted callable. `ai/plans/interpreter.md` keeps inbound
-lifetime and re-entry backend-adapter-owned.
+cost on every interpreted callable. Inbound lifetime and re-entry stay
+backend-adapter-owned.
 
 ### 8. Real projects choose order and tuning, not architecture debt
 
@@ -884,10 +886,11 @@ specifications and API documentation remain linked to published versions.
 
 ## Call-state precedents
 
-Relocated from `ai/plans/interpreter.md`'s execution-architecture section:
-the narrower survey behind the Interpreter's execution-state ownership
-design. The implementations differ in language and product goal, but agree
-on the lifetime split that matters there:
+Relocated from the former Interpreter plan's execution-architecture section
+(the plan was deleted; its open work is tracked in GitHub issues): the
+narrower survey behind the Interpreter's execution-state ownership design.
+The implementations differ in language and product goal, but agree on the
+lifetime split that matters there:
 
 - LuaJIT keeps heap, roots, interned strings, and registries in one
   `global_State`. A `lua_State` points at that shared state, while calls use

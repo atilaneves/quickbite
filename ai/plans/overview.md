@@ -26,9 +26,9 @@ Backends:
   truth (`AGENTS.md`, Testing).
 - `Interpreter` — tree-walking AST interpreter. Current centre of
   gravity: execute real packages through native typed places and ordinary D
-  runtime semantics (`interpreter.md`).
+  runtime semantics (`AGENTS.md`, Runtime semantics).
 - `Bytecode` — bytecode VM compiled lazily per function from the
-  analysed AST, values in native D layout throughout (`bytecode.md`).
+  analysed AST, values in native D layout throughout (issue #540).
 - `IR` — lower-to-IR interpreter (`ir.md`).
 - `SystemLinker` — DMD codegen + real link + dlopen. The single
   behaviour oracle for every backend except `Ctfe` (`CONTEXT.md`).
@@ -52,8 +52,11 @@ LDC host). Excluded from `dub test`.
 
 Measurement contract for backend acceptance timings:
 
-- The gate command is the plan-owned `bin/bench.sh` invocation for the
-  driving package (`interpreter.md` §10, `bytecode.md` milestone 1).
+- The gate command for the Interpreter's driving package is
+  `bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r
+  1`; acceptance is both rows 156/156 and agreeing (issue #577 records
+  the current Interpreter numbers). Bytecode's driving-package gate is
+  tracked in issue #540.
 - Official timings run with garbage collection enabled. The harness
   currently disables the GC for the timed loop (`benchmarks/harness.d`);
   until it grows a lever, GC-disabled numbers are diagnostics, not

@@ -147,9 +147,24 @@ Druntime-first: when druntime already implements a runtime behaviour
 (associative arrays, array append and growth, hashing, exception
 chaining, TypeInfo), a backend executes druntime's real source or real
 hooks instead of carrying its own version. A local reimplementation
-needs a written justification in the owning plan and a stated
-retirement condition. `ai/plans/interpreter.md` owns the Interpreter's
-no-interception contract and the issue links for temporary deviations.
+needs a written justification in the owning GitHub issue and a stated
+retirement condition. Temporary deviations are tracked by their GitHub
+issues: monitors (#561), static-array construction (#562), array
+allocation and length (#565), append and reserve (#566), exception
+chaining (#568), concatenation (#569), and the class object header
+(#578).
+
+Guest bytes are identical to compiled D's layout in every backend.
+There is no fact about a guest value that native bytes cannot express:
+compiled D stores callable identity, delegate context, dynamic class
+type, and TypeInfo identity as pointer-sized words inside the value,
+and so does each backend. No table keyed by a guest address supplements
+a stored value. The only permitted side structure is a lookup keyed by
+the stored value itself — an identity pointer resolved to an
+interpreted callable, or a trampoline address aliased to that same
+identity. An ordinary byte copy, move, or clear carries the value with
+no reconciliation. Known deviations: the Interpreter class object
+header (#578) and retention of address-keyed tables (#563).
 
 
 # Do nots
