@@ -4,8 +4,8 @@
 // generated code meets a matching DMD druntime/extern(D) ABI, and writes the
 // result frame to the results file. See bench-exec/run_wire.d and
 // ai/spikes/ldc-eh/FINDINGS.md for why this cannot happen in the LDC host.
-import run_wire: RunKind, RunRequest, UnitTestSymbol, WireResult,
-    decodeRequest, encodeResults, encodeError;
+import run_wire: RunKind, RunRequest, RunResponse, UnitTestSymbol, WireResult,
+    decodeRequest, encodeResults, encodeError, setResultsDgcAllocation;
 
 int main(string[] args) {
     import std.file: read, write;
@@ -19,9 +19,20 @@ int main(string[] args) {
     // An infrastructure failure (unloadable .so, missing symbol) becomes an
     // error frame the host decodes and rethrows; a failing unittest is a
     // normal result caught per test in runUnitTest, not an error frame.
+    const requestBytes = cast(ubyte[]) read(args[1]);
     ubyte[] output;
-    try
-        output = encodeResults(runRequest(decodeRequest(cast(ubyte[]) read(args[1]))));
+    try {
+        import core.memory: GC;
+
+        const allocationBaseline = GC.allocatedInCurrentThread;
+        output = encodeResults(RunResponse(
+            0,
+            runRequest(decodeRequest(requestBytes)),
+        ));
+        output.setResultsDgcAllocation(
+            GC.allocatedInCurrentThread - allocationBaseline,
+        );
+    }
     catch (Throwable throwable)
         output = encodeError(throwable.msg);
 

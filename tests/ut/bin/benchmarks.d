@@ -30,6 +30,62 @@ unittest {
     opts.fixtures.should == ["extra.d"];
 }
 
+@("benchmarkMeasurementSeparatesFirstVerdictFromLaterCalls")
+unittest {
+    import benchmarks.harness: measureVerdictsWithResults;
+
+    size_t invocation;
+    const measured = measureVerdictsWithResults(
+        () { return ++invocation; },
+        2,
+        3,
+    );
+
+    measured.firstResult.should == 1;
+    measured.warmupResults.should == [2, 3];
+    measured.results.should == [4, 5, 6];
+}
+
+@("benchmarkMeasurementReportsFirstVerdictDgcAllocation")
+unittest {
+    import benchmarks.harness: measureVerdictsWithResults;
+    import core.memory: GC;
+
+    ubyte[] retained;
+    const measured = measureVerdictsWithResults(
+        () {
+            const before = GC.allocatedInCurrentThread;
+            retained = new ubyte[](4096);
+            return GC.allocatedInCurrentThread - before;
+        },
+        0,
+        1,
+    );
+
+    assert(measured.firstResult > 0);
+    measured.first.dGcAllocation.should == measured.firstResult;
+}
+
+@("benchmarkMeasurementReportsRepeatedVerdictDgcAllocation")
+unittest {
+    import benchmarks.harness: measureVerdictsWithResults;
+    import core.memory: GC;
+
+    ubyte[][] retained;
+    const measured = measureVerdictsWithResults(
+        () {
+            const before = GC.allocatedInCurrentThread;
+            retained ~= new ubyte[](4096);
+            return GC.allocatedInCurrentThread - before;
+        },
+        0,
+        1,
+    );
+
+    assert(measured.results[0] > 0);
+    measured.repeated.dGcAllocation.should == measured.results[0];
+}
+
 @("benchmarkBackendsIncludeInterpreter")
 unittest {
     import benchmarks.backends: BackendEnv, makeRunners;
@@ -146,11 +202,13 @@ unittest {
                 runs[0].displayName,
                 "frontend",
                 "n/a",
+                "n/a",
                 runs[0].frontend,
             ),
             BenchmarkRow(
                 runs[1].displayName,
                 "frontend",
+                "n/a",
                 "n/a",
                 runs[1].frontend,
             ),
@@ -282,6 +340,34 @@ kill -ABRT $$
     }
 }
 
+@("executorWireResultCarriesDgcAllocation")
+unittest {
+    import run_wire:
+        RunResponse, WireResult, decodeResults, encodeResults;
+
+    const response = decodeResults(encodeResults(RunResponse(
+        4096,
+        [WireResult(true, "test0", "fixture.d:1", "")],
+    )));
+
+    response.dGcAllocation.should == 4096;
+    response.results.should == [
+        WireResult(true, "test0", "fixture.d:1", ""),
+    ];
+}
+
+@("executorWireResultCanRecordAllocationAfterEncoding")
+unittest {
+    import run_wire:
+        RunResponse, decodeResults, encodeResults,
+        setResultsDgcAllocation;
+
+    auto bytes = encodeResults(RunResponse.init);
+    bytes.setResultsDgcAllocation(8192);
+
+    decodeResults(bytes).dGcAllocation.should == 8192;
+}
+
 @("renderBenchmarkSectionShowsCompileTime")
 unittest {
     import benchmarks.harness: Result;
@@ -293,8 +379,11 @@ unittest {
     const report = renderBenchmarkSection(
         "post-parse",
         [
-            BenchmarkRow("pkg", "bytecode", "3/3", timing, nullable(12.msecs)),
-            BenchmarkRow("pkg", "ctfe", "3/3", timing),
+            BenchmarkRow(
+                "pkg", "bytecode", "repeated", "3/3", timing,
+                nullable(12.msecs),
+            ),
+            BenchmarkRow("pkg", "ctfe", "repeated", "3/3", timing),
         ],
     );
 
@@ -303,6 +392,52 @@ unittest {
     // not shows n/a in the same column.
     assert(report.canFind("12.000 ms"));
     assert(report.canFind("n/a"));
+}
+
+@("renderBenchmarkSectionSeparatesFirstAndRepeatedVerdicts")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: msecs;
+
+    const report = renderBenchmarkSection(
+        "post-parse",
+        [
+            BenchmarkRow(
+                "pkg", "bytecode", "first", "3/3",
+                Result(7.msecs, 7.msecs, 0.0, 1024),
+            ),
+            BenchmarkRow(
+                "pkg", "bytecode", "repeated", "3/3",
+                Result(2.msecs, 2.msecs, 0.0, 512),
+            ),
+        ],
+    );
+
+    "verdict".should.be in report;
+    "first".should.be in report;
+    "repeated".should.be in report;
+}
+
+@("renderBenchmarkSectionNamesDgcAllocationMetricAndPolicy")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: msecs;
+    import std.algorithm.searching: canFind;
+
+    const report = renderBenchmarkSection(
+        "post-parse",
+        [
+            BenchmarkRow(
+                "pkg", "bytecode", "first", "3/3",
+                Result(7.msecs, 7.msecs, 0.0, 1536),
+            ),
+        ],
+    );
+
+    "enabled".should.be in report;
+    "GC.allocatedInCurrentThread delta".should.be in report;
+    assert(!report.canFind("GC used ram delta"));
+    "1.5 KiB".should.be in report;
 }
 
 @("renderPreparationSectionReportsFailuresAsPreparationStatus")
