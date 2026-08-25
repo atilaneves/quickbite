@@ -3129,8 +3129,10 @@ static foreach (backend; Matrix!(
 
 // The `void`-element sibling: `void` has no loadable scalar value at all,
 // so a `void[N]` element's own storage stays whatever zero bytes its
-// allocation already gave it. `Interpreter` cannot yet write this
-// storage's default value either.
+// allocation already gave it. `Interpreter`'s `writeValue` has no arm for
+// a `void`-typed leaf, so writing this default falls through to its final
+// refusal -- a dataseg default-write gap in the same family as issue
+// #517's enum-place gap.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `buf` cannot be read at compile time"),

@@ -6503,7 +6503,10 @@ static foreach (backend; Matrix!(
 // type is `string`, not an integral, still defaults to its own declared
 // member -- not the empty string a plain `string` variable's own unset
 // value would be. `Ctfe` cannot read dataseg storage at compile time.
-// `Interpreter` does not yet index into this shape of dataseg storage.
+// `Interpreter`'s `Place.index` matches only a literal static-array,
+// pointer, or slice DMD type; it never unwraps an enum type to its base
+// type's own representation, so a non-scalar-base enum place always
+// refuses here regardless of the base's shape (issue #517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `s` cannot be read at compile time"),
@@ -6530,7 +6533,8 @@ static foreach (backend; Matrix!(
 // The array-element counterpart: a `string`-base enum element of a
 // module-level static array still defaults to its own declared member,
 // the same way a plain `int` element defaults to `0`. `Interpreter` has
-// the same indexing gap as the whole-variable fixture above.
+// the same `Place.index` gap as the whole-variable fixture above (issue
+// #517); scope (element vs. whole variable) makes no difference.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `arr` cannot be read at compile time"),
@@ -6558,7 +6562,9 @@ static foreach (backend; Matrix!(
 // The struct-field counterpart: a `string`-base enum field with no
 // initializer of its own still takes the enum's own declared default
 // member, the same way the integral-base enum field above already does.
-// `Interpreter` has the same indexing gap as the two fixtures above.
+// `Interpreter` has the same `Place.index` gap as the two fixtures above
+// (issue #517); scope (struct field vs. whole variable) makes no
+// difference.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `t` cannot be read at compile time"),
@@ -6585,8 +6591,10 @@ static foreach (backend; Matrix!(
 
 // The static-array-base counterpart: an enum whose base type is itself a
 // static array still defaults to its own declared member, not the base
-// array's own all-zero default. `Interpreter` has the same indexing gap
-// as the string-base fixtures above.
+// array's own all-zero default. `Interpreter` has the same `Place.index`
+// gap as the string-base fixtures above (issue #517): `_type.isTypeSArray`
+// is false for the enum type itself, so this static-array-base place
+// refuses too, the same as a slice-base place does.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `x` cannot be read at compile time"),
@@ -6613,8 +6621,11 @@ static foreach (backend; Matrix!(
 
 // The struct-base counterpart: an enum whose base type is a struct still
 // defaults to its own declared member, not the struct's own field-wise
-// `.init`. `Interpreter` does not yet resolve a struct-typed enum
-// variable's own field access.
+// `.init`. `Interpreter`'s `placeOfLvalue` checks a `DotVarExp` receiver's
+// place against a literal struct/class/pointer DMD type without unwrapping
+// an enum type to its base type, so a struct-base enum place refuses
+// field access -- the same enum-place gap as issue #517, on a different
+// dispatch point.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `p` cannot be read at compile time"),
@@ -6636,6 +6647,245 @@ static foreach (backend; Matrix!(
             unittest {
                 assert(p.x == 1);
                 assert(p.y == 2);
+            }
+        });
+    }
+}
+
+// A string-base enum whose declared default is explicitly `null`
+// (`enum S: string { a = null }`) is a genuine null string -- the same
+// all-zero slice descriptor a plain `string` variable's own unset value
+// already is -- not a shape the enum-default writer should refuse.
+// `Ctfe` cannot read dataseg storage at compile time. `Interpreter` does
+// not lay out an enum-typed place with a slice base as a slice, so the
+// identity comparison tries to read it as a native scalar instead
+// (issue #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `s` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.loadScalar: type is " ~
+        "not a native scalar type"),
+)) {
+    @("dataseg.moduleStringEnumNullDefaultIsNullSlice." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum S: string { a = null }
+
+            __gshared S s;
+
+            unittest {
+                assert(s is null);
+            }
+        });
+    }
+}
+
+// The array-base counterpart: an `int[]`-base enum whose declared default
+// is an empty array literal (`enum E: int[] { a = [] }`) is likewise a
+// genuine empty slice, not a shape the enum-default writer should refuse.
+// `Ctfe` and `Interpreter` have the same gaps as the fixture above (issue
+// #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `e` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.loadScalar: type is " ~
+        "not a native scalar type"),
+)) {
+    @("dataseg.moduleArrayEnumEmptyDefaultIsNullSlice." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E: int[] { a = [] }
+
+            __gshared E e;
+
+            unittest {
+                assert(e is null);
+            }
+        });
+    }
+}
+
+// A `char[2]`-base enum's declared default keeps a `StringExp` typed
+// `char[2]` (DMD does not lower it to an `ArrayLiteralExp`), the same
+// static-array-base shape as the `int[2]`-base fixture above but with a
+// string literal in place of an array literal. `Ctfe` cannot read dataseg
+// storage at compile time; `Interpreter` has the same `Place.index` gap
+// as the other static-array-base fixture above (issue #517). Comparing a
+// `char[2]` local to a string literal (`c == "ab"`) is unsupported in
+// bytecode core even outside an enum -- a pre-existing equality-compiler
+// gap, not this default-writer's own decline.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported equality in bytecode core: c == \"ab\""),
+)) {
+    @("dataseg.moduleCharArrayEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum C: char[2] { a = "ab" }
+
+            __gshared C c;
+
+            unittest {
+                assert(c == "ab");
+            }
+        });
+    }
+}
+
+// A struct-base enum whose declared member has a nested-struct field
+// still defaults to its own declared member, the same way the flat
+// `int`-field struct-base fixture above already does. `Ctfe` cannot read
+// dataseg storage at compile time; `Interpreter` has the same
+// `placeOfLvalue` gap as the flat struct-base fixture above (issue #517).
+// `writeStructLiteralFieldBytes` writes only scalar/floating-point
+// fields, so a nested-struct field declines and the variable's own
+// registration is refused.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `q` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: " ~
+        "DotVarExp receiver is not a struct-, class-, or pointer-typed " ~
+        "place"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: q.i.x"),
+)) {
+    @("dataseg.moduleNestedStructEnumDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x; }
+            struct P { Inner i; }
+            enum Q: P { a = P(Inner(7)) }
+
+            __gshared Q q;
+
+            unittest {
+                assert(q.i.x == 7);
+            }
+        });
+    }
+}
+
+// The `wstring`-base counterpart of the `string`-base fixture above: a
+// `wchar`-code-unit-width enum still defaults to its own declared member.
+// `Ctfe` cannot read dataseg storage at compile time; `Interpreter` has
+// the same `Place.index` gap as the string-base fixture above (issue
+// #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `w` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleWstringEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum W: wstring { a = "xy"w }
+
+            __gshared W w;
+
+            unittest {
+                assert(w.length == 2);
+                assert(w[1] == 'y');
+            }
+        });
+    }
+}
+
+// The `dstring`-base twin of the fixture above: a `dchar`-code-unit-width
+// enum still defaults to its own declared member. `Ctfe` and `Interpreter`
+// have the same gaps as the `wstring`-base fixture above (issue #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `d` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleDstringEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum D: dstring { a = "xy"d }
+
+            __gshared D d;
+
+            unittest {
+                assert(d.length == 2);
+                assert(d[1] == 'y');
+            }
+        });
+    }
+}
+
+// An enum whose own base type is another enum (`enum T: S`) still resolves
+// its declared member through `S`'s own string-base representation, not a
+// scalar default -- `Type.defaultInit` on `T` returns `S.a`'s own value
+// expression, already the shape `writeEnumDefaultInitializerBytes` expects.
+// `Ctfe` cannot read dataseg storage at compile time; `Interpreter` has
+// the same `Place.index` gap as the string-base fixture above (issue
+// #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `t` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleEnumBaseEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum S: string { a = "x" }
+            enum T: S { b = S.a }
+
+            __gshared T t;
+
+            unittest {
+                assert(t == "x");
+            }
+        });
+    }
+}
+
+// The nested-static-array-base counterpart of the static-array-base
+// fixture above: an enum whose base type is itself a two-dimensional
+// static array still defaults to its own declared member. `Ctfe` cannot
+// read dataseg storage at compile time; `Interpreter` has the same
+// `Place.index` gap as the static-array-base fixture above (issue #517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleNestedStaticArrayEnumDefaultsToDeclaredMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum A: int[2][2] { a = [[1, 2], [3, 4]] }
+
+            __gshared A m;
+
+            unittest {
+                size_t r = 1;
+                assert(m[r][1] == 4);
             }
         });
     }

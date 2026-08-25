@@ -754,3 +754,9 @@
   recursing structurally into its base type's own default (e.g. a
   struct-base enum's field-wise `.init`): call `Type.defaultInit` on the
   enum type itself, which already returns the real default expression.
+
+- The interpreter backend's place-dispatch helpers (`Place.index`,
+  `Place.loadScalar`, `placeOfLvalue`'s `DotVarExp` receiver check) match a
+  literal `isTypeSArray`/`isTypeDArray`/`isTypeStruct`/etc. tag without
+  unwrapping an enum type, so ANY non-scalar-base enum place refuses there
+  regardless of the base's shape (issue #517).

@@ -10190,8 +10190,12 @@ package(quickbite.backends.bytecode) struct Compiler {
     // base, a `StructLiteralExp` for a struct base -- rather than the
     // all-zero or field-wise default a plain variable of the same shape
     // would get. Declines (`false`, `bytes` untouched) for a
-    // representation none of those literal writers cover, or when the
-    // default expression is not the expected shape.
+    // representation the switch itself refuses (a vector base, or one of
+    // the scalar-ish shapes with no enum-default writer of its own), and
+    // for a struct base whose declared member has an aggregate
+    // (`Tstruct`/`Tsarray`/`Tarray`/`Tdelegate`) field --
+    // `writeStructLiteralFieldBytes` writes only scalar/floating-point
+    // fields.
     private bool writeEnumDefaultInitializerBytes(Type type, ubyte[] bytes) {
         import dmd.location: Loc;
         import dmd.typesem: defaultInit;
@@ -10206,7 +10210,22 @@ package(quickbite.backends.bytecode) struct Compiler {
                     type, expression, bytes,
                 );
             case staticArray:
-            case vector:
+                // A `char[N]`/`wchar[N]`/`dchar[N]`-base enum's default
+                // keeps a `StringExp` typed to the static array (DMD does
+                // not lower it to an `ArrayLiteralExp`) -- the
+                // static-array counterpart of the `StringExp` branch in
+                // `writeEnumDynamicArrayDefaultBytes` -- so its code
+                // units are copied directly the same way.
+                if (auto string_ = expression.isStringExp) {
+                    import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
+
+                    auto codeUnitBytes = stringCodeUnitBytes(string_);
+                    if (codeUnitBytes.length != bytes.length)
+                        return false;
+                    bytes[] = codeUnitBytes[];
+                    return true;
+                }
+
                 auto elementType = type.toBasetype.nextOf;
                 auto literalBytes = moduleStaticArrayLiteralInitializerBytes(
                     expression.isArrayLiteralExp, elementType,
@@ -10228,6 +10247,12 @@ package(quickbite.backends.bytecode) struct Compiler {
             case complexDouble:
             case unavailable:
             case lazyDelegate:
+            // `TypeVector` is not a `TypeNext`: `Type.nextOf` has no
+            // override for it and returns `null`, so a vector-base enum's
+            // element type is never available the way a static array's
+            // is -- decline explicitly rather than pass a null element
+            // type through to `moduleStaticArrayLiteralInitializerBytes`.
+            case vector:
                 return false;
         }
     }
@@ -10244,7 +10269,13 @@ package(quickbite.backends.bytecode) struct Compiler {
     // slot, or one element/field's own slice within a larger buffer);
     // the enum's default byte content is pushed into a fresh
     // `literalBlocks` entry, the same stable-address mechanism every
-    // other module-level array default already uses.
+    // other module-level array default already uses. A declared default
+    // of `null` (`enum S: string { a = null }`) or an empty literal
+    // (`enum E: int[] { a = [] }`) is a genuine null/zero-length slice --
+    // the same all-zero descriptor `bytes` already holds -- so it is
+    // accepted directly rather than handed to
+    // `moduleDynamicArrayLiteralInitializerBytes`, which declines any
+    // expression that is not a non-empty array literal.
     private bool writeEnumDynamicArrayDefaultBytes(
         Type type,
         Expression expression,
@@ -10254,6 +10285,13 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         if (bytes.length != sliceDescriptorSize)
             return false;
+
+        auto arrayLiteral = expression.isArrayLiteralExp;
+        if (isNullLiteral(expression) ||
+            (arrayLiteral !is null &&
+                (arrayLiteral.elements is null ||
+                    arrayLiteral.elements.length == 0)))
+            return true;
 
         ubyte[] literalBytes;
         size_t count;
