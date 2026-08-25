@@ -5090,3 +5090,79 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A `static` local's own declared field initializer applies even though
+// its storage lives for the whole module lifetime, not per call: each
+// call sees the same one-time-initialized value, not zero. `Ctfe` cannot
+// read dataseg storage at compile time. `LLVMJit` never applies a local
+// static variable's declared default at all, the same known gap
+// `datasegLocal.explicitInitializerRunsOnce` already pins for an explicit
+// initializer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "0 != 3"),
+)) {
+    @("datasegLocal.structFieldDefaultInitializerApplies." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            unittest {
+                static int retries() {
+                    static Config config;
+                    return config.retries;
+                }
+                assert(retries() == 3);
+            }
+        });
+    }
+}
+
+// A module-level struct global with no explicit initializer still applies
+// its declared field initializer, the same way a plain local variable of
+// the same struct type would. `Ctfe` cannot read dataseg storage at
+// compile time.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+)) {
+    @("dataseg.moduleStructGlobalDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            __gshared Config config;
+
+            unittest {
+                assert(config.retries == 3);
+            }
+        });
+    }
+}
+
+// The `immutable` counterpart of the fixture above: an `immutable` module
+// global with no explicit initializer is still readable, and its value
+// still comes from the struct's declared field initializer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `config` cannot be read at compile time"),
+)) {
+    @("dataseg.immutableModuleStructGlobalDefaultInitializerApplies." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Config { int retries = 3; }
+
+            immutable Config config;
+
+            unittest {
+                assert(config.retries == 3);
+            }
+        });
+    }
+}

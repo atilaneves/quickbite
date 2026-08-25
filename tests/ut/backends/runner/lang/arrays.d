@@ -3129,6 +3129,57 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `static` local with no explicit initializer at all takes its
+// declared type's own default value, not zero: a floating-point type
+// defaults to NaN, so the value never compares equal to itself. `Ctfe`
+// cannot read dataseg storage at compile time. `LLVMJit` never applies
+// this default either, the same known gap
+// `datasegLocal.structFieldDefaultInitializerApplies` already pins for a
+// struct field's own default.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `value` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "1.06074e-314 == 1.06074e-314"),
+)) {
+    @("datasegLocal.scalarFloatingPointDefaultsToNaN." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static double stash() {
+                    static double value;
+                    return value;
+                }
+                const value = stash();
+                assert(value != value);
+            }
+        });
+    }
+}
+
+// The narrow-character counterpart of the fixture above: `char.init` is
+// `0xFF`, not `0`. `Ctfe` cannot read dataseg storage at compile time.
+// `LLVMJit` never applies this default either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "' ' != 255"),
+)) {
+    @("datasegLocal.scalarCharDefaultsToMaxValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static char letter() {
+                    static char c;
+                    return c;
+                }
+                assert(letter() == 0xFF);
+            }
+        });
+    }
+}
+
 // Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
 // sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
 // DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts
@@ -6894,6 +6945,29 @@ static foreach (backend; Matrix!(
             unittest {
                 uint[3] storage;
                 assert(count(cast(ushort[]) storage[]) == 6);
+            }
+        });
+    }
+}
+
+// A `static` local static array of struct elements, initialized from an
+// array literal of struct-construction-call elements, is still readable
+// by field after indexing -- the struct-element counterpart of
+// `datasegLocal.nestedArrayInitializerPersistsAcrossCalls` above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal, "0 != 4"),
+)) {
+    @("datasegLocal.structElementArrayLiteralInitializerIsReadable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            unittest {
+                static immutable Point[2] points = [Point(1, 2), Point(3, 4)];
+                size_t index = 1;
+                assert(points[index].y == 4);
             }
         });
     }

@@ -5666,6 +5666,33 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
+
+        // A dataseg (`static`/`__gshared`) local's own module-storage
+        // registration declined it (an aggregate-typed element, reaching
+        // this fallback per `compileVariableDeclaration`'s immutable/const
+        // rule) before DMD's usual lowering into an `ExpInitializer` had a
+        // chance to run, unlike a plain frame local, whose initializer is
+        // already fully resolved by the time its declaration is compiled --
+        // a bare array literal (`Point[2] p = [Point(1, 2), Point(3, 4)];`)
+        // still parses as an `ArrayInitializer`. This is the same AST quirk
+        // `moduleDynamicArrayInitializerExpressionOrNull` already
+        // normalises for a module variable's own registration.
+        if (initializer is null && variable.isDataseg) {
+            import dmd.initsem: initializerToExpression;
+
+            resolveNonRootInitializer(variable);
+            auto expression = variable._init is null
+                ? null
+                : variable._init.initializerToExpression;
+            if (expression !is null &&
+                compileStaticArrayValueInto(
+                    offset, variable.type, initializerExpression(expression),
+                ))
+            {
+                return;
+            }
+        }
+
         if (initializer is null)
             throw new Exception(text(
                 "Unsupported initializer in bytecode core: ",
@@ -9826,8 +9853,20 @@ package(quickbite.backends.bytecode) struct Compiler {
         const hasDefaultInitializer =
             moduleVariableHasDefaultInitializer(declaration);
 
+        // The default-initializer branch used to write nothing, leaving the
+        // module block all-zero: correct only for a struct whose every
+        // field's own declared default is zero. A field with a non-zero
+        // declared default (`struct Config { int retries = 3; }`) needs its
+        // own bytes written the same way a default-initialized struct
+        // element of a module-level static array already does.
         ubyte[] literalBytes;
-        if (!hasDefaultInitializer) {
+        literalBytes.length = size;
+        if (hasDefaultInitializer) {
+            if (!writeStructDefaultInitializerBytes(
+                    declaration.type, literalBytes,
+                ))
+                return null;
+        } else {
             literalBytes = moduleStructLiteralInitializerBytes(
                 declaration, size,
             );
@@ -9839,8 +9878,7 @@ package(quickbite.backends.bytecode) struct Compiler {
             allocateModuleBytes(size, typeFacts(declaration.type).alignment);
         registerModuleDeclaration(declaration).moduleStruct =
             ModuleStructVariable(offset, size);
-        if (!hasDefaultInitializer)
-            _program.moduleData[offset .. offset + size] = literalBytes[];
+        _program.moduleData[offset .. offset + size] = literalBytes[];
         return declarationRecordView(declaration).moduleStructOrNull;
     }
 
@@ -10125,6 +10163,20 @@ package(quickbite.backends.bytecode) struct Compiler {
             return bytes;
         }
 
+        // A struct, non-string dynamic array, or delegate element type has
+        // no `ScalarType` of its own -- `scalarType` throws for one rather
+        // than returning a sentinel, the same refusal-not-crash contract
+        // every other module-storage decline in this file already keeps.
+        // Declining here (instead of letting the throw propagate out of
+        // `moduleDeclarationRecord`) lets the caller's immutable/const frame
+        // fallback (`compileVariableDeclaration`) get a chance at the
+        // declaration instead.
+        if (typeFacts(elementType).representation !=
+            DeclarationRepresentation.scalar)
+        {
+            return null;
+        }
+
         const elementScalarType = scalarType(elementType);
 
         ubyte[] bytes;
@@ -10281,8 +10333,11 @@ package(quickbite.backends.bytecode) struct Compiler {
         auto initializer = declaration._init is null
             ? null
             : declaration._init.isExpInitializer;
+        // No initializer at all (`__gshared float f;`): D's own default
+        // (`Type.init`), not an all-zero block -- the scalar counterpart of
+        // `allocateModuleComplexVariable`'s NaN default for `cdouble`.
         if (initializer is null)
-            return null;
+            return moduleScalarDefaultBytes(type);
 
         auto expression = initializerExpression(initializer.exp);
         if (isNullLiteral(expression))
@@ -10305,6 +10360,47 @@ package(quickbite.backends.bytecode) struct Compiler {
             "Unsupported module scalar initializer in bytecode core: ",
             declarationChars(declaration),
         ));
+    }
+
+    // A scalar's own `.init` bytes, for a module variable with no
+    // initializer at all: `bool`/the signed and unsigned integer widths
+    // default to `0`, which `allocateModuleBytes`'s zero-filled growth
+    // already gives for free -- only the floating-point widths (default
+    // NaN, confirmed against the `SystemLinker` real-compile oracle, the
+    // same way `allocateModuleComplexVariable`'s own NaN default for
+    // `cdouble` already is) and the narrow character types (default
+    // `0xFF`/`0xFFFF`/`0xFFFFFFFF`, D's own all-bits-set convention for a
+    // "no character" value) need bytes written explicitly here. A
+    // pointer/associative-array/class-reference reaches this function
+    // reinterpreted as `ScalarType.ulong_` (`allocateModuleScalarVariable`),
+    // whose own zero default is also free.
+    private ubyte[] moduleScalarDefaultBytes(in ScalarType type) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        switch (type) with (ScalarType) {
+            case char_:
+                return [ubyte(0xFF)];
+            case wchar_:
+                return [ubyte(0xFF), ubyte(0xFF)];
+            case dchar_:
+                return [ubyte(0xFF), ubyte(0xFF), ubyte(0xFF), ubyte(0xFF)];
+            case float_:
+                return nativeToLittleEndian(float.nan).dup;
+            case double_:
+                return nativeToLittleEndian(double.nan).dup;
+            case real_: {
+                union RealBytes {
+                    real value;
+                    ubyte[real.sizeof] bytes;
+                }
+
+                RealBytes raw;
+                raw.value = real.nan;
+                return raw.bytes.dup;
+            }
+            default:
+                return new ubyte[size(type)];
+        }
     }
 
     private void resolveNonRootInitializer(VarDeclaration declaration) {
