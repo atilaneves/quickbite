@@ -292,12 +292,9 @@ public struct Place {
     // Copy an owned aggregate into this place. A catch variable is a
     // pointer-typed slot even when its source is a class reference, so it
     // stores the referenced body rather than the source reference slot.
-    // `copyFromUnchecked`, not `copyPlaceValue`: `place_value.writeValue`
-    // (this function's sole caller) already dispatches a native-aggregate
-    // value to here ahead of every metadata-bearing arm (TypeName,
-    // delegate, function pointer), so `sourceType` is always a plain
-    // aggregate or a class reference, never a type this module's
-    // out-of-band tables key on.
+    // `copyFromUnchecked`, not `copyPlaceValue`: this path copies a plain
+    // aggregate or class reference. Metadata-bearing values use their
+    // address-keyed tables instead.
     public void copyFromNative(
         imported!"dmd.mtype".Type sourceType,
         void* sourceAddress,
@@ -317,9 +314,8 @@ public struct Place {
         writeNativeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
     }
 
-    // Read a scalar into the caller's statically selected host type. This is
-    // intentionally a typed operation: it is not a replacement value
-    // carrier. The caller selects T from the DMD expression type.
+    // Read a scalar into the caller's statically selected host type. The
+    // caller selects T from the DMD expression type.
     public T loadNativeScalar(T)() @trusted {
         import core.stdc.string: memcpy;
         import quickbite.backends.interpreter.layout: typeByteSize;
@@ -530,6 +526,24 @@ public Place placeAt(
     import quickbite.backends.interpreter.layout: declaredType;
 
     return Place(frame.bindingAddress(variable), declaredType(variable));
+}
+
+
+// Reset the complete native representation of one typed place. All-zero is
+// D's representation for the null references, slices, and delegates this
+// interpreter stores in native layout; it also gives aggregate padding a
+// deterministic state.
+package void clearPlace(Place place) @safe {
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    zeroBytes(place.address, typeByteSize(place.type));
+}
+
+
+private void zeroBytes(void* address, in size_t length) pure nothrow @trusted {
+    import core.stdc.string: memset;
+
+    memset(address, 0, length);
 }
 
 

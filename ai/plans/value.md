@@ -7,84 +7,10 @@ evidence behind the settled representation — native-layout storage as the
 only value authority, destination-passing evaluation into typed places,
 a typed-address-only FFI boundary — live in `ai/research/interpreter.md`.
 
-The completion marker closes the track: deleting
-`source/quickbite/backends/interpreter/expression_result.d` (item 10).
-Production Interpreter optimisation begins only after item 10 deletes the
-carrier; timings follow `overview.md`'s measurement contract.
-
 ## Remaining work
 
-The remaining value-track work is the carrier deletion (item 10) and the
-language-surface tasks below. Item numbers remain stable for existing
-cross-references.
-
-### Item 10 — Carrier deletion
-
-Expression evaluation has one dispatch: `constructInto` for an observed result
-and `executeForEffectImpl` for a discarded result. Arm-local adapters can still
-return `ExpressionResult`, but no separate result-returning expression walk
-exists. Assignment evaluates its live place once, constructs its right-hand
-side in separate fresh typed temporary storage, then applies D-defined
-assignment, move, postblit, and destruction semantics to that place. Never
-construct the right-hand side directly in a live target: an alias could observe
-a partially constructed value.
-
-Calls evaluate each non-lazy argument once into a typed `Place`; `ref` and
-`out` arguments pass either their resolved lvalue place or a typed synthetic
-temporary. Function, member, delegate, constructor, and FFI binding consumes
-only those places. Member and delegate receivers are places too. Reverse FFI
-callbacks borrow the typed libffi buffers directly, and callable metadata is
-keyed by the delegate place address. A non-void call constructs into the
-caller-owned typed destination, a void call has no destination or result, and
-a `ref` return supplies its address. Native results use the destination's
-address directly when the ABI permits it.
-
-Compiler builtins are not call interceptions. DMD's semantic builtin identity
-and the declaration's scalar signature select one generic operation. Its
-operands come from typed places, DMD evaluates the builtin, and the result is
-stored directly in the caller's typed destination. The Interpreter has no
-second builtin identity enum, function-name list, or per-function result path.
-
-For a bodyless declaration reached through a function-pointer call, the
-declaration supplies the native symbol and the call-site function type supplies
-the ABI. The plain function pointer has no hidden delegate receiver. Reverse
-callbacks use the root execution's durable trampoline session. A lowered
-delegate parameter whose call-site ABI is a pointer binds the interpreted
-`ref` parameter to the pointed-to typed place.
-
-Call dispatch has no name-based interception. Do not add a carrier bridge or
-another name-based result path.
-
-Stored bindings, module variables, and class field defaults remain typed
-places. A value copy snapshots address-keyed delegate, function-pointer,
-symbolic `TypeInfo`, and nested-context metadata by byte offset before it
-clears the destination range. A consuming copy clears the source metadata only
-when the source and destination do not overlap. Callable and symbolic
-`TypeInfo` reads and writes use their typed metadata operations; the native
-bytes remain the only ordinary value storage. Qualification-only pointer
-copies have the same layout recursively through the pointee type.
-
-Exception transport uses a class-specific identity: the DMD class type and
-the object-body address. Local class owners and borrowed native-exception
-field images stay in separate address-keyed `NativeAggregate` tables. Catch
-binding stores only the class reference, and exception chaining stores the
-next object address in both the typed class field and the runtime-owned link
-table. Do not turn this identity into a general value wrapper.
-
-Delete the remaining carrier residue at the callable, symbolic `TypeInfo`,
-and dynamic-class ownership boundaries. This includes `readStoredValue`,
-`writeStoredValue`, `constructedExpressionValue`, the carrier receiver and
-class-identity adapters, `readValue` and `writeValue`, the boxed overloads in
-`aggregate_value.d`, and `expression_result.d`. Delete the implementation-
-detail tests in `tests/ut/backends/interpreter/place_value.d` and
-`tests/ut/backends/interpreter/native_array.d`, then update the test module
-aggregation. Inventory real corpus crossings that need an interpreted
-callable or `TypeInfo` to escape to native code. The standing refusal holds:
-no trampoline or proxy until a real crossing exists.
-- **Deferred findings** (need a proving test first, AGENTS.md): a native
-  delegate slot's `.ptr`/`.funcptr` always throws, pre-existing; the
-  opAssign-postblit interaction candidate from the branch review is
-  unverified.
+The remaining value-track work is the language-surface and open-design work
+below. Item numbers remain stable for existing cross-references.
 
 ### Item 4 — Workingness track
 
@@ -100,7 +26,7 @@ remaining armed destructors; compiled D chains it and still runs every one.
 Pointer-slice formation past an allocation remains unchecked when its result
 is not dereferenced, matching compiled D's contract; the allocated-block
 diagnostic is CTFE-only, so the Interpreter belongs in the
-compiled-behaviour matrix -- do not restore a boxed-storage bounds
+compiled-behaviour matrix -- do not add a storage bounds
 diagnostic for this operation.
 
 A whole-aggregate copy whose source is a pointer dereference stays on the
@@ -117,7 +43,7 @@ null slice is false.
 
 An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
-rebuilding the enclosing array would reintroduce boxed storage authority.
+rebuilding the enclosing array would create a second storage authority.
 
 A doubly-indexed receiver's evaluation-order contract only covers a static-
 array row (`m[outer][inner]` where `m[outer]` is a fixed-size array, e.g.
@@ -145,6 +71,10 @@ address it used, the same way the receiver-level
 `precomputedReceiverPointerAddress` precompute does for a bare
 `PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
 recovered by peeling.
+
+Two unverified language-surface findings need a proving test before work:
+a native delegate slot's `.ptr`/`.funcptr` access throws, and an `opAssign`
+and postblit interaction may disagree with compiled D.
 
 ### Druntime-first backlog (AGENTS.md rule)
 
@@ -191,8 +121,7 @@ Conventions, in order:
    an annotation. `[1, 2]` is `int[]`; `[1L, 2L]` is `long[]`; `[1:10]`
    is `int[int]`. Aggregates whose element type has no literal form stay
    ambiguous (`[1, 2]` could be `ubyte[]`) — `typeof` disambiguates, same
-   as the scalar case. No element-type metadata is needed on any value
-   carrier.
+   as the scalar case. No element-type metadata is needed on the value.
 5. Structs and enums round-trip via their rendered names (`Point(1, 2)`,
    `E.a`). Struct rendering walks declared fields only; compiler-synthesized
    context storage is never part of the display. Enum members render qualified
@@ -216,7 +145,7 @@ Conventions, in order:
 
 ## Test strategy
 
-Three layers replace structural `Value` assertions:
+Use three behaviour-test layers:
 
 1. Differential tests against the native oracle: run the same cell on the
    oracle and on the backend under test, assert identical display
@@ -249,11 +178,9 @@ Three layers replace structural `Value` assertions:
    observable value is untestable through the string, but also
    unobservable to any program — not a bug that can matter.
 
-The `Value` struct's own equality/rendering tests are deleted together
-with the struct. Do not pin a backend's runtime type via
-`typeof(expr).stringof` or any static-type channel: those are computed by
-the shared frontend and pass even when a backend widens a value at
-runtime.
+Do not pin a backend's runtime type via `typeof(expr).stringof` or any
+static-type channel: those are computed by the shared frontend and pass even
+when a backend widens a value at runtime.
 
 Conventions for representation fixtures: seed every value from a runtime
 function call so DMD cannot constant-fold the scenario away; scope

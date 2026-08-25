@@ -310,9 +310,7 @@ public string enumMemberQualifiedName(
 // same caveat `declaredTypeImpl` above gives for `VarDeclaration.type`;
 // this is the @trusted boundary. It only walks DMD's own already-populated
 // member list and reads each member's own already-computed constant value
-// and identifier -- no arithmetic of our own, the same "read DMD's own
-// state, no arithmetic of our own" trust `place_value.d`'s
-// `structTypeNameImpl` gives for reading a struct's own name.
+// and identifier -- no arithmetic of our own.
 private string enumMemberQualifiedNameImpl(
     imported!"dmd.mtype".TypeEnum type,
     in long value,

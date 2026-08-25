@@ -15,8 +15,8 @@ private:
 // slot, depending on platform and alignment) that `layout.typeByteSize`
 // reports correctly for THIS host, but treating it as a byte-for-byte portable
 // native scalar the way `float`/`double` are would bake in that padding as if
-// it were a stable cross-host fact. `place_value.d` owns the host-specific
-// `real` codec instead.
+// it were a stable cross-host fact. `Place` handles `real` through a direct
+// host-typed copy instead.
 //
 // Native-call operands and results now cross the FFI seam as typed places, so
 // this codec remains the interpreter's single scalar<->bytes authority there

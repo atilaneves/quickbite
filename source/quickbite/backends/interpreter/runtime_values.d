@@ -104,7 +104,7 @@ public void defaultValue(
 ) {
     import dmd.astenums: TY;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.place_value: clearPlace;
+    import quickbite.backends.interpreter.place: clearPlace;
 
     auto type = variableType.toBasetype;
     with (TY) final switch (type.ty) {

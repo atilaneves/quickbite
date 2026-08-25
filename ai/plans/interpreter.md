@@ -30,9 +30,8 @@ translation stay in its backend adapter.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
-concern owned with `value.md`'s prelude formatter. `value.md` item 10 moves
-expressions and nested function returns inside a unittest to caller-provided
-typed destinations.
+concern owned with `value.md`'s prelude formatter. Expressions and nested
+function returns inside a unittest use caller-provided typed destinations.
 
 ## Execution architecture
 
@@ -131,8 +130,6 @@ unwinds the activation. The endpoint follows `value.md`:
 - an rvalue constructs into a caller-provided typed destination; and
 - a call receives its result destination before the callee runs.
 
-`ExpressionResult` is a migration carrier, not part of this target interface.
-
 Guest associative arrays are druntime `Impl*` tables built by interpreted
 `core.internal.newaa` code, but two `Impl` fields still hold interpreter-world
 objects, so an AA must not cross the native-call seam; the seam work is
@@ -230,12 +227,10 @@ The remaining clean-sheet migration is:
 4. Represent return, break, continue, `goto`, and interpreted throw as explicit
    evaluation outcomes instead of mutable evaluator flags or host exceptions
    used for language control flow.
-5. Complete `value.md`'s place/destination-passing migration behind the same
-   execution interface and delete `ExpressionResult`.
-6. Split implementation files only where a private semantic module hides real
+5. Split implementation files only where a private semantic module hides real
    complexity and improves locality. Do not expose shallow helper interfaces
    merely to reduce `impl.d`'s line count.
-7. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
+6. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
    explicit continuation loop require evidence from the surviving
    implementation.
 
@@ -258,11 +253,11 @@ The remaining clean-sheet migration is:
 
 ```text
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
-- value representation choice (boxed vs native layout): ai/plans/value.md;
+- value and place semantics: ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
   raw source — templates and `static foreach` arrive pre-lowered);
-- general interpreter tuning, deferred until `value.md` item 10 deletes
-  the carrier (timings per `overview.md`'s measurement contract);
+- general interpreter tuning (timings per `overview.md`'s measurement
+  contract);
   execution-state lifetime correctness and bounded call setup remain here;
 - value-representation performance, owned by `value.md`.
 ```
@@ -294,20 +289,15 @@ Interpreter adapter
                one execution path, with no legacy marshalling fallback.
 value.md       how the interpreter represents runtime results and addressable
                storage. The meeting surface is wider than "a missing Value
-               kind": any frontier class rooted in recursive aggregate boxing
-               (synthetic pointers, cast-aliasing, allocation identity,
-               reinterpret loads) is value.md's, handled per the §8 triage
+               kind": synthetic pointers, cast-aliasing, allocation identity,
+               and reinterpret loads are value.md's, handled per the §8 triage
                rule — red fixture here, Interpreter omitted, root fix there.
-               value.md item 10 commits its end state: native-layout storage,
-               a place as an address plus its static type,
-               destination-passing evaluation, no FFI marshalling, and no
-               expression carrier. This plan owns the workingness track; the
-               representation track lands as oracle-green commits per
-               value.md item 10.
+               Its settled contract is native-layout storage, a place as an
+               address plus its static type, destination-passing evaluation,
+               and no FFI marshalling. This plan owns the workingness track.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 overview.md    the benchmarking measurement contract (GC policy, ratchet,
-               corpus selection). Tuning the machinery delivered here waits
-               for value.md item 10 and may not redefine language behavior
+               corpus selection). Tuning may not redefine language behavior
                or the `SystemLinker` oracle; correcting execution-state
                ownership and removing per-call state snapshots belongs to
                this plan.
@@ -351,11 +341,9 @@ without manufacturing a display value.
 
 Inside the walker, expression evaluation remains recursive because all real D
 code, including unittests, computes expressions and calls value-returning
-functions. Its endpoint is `value.md` item 10's contract: a call receives its
-caller's typed destination, an lvalue yields a place, scalar work uses
-statically typed host locals, and a statement executes with no result. Item 10
-owns the migration from the current interpreter-private expression carrier to
-that destination-passing contract.
+functions. A call receives its caller's typed destination, an lvalue yields a
+place, scalar work uses statically typed host locals, and a statement executes
+with no result.
 
 ## 8. Method: one standalone red/green unit test per reason
 
@@ -435,7 +423,7 @@ ceiling               pointers instead of addresses, cast-aliasing the
 Support for ceiling classes arrives via the representation change, not via
 name-based shims that approximate it — a shim that skips construction
 semantics or fabricates a hook's return value is a silent wrong answer, the
-worst failure class. A class whose root fix needs new boxed FFI marshalling
+worst failure class. A class whose root fix needs bespoke FFI marshalling
 gets the same gap-fixture-and-wait treatment (`value.md` decisions 17/18): a
 blocked package waits and re-earns its rows at the authority switch.
 
@@ -558,10 +546,9 @@ Cerealed-specific names and behavior.
 Cerealed is the first driving package, not the finish line. Automem is the
 second package and exercises allocators, reference-counted ownership,
 interfaces, nested callables, and native-layout mutation. Once both package
-gates are green, the next prioritized Interpreter work is `value.md` item 10:
-complete destination-passing evaluation and delete the expression carrier.
-Package-driven workingness continues in parallel through `value.md` item 4;
-do not restore legacy marshalling or value machinery for a later package.
+gates are green, profile the surviving Interpreter before tuning it.
+Package-driven workingness continues through `value.md` item 4; do not add
+legacy marshalling or separate value machinery for a later package.
 
 ### 11.1 automem — open disagreement queue
 
