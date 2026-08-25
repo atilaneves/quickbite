@@ -3139,7 +3139,8 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `value` cannot be read at compile time"),
-    Omit!(LLVMJit, Because.refusal, "1.06074e-314 == 1.06074e-314"),
+    Omit!(LLVMJit, Because.refusal,
+        "reads uninitialised storage, e.g. 1.06074e-314 == 1.06074e-314"),
 )) {
     @("datasegLocal.scalarFloatingPointDefaultsToNaN." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3175,6 +3176,29 @@ static foreach (backend; Matrix!(
                     return c;
                 }
                 assert(letter() == 0xFF);
+            }
+        });
+    }
+}
+
+// The wide-character counterpart of the fixture above: `dchar.init` is
+// `0xFFFF`, not `0xFFFFFFFF`. `Ctfe` cannot read dataseg storage at compile
+// time. `LLVMJit` never applies this default either.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(LLVMJit, Because.refusal, "' ' != 65535"),
+)) {
+    @("datasegLocal.scalarDcharDefaultsToMaxValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static dchar glyph() {
+                    static dchar c;
+                    return c;
+                }
+                assert(glyph() == 0xFFFF);
             }
         });
     }

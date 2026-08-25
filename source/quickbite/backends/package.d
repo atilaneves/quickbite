@@ -40,8 +40,6 @@ public abstract class TreeNodeBackend: Backend {
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        ensureModuleConstructorsRun(module_);
-
         TestResult[] cases;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
@@ -49,12 +47,6 @@ public abstract class TreeNodeBackend: Backend {
         });
 
         return cases;
-    }
-
-    // Runs a module's `shared static this`/`static this` bodies before its
-    // first unittest, matching compiled D's startup order. The default is
-    // a no-op, pending #543.
-    protected void ensureModuleConstructorsRun(Module module_) {
     }
 
     // Turn one backend execution result into the runner's public result.

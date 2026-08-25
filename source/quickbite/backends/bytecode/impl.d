@@ -23,16 +23,6 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
     // unittest path reuses it -- see `compile`'s two-argument overload for
     // why eval must not.
     private Compiler* _compiler;
-    // A module constructor must run exactly once per (Bytecode instance,
-    // module), not once per `runTests` call: the benchmark harness calls
-    // `runTests` repeatedly on the same instance and module (warmup plus
-    // measured runs), and `_compiler` -- and the dataseg state its module
-    // constructors write to -- persists across those calls. Keyed by
-    // `Module` identity: a caller that re-parses the same source into a new
-    // `Module` against the same persisted `_compiler` (the REPL's
-    // `runLoadedTests`) runs that module's constructors again over the same
-    // dataseg state, since the new `Module` is not yet in this table.
-    private bool[Module] _moduleConstructorsRun;
 
     public alias eval = Evaluator.eval;
 
@@ -42,6 +32,12 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         return runTests([module_]);
     }
 
+    // Each call is a fresh process: module storage is reset to its
+    // registration-time bytes (`Compiler.resetModuleData`), then every
+    // module's constructors run again -- `syncInitialModuleData` only
+    // snapshots newly allocated slots at registration time, so a ctor's
+    // writes are never part of that snapshot -- before that module's
+    // unittests run.
     public override imported!"quickbite.backends.runner".TestResult[] runTests(
         imported!"dmd.dmodule".Module[] modules,
     ) {
@@ -51,10 +47,12 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
             _compiler.resetModuleData;
 
         imported!"quickbite.backends.runner".TestResult[] cases;
-        foreach (module_; modules)
+        foreach (module_; modules) {
+            runModuleConstructors(module_);
             foreachUnitTestDeclaration(module_, (unitTest) {
                 cases ~= runUnitTest(unitTest);
             });
+        }
         return cases;
     }
 
@@ -109,11 +107,14 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         });
     }
 
-    protected override void ensureModuleConstructorsRun(Module module_) {
+    // Runs a module's `shared static this`/`static this` bodies, matching
+    // compiled D's startup order. Called from `runTests` for every module on
+    // every call, after module storage has been reset to its
+    // registration-time bytes: a fresh reset-then-rerun each time matches a
+    // fresh process running the module's startup sequence from scratch, so
+    // there is nothing here to memoise across calls.
+    private void runModuleConstructors(Module module_) {
         import quickbite.frontend.util: foreachStaticCtorDeclaration;
-
-        if (module_ in _moduleConstructorsRun)
-            return;
 
         StaticCtorDeclaration[] sharedCtors;
         StaticCtorDeclaration[] plainCtors;
@@ -129,17 +130,11 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend,
         // matching compiled D's startup order; a thrown/asserted ctor
         // propagates like any other host exception -- it is not caught and
         // turned into a diagnostic here, since a module constructor failure
-        // is fatal, not attributable to a single unittest. The memo is set
-        // only after both loops finish, so a ctor that throws is not
-        // recorded as done: the next `runTests` call on this module reruns
-        // (and rethrows) it instead of silently treating the module as
-        // constructed.
+        // is fatal, not attributable to a single unittest.
         foreach (ctor; sharedCtors)
             runModuleConstructor(ctor);
         foreach (ctor; plainCtors)
             runModuleConstructor(ctor);
-
-        _moduleConstructorsRun[module_] = true;
     }
 
     private void runModuleConstructor(FuncDeclaration ctor) {

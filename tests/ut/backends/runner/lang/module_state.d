@@ -204,12 +204,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A module-scope `immutable string` with a string-literal initializer
-// reads through the AST-rematerialise fallback: the module-storage
-// registration path only folds array-literal initializers into module
-// data, so a `StringExp` initializer is declined and every read
-// re-evaluates the initializer expression instead of loading from module
-// storage.
+// A module-scope `immutable string` initialised from a string literal, not
+// an array literal, is indexable and reports the literal's length like any
+// other immutable global.
 static foreach (backend; Matrix!()) {
     @("immutableGlobal.stringInitializerRead." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -740,3 +740,7 @@
   result from the argument's own outermost (post-cast) type, not from
   whatever type the unwrap lands on -- `cast(void[]) s[]` for `ulong[3]
   s` must report 24 bytes, not a 3-element count.
+
+- A hook called from a base-class method is silently bypassed when a
+  subclass overrides that method directly instead of calling `super`:
+  check every override of a method that other logic hooks into.

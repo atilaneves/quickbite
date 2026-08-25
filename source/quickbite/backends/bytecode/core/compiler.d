@@ -5782,20 +5782,16 @@ package(quickbite.backends.bytecode) struct Compiler {
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
 
-        // A dataseg (`static`/`__gshared`) local's own module-storage
-        // registration declined it (an aggregate-typed element, reaching
-        // this fallback per `compileVariableDeclaration`'s immutable/const
-        // rule) before DMD's usual lowering into an `ExpInitializer` had a
-        // chance to run, unlike a plain frame local, whose initializer is
-        // already fully resolved by the time its declaration is compiled --
-        // a bare array literal (`Point[2] p = [Point(1, 2), Point(3, 4)];`)
-        // still parses as an `ArrayInitializer`. This is the same AST quirk
-        // `moduleDynamicArrayInitializerExpressionOrNull` already
-        // normalises for a module variable's own registration.
+        // DMD keeps a dataseg (`static`/`__gshared`) local's array-literal
+        // initializer as an `ArrayInitializer` -- it only rewrites a
+        // non-static local's initializer into an assignment
+        // (`ExpInitializer`), which is why `initializer` above is `null`
+        // here but not for a plain frame local's own array literal (`Point[2]
+        // p = [Point(1, 2), Point(3, 4)];`). Normalise it the way module
+        // registration does.
         if (initializer is null && variable.isDataseg) {
             import dmd.initsem: initializerToExpression;
 
-            resolveNonRootInitializer(variable);
             auto expression = variable._init is null
                 ? null
                 : variable._init.initializerToExpression;
@@ -10139,6 +10135,13 @@ package(quickbite.backends.bytecode) struct Compiler {
                         return false;
                     break;
                 default:
+                    // A scalar element (e.g. `float[2] fs;`) has no
+                    // `VarDeclaration` of its own to carry an `_init` --
+                    // every element always takes the element type's own
+                    // `.init`, the array counterpart of a struct field with
+                    // no initializer below.
+                    elementBytes[] =
+                        moduleScalarDefaultBytes(scalarType(elementType))[];
                     break;
             }
         }
@@ -10149,6 +10152,8 @@ package(quickbite.backends.bytecode) struct Compiler {
         Type type,
         ubyte[] bytes,
     ) {
+        import dmd.astenums: TY;
+        import dmd.initsem: initializerToExpression;
         import std.bitmanip: nativeToLittleEndian;
 
         auto declaration = structDeclarationOf(type);
@@ -10156,15 +10161,82 @@ package(quickbite.backends.bytecode) struct Compiler {
             return false;
 
         foreach (field; declaration.fields) {
-            auto initializer =
-                field._init is null ? null : field._init.isExpInitializer;
-            if (initializer is null)
+            const fieldSize = typeFacts(field.type).byteWidth;
+            auto fieldBytes = bytes[field.offset .. field.offset + fieldSize];
+
+            // No initializer on the field at all: fall back to the field's
+            // own type default, recursing for an aggregate field the same
+            // way a bare `S s;` local's own default does. A dynamic array,
+            // delegate, or other non-scalar-representable field's own
+            // all-zero default is already correct (a null/empty slice, a
+            // `{null, null}` delegate) -- `allocateModuleStructVariable`
+            // already zero-fills `bytes` before this runs -- so it is left
+            // alone rather than routed through `scalarType`, which throws
+            // for a type it cannot represent as one of `ScalarType`'s
+            // fixed-width cases.
+            if (field._init is null) {
+                final switch (typeFacts(field.type).representation)
+                    with (DeclarationRepresentation)
+                {
+                    case struct_:
+                        if (!writeStructDefaultInitializerBytes(
+                                field.type, fieldBytes,
+                            ))
+                            return false;
+                        break;
+                    case staticArray:
+                        if (!writeStaticArrayDefaultInitializerBytes(
+                                field.type, fieldBytes,
+                            ))
+                            return false;
+                        break;
+                    case scalar:
+                    case pointer:
+                    case classPointer:
+                    case assocArray:
+                        fieldBytes[] = moduleScalarDefaultBytes(
+                            scalarType(field.type),
+                        )[];
+                        break;
+                    case unavailable:
+                    case vector:
+                    case dynamicArray:
+                    case delegate_:
+                    case complexDouble:
+                    case lazyDelegate:
+                        break;
+                }
                 continue;
+            }
+
+            auto initializer = field._init.isExpInitializer;
+            if (initializer is null) {
+                // A static-array field's own literal default (`int[2] a =
+                // [1, 2];`) parses as an `ArrayInitializer`, not the
+                // `ExpInitializer` recognised below -- the same DMD AST
+                // quirk `moduleDynamicArrayInitializerExpressionOrNull`
+                // already normalises for a whole module-level array
+                // variable, reused here at field granularity via
+                // `moduleStaticArrayLiteralInitializerBytes`. Any other
+                // unrecognised initializer shape declines rather than
+                // silently zeroing the field.
+                if (field.type.toBasetype.ty != TY.Tsarray)
+                    return false;
+
+                auto expression = field._init.initializerToExpression;
+                auto literalBytes = moduleStaticArrayLiteralInitializerBytes(
+                    expression is null ? null : expression.isArrayLiteralExp,
+                    field.type.toBasetype.nextOf,
+                    cast(ushort) fieldSize,
+                );
+                if (literalBytes is null)
+                    return false;
+                fieldBytes[] = literalBytes[];
+                continue;
+            }
 
             // DMD's literal-value accessors mutate their expression nodes.
             auto value = initializerExpression(initializer.exp);
-            const fieldSize = typeFacts(field.type).byteWidth;
-            auto fieldBytes = bytes[field.offset .. field.offset + fieldSize];
             if (auto integer = value.isIntegerExp) {
                 const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
                 fieldBytes[] = raw[0 .. fieldSize];
@@ -10536,21 +10608,26 @@ package(quickbite.backends.bytecode) struct Compiler {
     // NaN, confirmed against the `SystemLinker` real-compile oracle, the
     // same way `allocateModuleComplexVariable`'s own NaN default for
     // `cdouble` already is) and the narrow character types (default
-    // `0xFF`/`0xFFFF`/`0xFFFFFFFF`, D's own all-bits-set convention for a
-    // "no character" value) need bytes written explicitly here. A
+    // `char.init == 0xFF`, `wchar.init == 0xFFFF`, `dchar.init == 0xFFFF`,
+    // D's own all-bits-set-per-code-unit convention for a "no character"
+    // value -- note `dchar.init` is not `0xFFFFFFFF`) need bytes written
+    // explicitly here. Each character width's default comes straight from
+    // the host D language's own `.init` rather than a hand-written
+    // constant, so it cannot drift from what `SystemLinker` compiles. A
     // pointer/associative-array/class-reference reaches this function
     // reinterpreted as `ScalarType.ulong_` (`allocateModuleScalarVariable`),
     // whose own zero default is also free.
-    private ubyte[] moduleScalarDefaultBytes(in ScalarType type) {
+    private static ubyte[] moduleScalarDefaultBytes(in ScalarType type)
+    @safe pure nothrow {
         import std.bitmanip: nativeToLittleEndian;
 
         switch (type) with (ScalarType) {
             case char_:
-                return [ubyte(0xFF)];
+                return nativeToLittleEndian(char.init).dup;
             case wchar_:
-                return [ubyte(0xFF), ubyte(0xFF)];
+                return nativeToLittleEndian(wchar.init).dup;
             case dchar_:
-                return [ubyte(0xFF), ubyte(0xFF), ubyte(0xFF), ubyte(0xFF)];
+                return nativeToLittleEndian(dchar.init).dup;
             case float_:
                 return nativeToLittleEndian(float.nan).dup;
             case double_:
