@@ -194,29 +194,28 @@ unittest {
     opts.fixtures.should == ["extra.d"];
 }
 
-@("benchmarkMeasurementSeparatesFirstVerdictFromLaterCalls")
+@("benchmarkMeasurementSeparatesWarmupFromMeasuredCalls")
 unittest {
-    import benchmarks.harness: measureVerdictsWithResults;
+    import benchmarks.harness: measureWithResults;
 
     size_t invocation;
-    const measured = measureVerdictsWithResults(
+    const measured = measureWithResults(
         () { return ++invocation; },
         2,
         3,
     );
 
-    measured.firstResult.should == 1;
-    measured.warmupResults.should == [2, 3];
-    measured.results.should == [4, 5, 6];
+    measured.warmupResults.should == [1, 2];
+    measured.results.should == [3, 4, 5];
 }
 
-@("benchmarkMeasurementReportsFirstVerdictDgcAllocation")
+@("benchmarkMeasurementReportsDgcAllocation")
 unittest {
-    import benchmarks.harness: measureVerdictsWithResults;
+    import benchmarks.harness: measureWithResults;
     import core.memory: GC;
 
     ubyte[] retained;
-    const measured = measureVerdictsWithResults(
+    const measured = measureWithResults(
         () {
             const before = GC.allocatedInCurrentThread;
             retained = new ubyte[](4096);
@@ -226,28 +225,8 @@ unittest {
         1,
     );
 
-    assert(measured.firstResult > 0);
-    measured.first.dGcAllocation.should == measured.firstResult;
-}
-
-@("benchmarkMeasurementReportsRepeatedVerdictDgcAllocation")
-unittest {
-    import benchmarks.harness: measureVerdictsWithResults;
-    import core.memory: GC;
-
-    ubyte[][] retained;
-    const measured = measureVerdictsWithResults(
-        () {
-            const before = GC.allocatedInCurrentThread;
-            retained ~= new ubyte[](4096);
-            return GC.allocatedInCurrentThread - before;
-        },
-        0,
-        1,
-    );
-
     assert(measured.results[0] > 0);
-    measured.repeated.dGcAllocation.should == measured.results[0];
+    measured.timing.dGcAllocation.should == measured.results[0];
 }
 
 @("benchmarkBackendsIncludeInterpreter")
@@ -558,7 +537,7 @@ unittest {
     assert(report.canFind("n/a"));
 }
 
-@("renderBenchmarkSectionSeparatesFirstAndRepeatedVerdicts")
+@("renderBenchmarkSectionShowsVerdictColumn")
 unittest {
     import benchmarks.harness: Result;
     import core.time: msecs;
@@ -567,18 +546,17 @@ unittest {
         "post-parse",
         [
             BenchmarkRow(
-                "pkg", "bytecode", "first", "3/3",
+                "pkg", "bytecode", "repeated", "3/3",
                 Result(7.msecs, 7.msecs, 0.0, 1024),
             ),
             BenchmarkRow(
-                "pkg", "bytecode", "repeated", "3/3",
+                "pkg", "ctfe", "repeated", "3/3",
                 Result(2.msecs, 2.msecs, 0.0, 512),
             ),
         ],
     );
 
     "verdict".should.be in report;
-    "first".should.be in report;
     "repeated".should.be in report;
 }
 
@@ -592,7 +570,7 @@ unittest {
         "post-parse",
         [
             BenchmarkRow(
-                "pkg", "bytecode", "first", "3/3",
+                "pkg", "bytecode", "repeated", "3/3",
                 Result(7.msecs, 7.msecs, 0.0, 1536),
             ),
         ],
