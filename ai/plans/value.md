@@ -45,16 +45,15 @@ operands come from typed places, DMD evaluates the builtin, and the result is
 stored directly in the caller's typed destination. The Interpreter has no
 second builtin identity enum, function-name list, or per-function result path.
 
-One name-based call interception still blocks the no-interception target and
-must retire before the carrier can be deleted. `_aApplycd1`, `_aApplywd1`,
-`_aApplydc1`, and `_aApplyRwd1` need native
-  runtime-apply dispatch with the call-site function-pointer signature and a
-  correct reverse-callback ABI. Calling the resolved runtime symbol through
-  the current native delegate route supplies a delegate context that a plain
-  function pointer does not have and crashes during callback re-entry.
+For a bodyless declaration reached through a function-pointer call, the
+declaration supplies the native symbol and the call-site function type supplies
+the ABI. The plain function pointer has no hidden delegate receiver. Reverse
+callbacks use the root execution's durable trampoline session. A lowered
+delegate parameter whose call-site ABI is a pointer binds the interpreted
+`ref` parameter to the pointed-to typed place.
 
-This is a retirement prerequisite, not an accepted exemption. Do not add a
-carrier bridge or another name-based result path.
+Call dispatch has no name-based interception. Do not add a carrier bridge or
+another name-based result path.
 
 Stored bindings, module variables, and class field defaults remain typed
 places. A value copy snapshots address-keyed delegate, function-pointer,

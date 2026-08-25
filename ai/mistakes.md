@@ -727,6 +727,12 @@
   have no value-storage size. Send the symbolic callable identity directly to
   the pointer destination.
 
+- A declaration reached through a function-pointer call supplies symbol
+  identity, but the call-site function type supplies the native ABI. Do not
+  route the plain pointer through a delegate call or add a hidden context.
+  When DMD paints a `ref` callback parameter to a pointer ABI, bind the
+  interpreted parameter to the pointed-to typed place during reverse re-entry.
+
 - A projection-place eligibility check and its lvalue-tree collector must
   accept the same roots. Adding struct `this`/`super` to only the first check
   still rejects `this.arrayField[index]` when the collector reaches the root;

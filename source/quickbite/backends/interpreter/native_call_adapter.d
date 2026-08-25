@@ -507,6 +507,12 @@ private struct NativeInvocation {
 
 public struct NativeCallRequest {
     public imported!"dmd.func".FuncDeclaration declaration;
+    // A bodyless declaration can reach the adapter through a function-pointer
+    // call whose semantic call-site type is authoritative for the ABI. The
+    // declaration still supplies the symbol; this signature supplies the
+    // parameter list and prevents a delegate-context receiver from being
+    // inserted for the plain function pointer.
+    public imported!"dmd.mtype".TypeFunction functionPointerSignature;
     public imported!"dmd.mtype".TypeFunction delegateSignature;
     public const(void)* delegateAddress;
     public const(void)* delegateContext;
@@ -551,9 +557,20 @@ private bool prepareNativeInvocation(
     import quickbite.ffi.ffi:
         Callable, TypedAddress, compilerAbiFor, resolveCallable;
 
-    auto signature = request.declaration is null
-        ? request.delegateSignature
-        : cast(TypeFunction) request.declaration.type;
+    if (
+        request.functionPointerSignature !is null &&
+        (
+            request.declaration is null ||
+            request.delegateAddress !is null ||
+            request.receiverType !is null
+        )
+    )
+        return false;
+    auto signature = request.functionPointerSignature !is null
+        ? request.functionPointerSignature
+        : request.declaration is null
+            ? request.delegateSignature
+            : cast(TypeFunction) request.declaration.type;
     if (signature is null || signature.next is null ||
         (signature.linkage != LINK.c && signature.linkage != LINK.d &&
             signature.linkage != LINK.cpp))
@@ -607,6 +624,10 @@ private bool prepareNativeInvocation(
             request.virtualDispatch,
             objectAddress,
         );
+        if (request.functionPointerSignature !is null) {
+            invocation.callable.signature = signature;
+            invocation.callable.declaration = null;
+        }
     } else if (request.delegateAddress !is null)
         invocation.callable = Callable(
             cast(void*) request.delegateAddress,

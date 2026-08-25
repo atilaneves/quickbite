@@ -30,9 +30,9 @@ translation stay in its backend adapter.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
-concern owned with `value.md`'s prelude formatter. `value.md` items 8-10 will
-move expressions and nested function returns inside a unittest to
-caller-provided typed destinations.
+concern owned with `value.md`'s prelude formatter. `value.md` item 10 moves
+expressions and nested function returns inside a unittest to caller-provided
+typed destinations.
 
 ## Execution architecture
 
@@ -298,14 +298,12 @@ value.md       how the interpreter represents runtime results and addressable
                (synthetic pointers, cast-aliasing, allocation identity,
                reinterpret loads) is value.md's, handled per the §8 triage
                rule — red fixture here, Interpreter omitted, root fix there.
-               value.md decisions 15-19 commit its end state (native-layout
-               storage, a place is an address plus its static type,
-               destination-passing evaluation, no FFI marshalling; the
-               expression-carrier and shared-`Value` deletions are
-               independent completion markers) and a two-track migration in
-               which THIS plan is the workingness track and leads; the
-               representation track lands as oracle-green slices per value.md
-               items 8-10.
+               value.md item 10 commits its end state: native-layout storage,
+               a place as an address plus its static type,
+               destination-passing evaluation, no FFI marshalling, and no
+               expression carrier. This plan owns the workingness track; the
+               representation track lands as oracle-green commits per
+               value.md item 10.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 overview.md    the benchmarking measurement contract (GC policy, ratchet,
                corpus selection). Tuning the machinery delivered here waits
@@ -353,11 +351,11 @@ without manufacturing a display value.
 
 Inside the walker, expression evaluation remains recursive because all real D
 code, including unittests, computes expressions and calls value-returning
-functions. Its endpoint is `value.md` decision 7: a call receives its caller's
-typed destination, an lvalue yields a place, scalar work uses statically typed
-host locals, and a statement executes with no result. Items 8-10 own the
-migration from the current interpreter-private expression carrier to that
-destination-passing contract.
+functions. Its endpoint is `value.md` item 10's contract: a call receives its
+caller's typed destination, an lvalue yields a place, scalar work uses
+statically typed host locals, and a statement executes with no result. Item 10
+owns the migration from the current interpreter-private expression carrier to
+that destination-passing contract.
 
 ## 8. Method: one standalone red/green unit test per reason
 
@@ -450,19 +448,14 @@ scalar signature select one generic operation over typed places and the
 caller-owned typed destination. The Interpreter has no second builtin enum,
 function-name list, or per-function dispatch.
 
-`Walker.runCallExpression` has one temporary retirement blocker. DMD lowers
-UTF-mismatch string `foreach` to `_aApplycd1`, `_aApplywd1`,
-  `_aApplydc1`, or `_aApplyRwd1`. The synthetic declaration does not carry the
-  real call-site parameter list. Native dispatch must use the function-pointer
-  signature without adding a delegate-context receiver, and reverse callback
-  re-entry must preserve the runtime helper's ABI and root execution lifetime.
-Then delete `runStringForeachApplyCall` and its guard entry.
-
-The mechanical guard rejects every other name match. It also retains the
-bodyless/inline-asm predicate used to classify ordinary native leaves; this
-does not authorize a handler. Once both blockers retire, delete the handler
-guard and keep only native-leaf classification beside the ordinary call
-path. Predicate unit tests live in
+A bodyless declaration used through a function-pointer call
+resolves that symbol from the declaration but takes its ABI from the call-site
+function type, without a hidden delegate receiver. Reverse callback arguments
+re-enter the root execution through its durable trampoline session; a lowered
+pointer ABI binds an interpreted `ref` parameter to the pointed-to typed
+place. Call dispatch has no name-based interception. The bodyless/inline-asm
+predicate classifies ordinary native leaves; it does not authorize a handler.
+Predicate unit tests live in
 `tests/ut/backends/interpreter/interception_guard.d`.
 
 ## 9. Open work queue
@@ -565,8 +558,8 @@ Cerealed-specific names and behavior.
 Cerealed is the first driving package, not the finish line. Automem is the
 second package and exercises allocators, reference-counted ownership,
 interfaces, nested callables, and native-layout mutation. Once both package
-gates are green, the next prioritized Interpreter work is `value.md` item 8:
-destination-passing entry points and a genuine no-result statement path.
+gates are green, the next prioritized Interpreter work is `value.md` item 10:
+complete destination-passing evaluation and delete the expression carrier.
 Package-driven workingness continues in parallel through `value.md` item 4;
 do not restore legacy marshalling or value machinery for a later package.
 

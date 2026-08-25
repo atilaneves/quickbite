@@ -1,5 +1,6 @@
-// Mechanical enforcement of ai/plans/interpreter.md's temporary
-// interception boundary. New name-based interception is not permitted.
+// Native leaves have no interpretable D source, or contain inline assembly
+// that the frontend-only session cannot resolve. This predicate classifies
+// those leaves without authorizing a name-based handler.
 module quickbite.backends.interpreter.interception_guard;
 
 private:
@@ -13,12 +14,11 @@ public void enforceInterceptionPolicy(
     assert(
         isLegalInterception(function_),
         text(
-            "Interception policy violation (ai/plans/interpreter.md §8): `",
+            "Native-leaf classification violation: `",
             interceptorName,
-            "` intercepted `",
+            "` selected `",
             function_ is null ? "<null>" : text(function_.toPrettyChars),
-            "`, which is not the recorded retirement blocker. ",
-            "Execute the D source or real native hook instead.",
+            "`, which has interpretable D source. Execute that source instead.",
         ),
     );
 }
@@ -32,7 +32,6 @@ public bool isLegalInterception(
         function_ !is null &&
         (
             hasNoAvailableSource(function_) ||
-            isRetainedInterception(function_) ||
             bodyContainsAsm(function_)
         );
 }
@@ -66,23 +65,4 @@ public bool bodyContainsAsm(
     scope finder = emplace!AsmStatementFinder(storage[]);
     finder.visitStmt(function_.fbody);
     return finder.found;
-}
-
-private bool isRetainedInterception(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.conv: text;
-
-    const prettyName = text(function_.toPrettyChars);
-    return isStringForeachApplyName(prettyName);
-}
-
-private bool isStringForeachApplyName(in string prettyName) {
-    import std.algorithm: canFind;
-
-    return
-        prettyName.canFind("_aApplycd1") ||
-        prettyName.canFind("_aApplywd1") ||
-        prettyName.canFind("_aApplydc1") ||
-        prettyName.canFind("_aApplyRwd1");
 }

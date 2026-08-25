@@ -5426,28 +5426,6 @@ private struct Walker {
                 bodyContainsAsm(call.f);
         }
 
-        auto stringForeachApply = call.f is null
-            ? callExpressionFunction(call.e1)
-            : call.f;
-        if (
-            stringForeachApply !is null &&
-            isStringForeachApplyCall(stringForeachApply)
-        ) {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(
-                stringForeachApply,
-                "isStringForeachApplyCall",
-            );
-            runStringForeachApplyCall(
-                call,
-                stringForeachApply,
-                constructionDestination,
-            );
-            return;
-        }
-
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
             &_executionState.callArgumentStorage,
@@ -5841,25 +5819,59 @@ private struct Walker {
             return;
         }
 
-        if (auto var = call.e1.isVarExp)
-            if (auto function_ = var.var.isFuncDeclaration) {
-                runFunction(
-                    function_,
-                    argumentPlaces,
-                    argumentExpressions,
-                    false,
-                    evaluatedArguments,
-                    null,
-                    constructionDestination,
-                );
-                return;
-            }
-
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             import quickbite.frontend.dmd.functions:
-                ensureFunctionBodySemantic;
+                ensureFunctionBodySemantic, hasNoInterpretableSource,
+                noAvailableSourceMessage;
+            import quickbite.backends.interpreter.interception_guard:
+                bodyContainsAsm;
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
 
             ensureFunctionBodySemantic(function_);
+            if (
+                hasNoInterpretableSource(function_) ||
+                bodyContainsAsm(function_)
+            ) {
+                try {
+                    NativeCallResult nativeResult;
+                    if (invokeNativeFunctionPointer(
+                        function_,
+                        functionPointerCallSignature(call.e1),
+                        argumentPlaces,
+                        argumentExpressions,
+                        evaluatedArguments,
+                        nativeResult,
+                        constructionDestination is null
+                            ? null
+                            : constructionDestination.place.address,
+                    )) {
+                        if (
+                            constructionDestination !is null &&
+                            nativeResult.value.address ==
+                                constructionDestination.place.address
+                        ) {
+                            constructionDestination.markConstructed;
+                            return;
+                        }
+                        storeNativeCallResult(
+                            constructionDestination,
+                            nativeResult.value,
+                        );
+                        return;
+                    }
+                } catch (NativeCallException exception) {
+                    throwNativeException(exception);
+                }
+
+                const unsupportedType =
+                    unsupportedNativeTypeMessage(function_);
+                throw new Exception(
+                    unsupportedType is null
+                        ? noAvailableSourceMessage(function_)
+                        : unsupportedType,
+                );
+            }
             if (function_.isNested && hasThis) {
                 runMemberFunction(
                     function_,
@@ -6236,17 +6248,55 @@ private struct Walker {
         import quickbite.backends.interpreter.native_call_adapter:
             extendInboundIntegerResult;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.frame_layout:
+            isReferenceParameter;
+
         Place[1] inlineCallbackArgument;
+        Expression[1] inlineCallbackExpression;
+        EvaluatedReferenceArgument[1] inlineEvaluatedArgument;
         auto argumentPlaces = parameterTypes.length == 0
             ? null
             : parameterTypes.length == 1
                 ? inlineCallbackArgument[]
                 : new Place[](parameterTypes.length);
-        foreach (index, parameterType; parameterTypes)
-            argumentPlaces[index] = Place(
+        auto argumentExpressions = parameterTypes.length == 0
+            ? null
+            : parameterTypes.length == 1
+                ? inlineCallbackExpression[]
+                : new Expression[](parameterTypes.length);
+        auto evaluatedArguments = parameterTypes.length == 0
+            ? null
+            : parameterTypes.length == 1
+                ? inlineEvaluatedArgument[]
+                : new EvaluatedReferenceArgument[](parameterTypes.length);
+        auto runtime = callback.functionPointerId in _executionState.delegates;
+        foreach (index, parameterType; parameterTypes) {
+            auto abiPlace = Place(
                 argumentBuffers[index],
                 parameterType,
             );
+            argumentPlaces[index] = abiPlace;
+
+            // DMD paints the generated UTF foreach delegate from `ref C` to
+            // `void*` so druntime can use one callback ABI for every code-unit
+            // width. libffi supplies the pointer value in its ABI argument
+            // cell. Rebind the interpreted function's reference parameter to
+            // the pointed-to code unit instead of copying the pointer bytes as
+            // the character value.
+            if (
+                runtime !is null &&
+                runtime.function_.parameters !is null &&
+                index < runtime.function_.parameters.length &&
+                parameterType.toBasetype.ty == TY.Tpointer
+            ) {
+                auto parameter = (*runtime.function_.parameters)[index];
+                if (isReferenceParameter(runtime.function_, index, parameter)) {
+                    auto address = abiPlace.deref.address;
+                    argumentPlaces[index] = Place(address, parameter.type);
+                    evaluatedArguments[index].address = address;
+                }
+            }
+        }
 
         // A void-returning callback has no destination to construct into
         // (decision 7); a non-void one needs a real typed temporary, sized
@@ -6256,7 +6306,8 @@ private struct Walker {
             runDelegateCall(
                 interpretedDelegateSlot(callback.functionPointerId),
                 argumentPlaces,
-                new Expression[](argumentPlaces.length),
+                argumentExpressions,
+                evaluatedArguments,
             );
             return;
         }
@@ -6266,8 +6317,8 @@ private struct Walker {
         runDelegateCall(
             interpretedDelegateSlot(callback.functionPointerId),
             argumentPlaces,
-            new Expression[](argumentPlaces.length),
-            null,
+            argumentExpressions,
+            evaluatedArguments,
             &destination,
         );
         extendInboundIntegerResult(resultBuffer, returnType);
@@ -6375,176 +6426,6 @@ private struct Walker {
         return Place(runtime.receiver.address, runtime.receiver.type);
     }
 
-    private bool isStringForeachApplyCall(FuncDeclaration function_) const {
-        import std.algorithm: canFind;
-
-        if (function_.ident is null)
-            return false;
-
-        const name = function_.ident.toString;
-        return
-            name.canFind("_aApplycd1") ||
-            name.canFind("_aApplywd1") ||
-            name.canFind("_aApplydc1") ||
-            name.canFind("_aApplyRwd1");
-    }
-
-    private FuncDeclaration callExpressionFunction(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        if (auto var = expression.isVarExp)
-            return var.var.isFuncDeclaration;
-
-        return functionPointerExpressionFunction(expression);
-    }
-
-    private void runStringForeachApplyCall(
-        imported!"dmd.expression".CallExp call,
-        FuncDeclaration function_,
-        ConstructionDestination* constructionDestination,
-    ) {
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception("Unsupported eval call.");
-
-        auto body = functionPointerExpressionFunction((*call.arguments)[1]);
-        if (body is null)
-            throw new Exception("Unsupported eval call.");
-
-        // Every `opApply` delegate follows the same early-exit convention:
-        // its declared return type (always `int`, by that convention) names
-        // one activation-owned typed slot, reused for each element's result.
-        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto resultType = body.type.toBasetype.isTypeFunction.next;
-        auto resultBlock = NativeBlock.allocate(
-            typeByteSize(resultType),
-            typeHasPointers(resultType)
-                ? NativeBlock.Scan.conservative
-                : NativeBlock.Scan.no,
-        );
-        auto argumentBlock = NativeBlock.allocate(
-            imported!"quickbite.backends.interpreter.layout".typeByteSize(
-                (*body.parameters)[0].type,
-            ),
-            imported!"quickbite.backends.interpreter.layout".typeHasPointers(
-                (*body.parameters)[0].type,
-            )
-                ? NativeBlock.Scan.conservative
-                : NativeBlock.Scan.no,
-        );
-        auto argumentPlace = Place(
-            argumentBlock.address,
-            (*body.parameters)[0].type,
-        );
-
-        foreach (value; stringForeachApplyElements(
-            function_.ident.toString,
-            constructedExpressionPlace((*call.arguments)[0]),
-        )) {
-            storeForeachCodeUnit(argumentPlace, value);
-            auto destination = ConstructionDestination(Place(resultBlock.address, resultType));
-            runFunction(body, [argumentPlace], [null], false, null, null, &destination);
-            if (destination.place.loadNativeScalar!int != 0) {
-                storeCallResult(constructionDestination, destination.place);
-                return;
-            }
-        }
-
-        if (constructionDestination !is null) {
-            constructionDestination.place.storeNativeScalar(0);
-            constructionDestination.markConstructed;
-        }
-    }
-
-    private dchar[] stringForeachApplyElements(
-        scope const(char)[] helper,
-        Place source,
-    ) {
-        import std.algorithm: canFind, reverse;
-
-        if (helper.canFind("_aApplycd1"))
-            return decodedUtf8Dchars(source);
-
-        if (helper.canFind("_aApplywd1"))
-            return decodedUtf16Dchars(source);
-
-        if (helper.canFind("_aApplydc1"))
-            return utf8EncodedDstringChars(source);
-
-        if (helper.canFind("_aApplyRwd1")) {
-            auto values = decodedUtf16Dchars(source);
-            values.reverse;
-            return values;
-        }
-
-        throw new Exception("Unsupported eval call.");
-    }
-
-    private dchar[] decodedUtf8Dchars(Place source) {
-        import std.utf: decode;
-
-        string encoded;
-        foreach (index; 0 .. source.arrayLength)
-            encoded ~= source.index(index).loadNativeScalar!char;
-
-        dchar[] values;
-        size_t index;
-        while (index < encoded.length)
-            values ~= decode(encoded, index);
-
-        return values;
-    }
-
-    private dchar[] decodedUtf16Dchars(Place source) {
-        import std.utf: decode;
-
-        wstring encoded;
-        foreach (index; 0 .. source.arrayLength)
-            encoded ~= source.index(index).loadNativeScalar!wchar;
-
-        dchar[] values;
-        size_t index;
-        while (index < encoded.length)
-            values ~= decode(encoded, index);
-
-        return values;
-    }
-
-    private dchar[] utf8EncodedDstringChars(Place source) {
-        import std.utf: encode;
-
-        dchar[] values;
-        foreach (index; 0 .. source.arrayLength) {
-            char[4] encoded;
-            const length = encode(
-                encoded,
-                source.index(index).loadNativeScalar!dchar,
-            );
-            foreach (unit; encoded[0 .. length])
-                values ~= unit;
-        }
-
-        return values;
-    }
-
-    private void storeForeachCodeUnit(Place destination, in dchar value) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.native_scalar:
-            nativeScalarKindOf;
-
-        switch (nativeScalarKindOf(destination.type)) with (TY) {
-        case Tchar: destination.storeNativeScalar(cast(char) value); return;
-        case Twchar: destination.storeNativeScalar(cast(wchar) value); return;
-        case Tdchar: destination.storeNativeScalar(value); return;
-        case Tint32: destination.storeNativeScalar(cast(int) value); return;
-        case Tuns32: destination.storeNativeScalar(cast(uint) value); return;
-        default:
-            throw new Exception("String foreach callback needs a character argument.");
-        }
-    }
-
     private FuncDeclaration resolveMemberFunction(
         FuncDeclaration function_,
         Place receiver,
@@ -6642,6 +6523,9 @@ private struct Walker {
     private FuncDeclaration functionPointerExpressionFunction(
         imported!"dmd.expression".Expression expression,
     ) {
+        if (auto variable = expression.isVarExp)
+            return variable.var.isFuncDeclaration;
+
         if (auto function_ = expression.isFuncExp)
             return function_.fd;
 
@@ -6657,6 +6541,22 @@ private struct Walker {
         if (auto symbol = expression.isSymOffExp)
             return symbol.var.isFuncDeclaration;
 
+        return null;
+    }
+
+    private imported!"dmd.mtype".TypeFunction functionPointerCallSignature(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression is null || expression.type is null)
+            return null;
+
+        auto type = expression.type.toBasetype;
+        if (auto functionType = type.isTypeFunction)
+            return functionType;
+        if (auto pointerType = type.isTypePointer)
+            return pointerType.nextOf is null
+                ? null
+                : pointerType.nextOf.toBasetype.isTypeFunction;
         return null;
     }
 
@@ -12316,6 +12216,56 @@ private struct Walker {
         return invokeNative(request, result);
     }
 
+    // A direct AST symbol used as a function pointer resolves its native
+    // address from the declaration, but its call-site function type controls
+    // the ABI. Unlike a delegate call, this path has no hidden context
+    // receiver. Delegate arguments still use the root-owned inbound session.
+    private bool invokeNativeFunctionPointer(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.mtype".TypeFunction callSignature,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        in EvaluatedReferenceArgument[] evaluatedArguments,
+        out imported!"quickbite.backends.interpreter.native_call_adapter".
+            NativeCallResult result,
+        void* resultAddress = null,
+    ) {
+        import quickbite.backends.interpreter.native_call_adapter:
+            InterpreterInboundTrampolineSession, NativeCallRequest,
+            invokeNative;
+
+        if (callSignature is null)
+            return false;
+
+        auto nativeArguments = NativeCallArguments(
+            argumentExpressions,
+            &_executionState.nativeCallArgumentStorage,
+        );
+        scope(exit) nativeArguments.release;
+        if (durableInboundSession is null)
+            durableInboundSession = new InterpreterInboundTrampolineSession(
+                _executionState.invokeNativeCallback,
+            );
+        fillNativeCallOperands(
+            function_,
+            argumentPlaces,
+            argumentExpressions,
+            nativeArguments.types,
+            evaluatedArguments,
+            nativeArguments.operands,
+            durableInboundSession,
+        );
+        auto request = NativeCallRequest(
+            declaration: function_,
+            functionPointerSignature: callSignature,
+            resultAddress: resultAddress,
+            argumentTypes: nativeArguments.types,
+            argumentOperands: nativeArguments.operands,
+            callbackSession: durableInboundSession,
+        );
+        return invokeNative(request, result);
+    }
+
     // Every evaluated argument crosses as its typed address. The only scratch
     // operand is the host TypeInfo pointer that a TypeidExp denotes.
     private void fillNativeCallOperands(
@@ -13391,8 +13341,8 @@ private struct Walker {
         // now-placed bytes for its effect alone. Construct the source
         // directly into the binding place -- the same bytes the blit would
         // have produced -- then run the postblit for effect on that place,
-        // mirroring the element-postblit call in the `_d_arrayctor`
-        // interception above.
+        // mirroring the element-postblit call in the native array-constructor
+        // path above.
         if (auto postblitCall = initializer.isCallExp)
             if (
                 postblitCall.f !is null &&
