@@ -1000,6 +1000,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `TypeBasic.dotExp` lowers `imaginaryVar.im` by relabelling the same
+// `VarExp` to the matching real type rather than wrapping a `CastExp`
+// around it (unlike the complex `.re`/`.im` case above), and does so
+// separately for each of the three imaginary widths -- a fixture per width
+// pins that the interpreter's read of the relabelled `VarExp` reinterprets
+// its bytes as the property's real type instead of rejecting it (or, if it
+// went through a genuine cast, silently returning 0).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core's scalar type switch has no Timaginary32/64/80 " ~
+        "case at all (compiler.d's `scalarType`), unlike the interpreter " ~
+        "and CTFE backends"),
+)) {
+    @("imaginary.dotImPropertyReadsMagnitudeAtRuntimeForEachWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ifloat narrow = 42.0fi;
+                idouble wide = 42.0i;
+                ireal widest = 42.0Li;
+
+                assert(narrow.im == 42);
+                assert(wide.im == 42);
+                assert(widest.im == 42);
+            }
+        });
+    }
+}
+
 
 /++
     Typeid, virtual dispatch, interfaces, and delegates.

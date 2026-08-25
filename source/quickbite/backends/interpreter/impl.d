@@ -2813,6 +2813,31 @@ private struct Walker {
         }
     }
 
+    // True when `expressionType` is the real counterpart `TypeBasic.dotExp`
+    // retypes a `VarExp` to for `imaginaryVar.im` (see
+    // `constructVariableInto`'s use of this): `declaredType` is one of the
+    // three `Timaginary*` widths and `expressionType` is the exact matching
+    // `Tfloat*` width. Never true the other way around -- `.re` on an
+    // imaginary type builds a fresh zero `RealExp`, not a retyped `VarExp`
+    // referencing the variable's own storage, so that direction never
+    // reaches here.
+    private bool isImaginaryToRealPropertyRetype(
+        imported!"dmd.mtype".Type declaredType,
+        imported!"dmd.mtype".Type expressionType,
+    ) {
+        import dmd.astenums: TY;
+
+        if (declaredType is null || expressionType is null)
+            return false;
+
+        switch (declaredType.toBasetype.ty) with (TY) {
+            case Timaginary32: return expressionType.toBasetype.ty == TY.Tfloat32;
+            case Timaginary64: return expressionType.toBasetype.ty == TY.Tfloat64;
+            case Timaginary80: return expressionType.toBasetype.ty == TY.Tfloat80;
+            default: return false;
+        }
+    }
+
     private bool constructComplexComponentInto(
         imported!"dmd.expression".DotIdExp dot,
         Place destination,
@@ -3117,6 +3142,32 @@ private struct Walker {
 
         materializeDatasegInitializer(variable);
         if (hasBindingPlace(variable)) {
+            // `TypeBasic.dotExp` (`typesem.d`) lowers `imaginaryVar.im` by
+            // cloning the same `VarExp` and overwriting *only* its `.type`
+            // to the matching real type (`Timaginary80` -> `Tfloat80`, etc.)
+            // -- unlike the complex `.re`/`.im` lowering above, it never
+            // wraps a `CastExp` around it, so this `var`'s own `.type` can
+            // legitimately disagree with `variable.type`, the declaration's
+            // true storage type. An imaginary value and its real magnitude
+            // share representation (`ai` is stored as `a`), so read the
+            // binding's own bytes back out relabelled as the property's
+            // declared type -- NOT `runtime_casts.castValue`, which performs
+            // a genuine `cast(real) someIreal` and, per D's imaginary-type
+            // semantics, that always yields `0.0` (the real *part* of a
+            // purely imaginary value), not the magnitude `.im` exposes.
+            if (
+                var.type !is null &&
+                isImaginaryToRealPropertyRetype(variable.type, var.type)
+            ) {
+                import quickbite.backends.interpreter.place: Place;
+
+                copyPlaceValue(
+                    Place(bindingPlace(variable).address, var.type),
+                    destination,
+                );
+                return;
+            }
+
             copyQualificationConvertedPlaceValue(
                 bindingPlace(variable),
                 destination,
