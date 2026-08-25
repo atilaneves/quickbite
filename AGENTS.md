@@ -148,9 +148,8 @@ Druntime-first: when druntime already implements a runtime behaviour
 chaining, TypeInfo), a backend executes druntime's real source or real
 hooks instead of carrying its own version. A local reimplementation
 needs a written justification in the owning plan and a stated
-retirement condition. The Interpreter's `enforceInterceptionPolicy` is
-the model: an enumerated exemption list, each entry with a retirement
-condition, enforced by assertion.
+retirement condition. `ai/plans/interpreter.md` owns the Interpreter's
+no-interception contract and the issue links for temporary deviations.
 
 
 # Do nots

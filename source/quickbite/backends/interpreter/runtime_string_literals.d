@@ -7,55 +7,89 @@ private enum wcharCodeUnitWidth = 2;
 private enum dcharCodeUnitWidth = 4;
 private enum maxUtf8CodeUnits = 4;
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult stringValue(
+public void stringValue(
     imported!"dmd.expression".StringExp string_,
+    imported!"quickbite.backends.interpreter.place".Place destination,
     out imported!"quickbite.backends.interpreter.native_block".NativeBlock
         pointerStorage,
+    out imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        backingStorage,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+
+    pointerStorage = NativeBlock.init;
+    backingStorage = NativeBlock.init;
 
     // DMD types a literal used directly as `"text".ptr` as a pointer,
     // rather than preserving the intermediate array expression.  Give that
-    // pointer real NUL-terminated native storage; reconstructArray requires
-    // an array Type and would otherwise reject this ordinary C-string path.
+    // pointer real NUL-terminated native storage; an array destination cannot
+    // represent this ordinary C-string path.
     if (string_.type.toBasetype.isTypePointer !is null) {
         pointerStorage = pointerStringStorage(string_);
-        return ExpressionResult.pointerValue(pointerStorage.address);
+        destination.storeReference(pointerStorage.address);
+        return;
     }
 
     switch (string_.sz) {
         case wcharCodeUnitWidth:
-            return reconstructedStringArray(
+            constructStringArray(
                 string_.type,
                 stringCodeUnits!wchar(string_),
+                destination,
+                backingStorage,
             );
+            break;
         case dcharCodeUnitWidth:
-            return reconstructedStringArray(
+            constructStringArray(
                 string_.type,
                 stringCodeUnits!dchar(string_),
+                destination,
+                backingStorage,
             );
+            break;
         default:
-            return reconstructedStringArray(
+            constructStringArray(
                 string_.type,
                 stringChars(string_),
+                destination,
+                backingStorage,
             );
     }
 }
 
 
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
-reconstructedStringArray(T)(
+private void constructStringArray(T)(
     imported!"dmd.mtype".Type type,
     T[] codeUnits,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+    out imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        backingStorage,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+    import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
 
-    scope(exit) releaseScratchArray(codeUnits);
-    auto values = characterValues(codeUnits);
-    scope(exit) releaseScratchArray(values);
-    return AggregateValue.reconstructArray(type, values);
+    auto arrayType = type.toBasetype;
+    if (auto slice = arrayType.isTypeDArray) {
+        auto backing = NativeArray.allocate(slice.next, codeUnits.length);
+        backing.writeSliceHeader(destination.address);
+        backingStorage = backing.block;
+        foreach (index, codeUnit; codeUnits)
+            destination.index(index).storeNativeScalar(codeUnit);
+        return;
+    }
+
+    if (arrayType.isTypeSArray !is null) {
+        backingStorage = NativeBlock.init;
+        foreach (index, codeUnit; codeUnits)
+            destination.index(index).storeNativeScalar(codeUnit);
+        return;
+    }
+
+    throw new Exception(
+        "quickbite.backends.interpreter.runtime_string_literals: "
+        ~ "string literal needs an array destination",
+    );
 }
 
 
@@ -65,9 +99,8 @@ pointerStringStorage(
 ) {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.native_scalar: writeScalar;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.place: Place;
 
     auto elementType = string_.type.toBasetype.nextOf;
     const length = string_.numberOfCodeUnits + 1;
@@ -76,23 +109,35 @@ pointerStringStorage(
         NativeBlock.Scan.no,
     );
     auto elements = NativeArray.borrow(elementType, storage.address, length);
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        writeScalar(elementType, elements.element(index), ExpressionResult(
-            string_.getIndex(index),
-        ));
-    writeScalar(elementType, elements.element(length - 1), ExpressionResult(0));
+    switch (string_.sz) {
+        case wcharCodeUnitWidth:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(wchar) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                wchar.init,
+            );
+            break;
+        case dcharCodeUnitWidth:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(dchar) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                dchar.init,
+            );
+            break;
+        default:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(char) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                char.init,
+            );
+    }
     return storage;
-}
-
-
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[]
-characterValues(T)(in T[] codeUnits) pure {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    auto values = new ExpressionResult[](codeUnits.length);
-    foreach (index, codeUnit; codeUnits)
-        values[index] = ExpressionResult(codeUnit);
-    return values;
 }
 
 public T[] stringCodeUnits(T)(

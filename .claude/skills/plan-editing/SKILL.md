@@ -1,6 +1,8 @@
 ---
 name: plan-editing
-description: Editing an ai/plans/*.md planning document in this repo (e.g. bytecode.md, value.md) as part of a commit. Use before writing any change to a plan file, to keep it a shrinking queue of remaining work rather than a growing changelog.
+description: >-
+  Edit an ai/plans/*.md document, such as bytecode.md or interpreter.md, while
+  keeping it a shrinking work queue instead of a growing changelog.
 ---
 
 # Editing `ai/plans/*.md`

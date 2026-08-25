@@ -586,9 +586,9 @@ public struct NativeArray {
 
     // The same write as the `NativeBlock`+`byteOffset` overload above, for a
     // destination reached only as a raw address rather than through a
-    // caller-owned `NativeBlock` handle -- `place_value.writeValue`'s slice
-    // arm composes its destination by `place.Place.field`/`index` DMD
-    // offset/stride arithmetic, and `Place`'s own contract is "an address
+    // caller-owned `NativeBlock` handle. Typed place paths compose a
+    // destination by `place.Place.field`/`index` DMD offset/stride
+    // arithmetic, and `Place`'s own contract is "an address
     // plus a type, nothing more" (`place.d`'s own header comment), so it
     // never has a `NativeBlock` to hand back the way a frame/struct/array
     // cell caller of the overload above already holds one.
@@ -614,10 +614,9 @@ public struct NativeArray {
     // an activation frame slot, a struct/class body, or an array element --
     // every one of which was itself allocated `Scan.conservative` whenever
     // it (transitively) contains a slice field, per DMD's own `hasPointers`
-    // recursing into aggregate fields (`value.md`'s Containers contract) --
-    // so this never actually throws for a legitimate call site; it is the
-    // same defensive check the overload above performs, not a speculative
-    // one invented for this overload alone.
+    // recursing into aggregate fields. Thus, this never throws for a
+    // legitimate call site; it is the same defensive check the overload
+    // above performs, not a speculative one invented for this overload.
     public void writeSliceHeader(void* destAddress) const @safe {
         import core.memory: GC;
 

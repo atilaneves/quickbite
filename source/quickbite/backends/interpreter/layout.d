@@ -278,13 +278,12 @@ private string fieldNameImpl(
 
 
 // The qualified name (`"E.b"`) DMD gives the member of enum `type` whose
-// value equals `value`, or `null` when no member carries it -- the same
-// qualification `value.md`'s Display format spec rule 5 requires ("E.b",
-// never a bare "b"). Reads `TypeEnum.sym.members`/`EnumMember` directly,
-// DMD's own enum member declarations, rather than re-deriving membership
-// from anything else; a caller that gets `null` back renders the
-// non-member `cast(E)N` form instead (this function does not, since that
-// is a display decision, not a DMD fact).
+// value equals `value`, or `null` when no member carries it. The qualified
+// `E.b` form is a valid D expression; a bare `b` is not. Reads
+// `TypeEnum.sym.members`/`EnumMember` directly, DMD's own enum member
+// declarations, rather than re-deriving membership from anything else; a
+// caller that gets `null` back renders the non-member form (this function
+// does not, since that is a display decision, not a DMD fact).
 //
 // An enum whose base type is not integral answers `null` outright, decided
 // here on DMD's own `TypeEnum.isIntegral` (which forces and consults the
@@ -310,9 +309,7 @@ public string enumMemberQualifiedName(
 // same caveat `declaredTypeImpl` above gives for `VarDeclaration.type`;
 // this is the @trusted boundary. It only walks DMD's own already-populated
 // member list and reads each member's own already-computed constant value
-// and identifier -- no arithmetic of our own, the same "read DMD's own
-// state, no arithmetic of our own" trust `place_value.d`'s
-// `structTypeNameImpl` gives for reading a struct's own name.
+// and identifier -- no arithmetic of our own.
 private string enumMemberQualifiedNameImpl(
     imported!"dmd.mtype".TypeEnum type,
     in long value,

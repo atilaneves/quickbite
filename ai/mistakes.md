@@ -10,6 +10,15 @@
 
 - Never weaken or replace a test to make it pass.
 
+- Never put a required evaluation inside `assert`. Release builds remove the
+  expression and can read untouched destination storage. Evaluate first, then
+  report a normal checked failure if the required operation declines.
+
+- A ref-returning call's address path is its complete lvalue contract. Reuse
+  that path for assignment and reference forwarding. A second assign-during-
+  return mode duplicates argument and receiver evaluation and preserves a
+  boxed call channel.
+
 - When a normalization helper may return its input unchanged, do not infer
   that normalization occurred solely from the result's value category.
 
@@ -364,9 +373,9 @@
   into a later binding"), which is what the reference was standing in for. This
   is easy to get wrong when a commit is driven from a plan or a review finding —
   the framing that produced the change is not the framing that explains it. A
-  bare `§`-section citation to a design doc (e.g. `ffi.md §35.2`) is a different
-  thing and remains fine: it points at a stable specified contract, not at
-  narrative.
+  bare section citation to a live design document (for example,
+  `ai/plans/interpreter.md`'s storage contract) is different and remains fine:
+  it points at a stable specified contract, not at narrative.
 
 - When a fixture carries a `SystemLinker`-oracle expectation, give it
   `Matrix!(...)` and opt backends out only via `Omit!(B, Because.…, "note")` —
@@ -694,8 +703,56 @@
   the VM's own call loop, with the FFI path a bystander. Bracket each
   candidate phase with `GC.allocatedInCurrentThread` (O(1), collection-
   immune) and compare against a compiled-D ground-truth run before
-  patching any site. Never sample `GC.stats.usedSize` in a hot path -- it
-  walks GC pools and gets slower as the heap grows.
+  patching any site. An unchanged total is evidence against the hypothesis,
+  not a reason to patch more similar sites. Never sample `GC.stats.usedSize`
+  in a hot path -- it walks GC pools and gets slower as the heap grows. Issue
+  #525's equivalent interpreter probe attributed 5.0 of 7.4 GB to returned
+  activations discarding and rebuilding their expression-keyed temporary
+  blocks; reusing eligible frames removed that churn.
+
+- When one AST discriminator covers result types with different execution
+  paths, retire only the type covered by the new path. A destination arm for
+  void logical expressions does not replace the boxed fallback for a non-void
+  logical expression when a destination-type mismatch makes scalar construction
+  decline.
+
+- A `SymOffExp` that names variable storage does not always have a pointer
+  type. DMD can give it the final cast-result type while it still denotes the
+  declaration's address. When this happens, derive the physical pointer place
+  from the declaration type before adapting it to the result destination.
+
+- A function declaration used as a value can retain `Tfunction` as the AST
+  expression type while its destination is a function-pointer place. Do not
+  allocate an expression-type temporary for this conversion: function types
+  have no value-storage size. Send the symbolic callable identity directly to
+  the pointer destination.
+
+- A declaration reached through a function-pointer call supplies symbol
+  identity, but the call-site function type supplies the native ABI. Do not
+  route the plain pointer through a delegate call or add a hidden context.
+  When DMD paints a `ref` callback parameter to a pointer ABI, bind the
+  interpreted parameter to the pointed-to typed place during reverse re-entry.
+
+- A projection-place eligibility check and its lvalue-tree collector must
+  accept the same roots. Adding struct `this`/`super` to only the first check
+  still rejects `this.arrayField[index]` when the collector reaches the root;
+  compound assignment then loses the live place that it must select once.
+
+- For a mechanical edit of repeated statements such as `return value`, anchor
+  every patch hunk in the containing function. A text-only replacement can
+  silently change an unrelated execution path that happens to contain the
+  same statement.
+
+- Do not replace DMD's `defaultInitLiteral` evaluation with
+  `runtime_values.defaultValue` when moving a default into typed storage. The
+  runtime helper starts from each field type's default and does not apply the
+  field declaration's initializer; a static array of structs then repeats the
+  wrong element image. Evaluate the semantic default expression directly into
+  the destination place.
+
+- D's built-in complex types do not have a two-argument constructor, and their
+  `.re` and `.im` properties are not writable lvalues. Rebuild a generic
+  complex result as `cast(T)(re + im * 1i)` before storing its native bytes.
 
 - A high call count does not show which path dominates elapsed time. Measure
   inclusive cycles for the whole VM and each nested phase, and measure the
@@ -740,6 +797,30 @@
   simplified by DMD before bytecode compilation, leaving no runtime handler
   to test. Keep a runtime branch that can throw, and trigger the later throw
   from a separate callee after the return so handler lifetime is observable.
+
+- DMD's `mutableOf`/`unSharedOf` (`typesem.d`) call `Type.merge()`
+  unconditionally, even for an already-unqualified type, and `merge()` is
+  only free when `Type.deco` is already set; otherwise it allocates a fresh
+  `OutBuffer` and does a `stringtable` lookup every single call, not just
+  the first. Whether a given scalar's cv-qualified/unqualified pair caches
+  correctly (`Type.mcache.cto` etc.) depends on how it was created earlier
+  in the *same process* -- some construction paths (seen via a prior Ctfe
+  evaluation) never populate the back-reference `mutableOf` needs, so a
+  per-call comparison that looked free in isolation cost real bytes on
+  every call once a specific earlier test had run, an order-dependent GC
+  allocation regression that only appeared deep in the full suite. For a
+  `TypeBasic`, skip DMD's modifier-stripping machinery entirely and compare
+  `.ty` directly -- a scalar's native layout is fully determined by it,
+  independent of qualifiers, with no `Type.merge()` involved. A sibling
+  case: `Type.equals` itself also shortcuts on reference identity and
+  otherwise compares `.deco`, so a type synthesized outside DMD's normal
+  interning (never run through `Type.merge`) always compares unequal to a
+  byte-for-byte identical one unless the two sides happen to be the same
+  unmerged object -- commit 14bf16e4 hit this for a lowered call's
+  delegate type and fixed it by comparing ABI shape structurally instead of
+  trusting `equals`. DMD's own type-identity helpers are not safe to call
+  from a hot per-call path without checking what they cost, or return,
+  when `.deco` isn't already resolved.
 
 - A zero-hit probe over the current suite does not prove a fallback dead:
   if a registration that may decline can still arise, keep the fallback

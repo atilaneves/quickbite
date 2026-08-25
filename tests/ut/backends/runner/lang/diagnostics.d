@@ -231,6 +231,7 @@ static foreach (backend; Matrix!(Plus!(IR))) {
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     @("voidFunctionOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void foo() {
@@ -414,6 +415,7 @@ static foreach (backend; Matrix!(Plus!(IR))) {
 
 static foreach (backend; AliasSeq!(Ctfe, IR)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -531,6 +533,7 @@ static foreach (backend; Matrix!(Plus!(IR))) {
 // the test runner (ai/plans/dmd-backend.md, slice 3).
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Thing {
@@ -550,6 +553,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Thing {
@@ -567,6 +571,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Thing {}
@@ -582,6 +587,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     @("nullClassNotIdentityUsesNotEqualPolarity." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Thing {}
@@ -632,6 +638,7 @@ static foreach (backend; Matrix!()) {
 // reads whatever is in the slot.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(
             runBackendSourceFixtureTests!backend(q{

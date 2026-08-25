@@ -56,16 +56,16 @@ not yet covered anywhere in the current CTFE-backed language tests.
   `i64`, `f32`, `f64`). The executor selects the operation from the
   instruction's declared type, not from a runtime tag on the value. D language
   types are mapped to the cheapest IR representation that preserves enough
-  D-visible scalar semantics for direct execution and final result conversion.
-  The IR does not represent D's full type hierarchy, but the VM must not need
-  DMD lookups or `quickbite.lang.Value` dispatch to recover signedness,
-  character-ness, float width, or result category. This can be represented
-  with D-aware scalar types or with LLVM-style width types plus explicit
-  signedness/category on operations, casts, comparisons, and return/result
-  metadata; choose the representation that best serves edit-to-test-result
-  latency for the current slice. Never dispatch on `value.isFloating` or an
-  equivalent runtime check — that is the legacy IR's central mistake and the
-  root cause of its inconsistent arithmetic handling.
+  D-visible scalar semantics for direct execution and final display. The IR
+  does not represent D's full type hierarchy, but the VM must not need DMD
+  lookups or a boxed runtime value to recover signedness, character-ness,
+  float width, or result category. This can use D-aware scalar types or
+  LLVM-style width types plus explicit signedness/category on operations,
+  casts, comparisons, and return metadata; choose the representation that
+  best serves edit-to-test-result latency for the current slice. Never
+  dispatch on a runtime `isFloating` tag or equivalent — that is the legacy
+  IR's central mistake and the root cause of its inconsistent arithmetic
+  handling.
 - Keep control flow explicit with basic blocks and terminators. Prefer a form
   that is easy to rewrite locally and does not depend on AST shape. Each basic
   block carries an optional exception successor (the landing pad block). All
@@ -144,17 +144,12 @@ instruction and VM execution for `f32` operands while preserving the public
 `float` result.
 The promoted `stringLiteralIsArray.IR` test added a backend-local
 `StringConst` instruction, narrow compiler lowering for DMD `StringExp`, a
-`string_` result category, and VM string result storage used only for final
-conversion to `quickbite.lang.Value`.
+`string_` result category, and VM string storage used for final display.
 IR values carry both an operation type (`i32`, `f32`, and so on) and a
 D-visible scalar result category so the VM can keep arithmetic dispatch typed
-while preserving the public eval result type. `vm.d` executes the single entry
-block directly before converting the returned IR value to `quickbite.lang.Value`
-at the backend boundary. (Decision update 2026-06-12, `ai/plans/value.md`:
-the `Evaluator` contract drops `quickbite.lang.Value` for a rendered
-display string; the boundary conversion becomes private interim
-scaffolding, deleted once the IR core can execute the in-program
-formatter prelude.)
+while preserving public display behavior. `vm.d` executes the entry block and
+formats its private typed result as the `Evaluator` display string. This is
+interim boundary scaffolding; `repl.md` owns the target in-program formatter.
 
 The current mutation support is intentionally narrow. Locals are identified by
 compiler-assigned integer indices, and `Load`/`Store` operate on those local
@@ -367,9 +362,9 @@ support yet.
   raw bits + result `Value`) and `BinaryOp` (typed binary op, operation enum
   + lhs/rhs value ids + result `Value`). Add `Alloca`, `Load`, and
   `Store` when mutation tests are promoted; `Load` and `Store` consume typed
-  place references, not ordinary `ptr` SSA values. Do not store
-  `quickbite.lang.Value` inside IR instructions; convert to that public API
-  type only at backend boundaries.
+  place references, not ordinary `ptr` SSA values. Do not store a host boxed
+  guest value inside IR instructions. Result display belongs only at the
+  evaluator boundary until the IR executes the guest formatter.
 - Terminators as a `SumType`: `Branch` (unconditional jump to a target block
   id with positional args), `CondBranch` (conditional jump with args for both
   successors), `ReturnValue` (return a value id), `ReturnVoid`.

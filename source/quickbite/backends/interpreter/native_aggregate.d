@@ -4,7 +4,7 @@ module quickbite.backends.interpreter.native_aggregate;
 private:
 
 
-// The sole aggregate expression carrier. Guest aggregate bits live in
+// Owned or borrowed guest aggregate storage. Guest aggregate bits live in
 // `_storage` at their DMD type's native layout. The
 // block handle roots the allocation; copying this value never copies guest
 // bytes and therefore preserves aliasing for structs, static arrays, slice

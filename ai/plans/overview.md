@@ -25,7 +25,8 @@ Backends:
   from `SystemLinker` its behaviour is characterized, not treated as
   truth (`AGENTS.md`, Testing).
 - `Interpreter` — tree-walking AST interpreter. Current centre of
-  gravity: execute Cerealed completely (`interpreter.md`).
+  gravity: execute real packages through native typed places and ordinary D
+  runtime semantics (`interpreter.md`).
 - `Bytecode` — bytecode VM compiled lazily per function from the
   analysed AST, values in native D layout throughout (`bytecode.md`).
 - `IR` — lower-to-IR interpreter (`ir.md`).

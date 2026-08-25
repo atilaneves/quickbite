@@ -2,7 +2,7 @@ module quickbite.backends.ir.vm;
 
 private:
 
-package imported!"quickbite.lang".Value eval(
+package string eval(
     in imported!"quickbite.backends.ir.language".Function function_,
 ) {
     Machine machine;
@@ -53,7 +53,6 @@ private struct Machine {
         UnaryIntrinsicOperation,
         UnaryOp,
         UnaryOperation;
-    import quickbite.lang: Value;
     import std.sumtype: match;
 
     private ulong[] scalarValues;
@@ -1080,40 +1079,50 @@ private struct Machine {
         }
     }
 
-    private Value result(in Function function_) {
+    private string result(in Function function_) {
         return result(function_.returnType, returnedValueId);
     }
 
-    private Value result(in ResultKind kind, in uint valueId) {
+    private string result(in ResultKind kind, in uint valueId) {
+        import std.conv: text;
+
         final switch (kind) with (ResultKind) {
             case bool_:
-                return Value(cast(bool) scalarValues[valueId]);
+                return text(cast(bool) scalarValues[valueId]);
             case byte_:
-                return Value(cast(byte) scalarValues[valueId]);
+                return text(cast(byte) scalarValues[valueId]);
             case ubyte_:
-                return Value(cast(ubyte) scalarValues[valueId]);
+                return text(cast(ubyte) scalarValues[valueId]);
             case short_:
-                return Value(cast(short) scalarValues[valueId]);
+                return text(cast(short) scalarValues[valueId]);
             case ushort_:
-                return Value(cast(ushort) scalarValues[valueId]);
+                return text(cast(ushort) scalarValues[valueId]);
             case int_:
-                return Value(cast(int) scalarValues[valueId]);
+                return text(cast(int) scalarValues[valueId]);
             case uint_:
-                return Value(cast(uint) scalarValues[valueId]);
+                return text(cast(uint) scalarValues[valueId], "u");
             case long_:
-                return Value(cast(long) scalarValues[valueId]);
+                return text(cast(long) scalarValues[valueId], "L");
             case ulong_:
-                return Value(cast(ulong) scalarValues[valueId]);
+                return text(cast(ulong) scalarValues[valueId], "UL");
             case char_:
-                return Value(cast(char) scalarValues[valueId]);
+                return text("'", cast(char) scalarValues[valueId], "'");
             case float_:
-                return Value(floatFromBits(scalarValues[valueId]));
+                return decimalText(floatFromBits(scalarValues[valueId])) ~ "f";
             case double_:
-                return Value(doubleFromBits(scalarValues[valueId]));
+                return decimalText(doubleFromBits(scalarValues[valueId]));
             case string_:
-                return Value(stringValues[valueId]);
+                return stringValues[valueId];
             case class_:
                 assert(0);
         }
+    }
+
+    private string decimalText(T)(in T value) @safe pure {
+        import std.algorithm: canFind;
+        import std.conv: text;
+
+        const result = text(value);
+        return result.canFind('.', 'e', 'E', "inf", "nan") ? result : result ~ ".0";
     }
 }

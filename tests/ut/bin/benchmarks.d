@@ -363,7 +363,7 @@ unittest {
     assert(report.canFind("b"));
     assert(report.canFind("frontend"));
     assert(report.canFind("fixture"));
-    "ram".should.be in report;
+    "GC.allocatedInCurrentThread delta".should.be in report;
     "KiB".should.be in report;
 }
 

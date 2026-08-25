@@ -823,6 +823,7 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             private enum MyEnum {
@@ -940,6 +941,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -1026,6 +1028,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Reader {
@@ -1187,6 +1190,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     )
     @("classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Message {

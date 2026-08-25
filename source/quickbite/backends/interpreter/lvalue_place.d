@@ -193,11 +193,10 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
 
 // The place a `SymOffExp` POINTS AT: `symbol.var`'s own base address plus
 // DMD's own already-computed byte offset (`SymOffExp.offset`), at the
-// pointee type `SymOffExp.type` itself names a pointer to. This is
-// `value.md`'s Layout authority contract for the shape -- a constant-index
-// address into a static-array local arrives as a `SymOffExp`, and DMD's
-// byte offset applies directly to that local's own cell address rather than
-// being re-derived as an element index.
+// pointee type `SymOffExp.type` itself names a pointer to. A constant-index
+// address into a static-array local arrives as a `SymOffExp`, and DMD's byte
+// offset applies directly to that local's own address rather than being
+// re-derived as an element index.
 //
 // Deliberately not an arm of `placeOfLvalue`: what it returns is one
 // dereference removed from the expression it is handed, which is exactly
@@ -351,8 +350,8 @@ private imported!"dmd.declaration".Declaration symOffExpDeclaration(
 
 // `symbol`'s own byte offset (`SymOffExp.offset`) -- DMD's own already-
 // computed byte offset from `symbol.var`'s storage (see `impl.d`'s
-// `symbolOffsetLocalValue`, which applies this exact same number straight
-// to a cell's address rather than re-deriving it as an element index).
+// `constructVariableSymbolOffsetInto`, which applies this exact same number
+// straight to a cell's address rather than re-deriving it as an element index).
 // Plain field, `@trusted` boundary as above.
 //
 // Read here rather than through `layout.d` on purpose. That module owns the

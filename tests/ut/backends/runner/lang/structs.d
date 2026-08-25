@@ -526,6 +526,44 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A dynamic-array struct field's delegate elements, written by SUB-SLICE
+// assignment (`s.actions[i .. i + 1] = ...`) rather than an individual
+// index write (`struct.delegateFieldWriteThroughPointerIsCallable` below)
+// or an append (`struct.literalDelegateFieldAppendedToArrayIsCallable`
+// above). Each element write must reach the same out-of-band delegate-slot
+// bookkeeping those other paths use; the field's own array storage has no
+// native-bytes representation for a live (non-null) delegate.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "\"Unsupported expression in bytecode core: &addFirst\""),
+)) {
+    @("struct.delegateArrayFieldSubSliceAssignmentIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate()[] actions;
+            }
+
+            unittest {
+                int first = 10;
+                int second = 20;
+                int addFirst() { return first; }
+                int addSecond() { return second; }
+
+                S s;
+                s.actions.length = 2;
+                s.actions[0 .. 1] = &addFirst;
+                s.actions[1 .. 2] = &addSecond;
+
+                assert(s.actions[0]() == 10);
+                assert(s.actions[1]() == 20);
+            }
+        });
+    }
+}
+
 // A delegate-typed field written through a POINTER receiver, both outside
 // a constructor (`p.g = ...`, `p` a plain `S*` local) and from inside the
 // constructor via `this` (`this.f = ...`) when the struct itself was
@@ -2821,12 +2859,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `frame_layout`'s reference slot for a `ref`/`out` parameter (`value.md`'s
-// Remaining work item 5) composes the caller-side address of a `ref`
-// argument's own lvalue at bind time and stores it in the callee's frame,
-// purely as an internal, bind-time-verified shadow -- authority stays
-// boxed, so every fixture below only re-confirms `SystemLinker`-oracle
-// behaviour that already worked, now exercised through the new wiring.
+// A `ref` or `out` parameter aliases the caller's selected lvalue. Writes in
+// the callee must therefore change that caller storage for scalars,
+// aggregates, references, and nested forwarding alike.
 static foreach (backend; Matrix!()) {
     @("refArgument.scalarParameterMutatedByCallee." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3820,14 +3855,9 @@ static foreach (backend; Matrix!(
 }
 
 // DMD flattens an ANONYMOUS union's members into the enclosing struct's own
-// `fields` at OVERLAPPING offsets (`ai/plans/value.md`'s Unions section: the
-// offsets are the aliasing truth). The enclosing declaration is still a
-// plain struct, so treating its fields as independent, non-overlapping
-// storage writes both members in declaration order over the same bytes and
-// lets the last one win. `real` and `long` never re-derive each other, so
-// after `s.l = 42` the boxed `r` is still NaN while the bytes read `42` --
-// two members whose snapshots genuinely contradict, which is exactly what
-// an explicit union's own stricter gate exists to refuse.
+// `fields` at overlapping offsets. The offsets define D's aliasing: writing
+// one member changes the bytes read through the other member, even though the
+// enclosing declaration is a struct.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~

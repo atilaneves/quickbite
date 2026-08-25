@@ -6,9 +6,8 @@ private:
 
 public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, ReplSession,
-        displayString;
-    import quickbite.lang: Value;
+    import quickbite.backends.evaluator: displayEvalResult, Evaluator, EvalResult,
+        ReplSession;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
@@ -25,7 +24,7 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
             diagnostic,
         );
         return diagnostic.length == 0
-            ? EvalResult(displayString(ctfeValue(interpreted), function_))
+            ? displayEvalResult(() => ctfeDisplay(interpreted, function_), function_)
             : EvalResult(EvalResult.Diagnostic(diagnostic));
     }
 
@@ -104,6 +103,18 @@ private char ctfeChar(imported!"dmd.expression".Expression expression) {
     throw new Exception("Prelude formatter returned a non-character string element.");
 }
 
+private string ctfeDisplay(
+    imported!"dmd.expression".Expression expression,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+    auto returnType = function_.type is null ? null : function_.type.nextOf;
+    return isCharacterArrayType(returnType)
+        ? ctfeStringDisplay(expression)
+        : expressionChars(expression);
+}
+
 private class CtfeReplSession: imported!"quickbite.backends.evaluator".ReplSession {
     private Ctfe _ctfe;
 
@@ -174,166 +185,10 @@ private imported!"dmd.expression".CallExp callExpression(
     return callExp;
 }
 
-private imported!"quickbite.lang".Value ctfeValue(
-    imported!"dmd.expression".Expression expression,
-) {
-    import quickbite.lang: Value;
-
-    if (auto integer = expression.isIntegerExp)
-        return integerValue(integer);
-
-    if (auto real_ = expression.isRealExp)
-        return realValue(real_);
-
-    if (auto string_ = expression.isStringExp) {
-        import quickbite.frontend.dmd.string_literals: stringValue;
-
-        return stringValue(string_);
-    }
-
-    if (auto null_ = expression.isNullExp)
-        return Value.null_();
-
-    if (auto construct = expression.isConstructExp)
-        return ctfeValue(construct.e2);
-
-    if (auto array = expression.isArrayLiteralExp)
-        return arrayValue(array);
-
-    if (auto assocArray = expression.isAssocArrayLiteralExp)
-        return assocArrayValue(assocArray);
-
-    if (auto struct_ = expression.isStructLiteralExp)
-        return structValue(struct_);
-
-    return Value.undisplayable;
-}
-
-private imported!"quickbite.lang".Value integerValue(
-    imported!"dmd.expression".IntegerExp integer,
-) {
-    import dmd.astenums: TY;
-    import quickbite.frontend.dmd.values: frontendIntegerValue = integerValue;
-    import quickbite.lang: Value;
-
-    if (
-        integer.type !is null &&
-        integer.type.ty == TY.Tenum
-    )
-        return Value.enumValue(expressionChars(integer));
-
-    return frontendIntegerValue(integer);
-}
-
 private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
     import std.string: fromStringz;
 
     return expression.toChars.fromStringz.idup;
-}
-
-private imported!"quickbite.lang".Value realValue(
-    imported!"dmd.expression".RealExp real_,
-) {
-    import quickbite.frontend.dmd.values: frontendRealValue = realValue;
-
-    return frontendRealValue(real_);
-}
-
-private imported!"quickbite.lang".Value arrayValue(
-    imported!"dmd.expression".ArrayLiteralExp array,
-) {
-    import quickbite.lang: Value;
-
-    Value[] values;
-    foreach (index; 0 .. array.elements.length)
-        values ~= ctfeValue(array[index]);
-
-    return Value.arrayValue(values);
-}
-
-private imported!"quickbite.lang".Value assocArrayValue(
-    imported!"dmd.expression".AssocArrayLiteralExp assocArray,
-) {
-    import quickbite.lang: Value;
-
-    Value[] keys;
-    Value[] values;
-    foreach (index; 0 .. assocArray.keys.length) {
-        keys ~= ctfeValue((*assocArray.keys)[index]);
-        values ~= ctfeValue((*assocArray.values)[index]);
-    }
-
-    return Value.assocArrayValue(keys, values);
-}
-
-private imported!"quickbite.lang".Value structValue(
-    imported!"dmd.expression".StructLiteralExp struct_,
-) {
-    import quickbite.lang: Value;
-
-    Value[] fields;
-    if (struct_.elements !is null) {
-        foreach (index, element; *struct_.elements) {
-            if (element is null)
-                continue;
-
-            auto field = structLiteralField(struct_, index);
-            if (field is null)
-                continue;
-            if (isUndisplayableCtfeStructField(field, element))
-                continue;
-
-            fields ~= ctfeValue(element);
-        }
-    }
-
-    return Value.structValue(
-        struct_.sd.ident.toString.idup,
-        fields,
-    );
-}
-
-private bool isUndisplayableCtfeStructField(
-    imported!"dmd.declaration".VarDeclaration field,
-    imported!"dmd.expression".Expression element,
-) {
-    if (element.isNullExp is null)
-        return false;
-    if (isSyntheticThisField(field))
-        return true;
-    return isFunctionLikeType(field.type);
-}
-
-private bool isSyntheticThisField(
-    imported!"dmd.declaration".VarDeclaration field,
-) {
-    // a D cast on the extern(C++) dmd AST classes is unchecked, so
-    // cast(ThisDeclaration) would be non-null for every field
-    return field.isThisDeclaration !is null;
-}
-
-private imported!"dmd.declaration".VarDeclaration structLiteralField(
-    imported!"dmd.expression".StructLiteralExp literal,
-    in size_t index,
-) {
-    if (literal.sd is null || index >= literal.sd.fields.length)
-        return null;
-    return literal.sd.fields[index];
-}
-
-private bool isFunctionLikeType(imported!"dmd.mtype".Type type) {
-    if (type is null)
-        return false;
-
-    auto basetype = type.toBasetype;
-    if (basetype.isTypeFunction !is null)
-        return true;
-    if (basetype.isTypeDelegate !is null)
-        return true;
-    if (auto pointer = basetype.isTypePointer)
-        return pointer.nextOf.isTypeFunction !is null;
-
-    return false;
 }
 
 private __gshared uint _diagnosticModuleCounter;

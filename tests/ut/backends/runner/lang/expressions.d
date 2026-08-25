@@ -791,96 +791,6 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
-    @("floating.divisionUsesRuntimeOperands." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            float divideFloat(float numerator, float denominator) {
-                return numerator / denominator;
-            }
-
-            double divideDouble(double numerator, double denominator) {
-                return numerator / denominator;
-            }
-
-            unittest {
-                float floatDenominator = 3.0f;
-                double doubleDenominator = 3.0;
-
-                assert(divideFloat(6.0f, floatDenominator) == 2.0f);
-                assert(divideDouble(6.0, doubleDenominator) == 2.0);
-            }
-        });
-    }
-}
-
-static foreach (backend; Matrix!()) {
-    @("floating.moduloUsesRuntimeOperands." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            float moduloFloat(float numerator, float denominator) {
-                return numerator % denominator;
-            }
-
-            double moduloDouble(double numerator, double denominator) {
-                return numerator % denominator;
-            }
-
-            unittest {
-                float floatDenominator = 4.0f;
-                double doubleDenominator = 4.0;
-
-                assert(moduloFloat(6.0f, floatDenominator) == 2.0f);
-                assert(moduloDouble(-6.0, doubleDenominator) == -2.0);
-            }
-        });
-    }
-}
-
-static foreach (backend; Matrix!()) {
-    @("floating.realArithmeticUsesRuntimeOperands." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            real addReal(real lhs, real rhs) {
-                return lhs + rhs;
-            }
-
-            real subtractReal(real lhs, real rhs) {
-                return lhs - rhs;
-            }
-
-            real multiplyReal(real lhs, real rhs) {
-                return lhs * rhs;
-            }
-
-            real divideReal(real lhs, real rhs) {
-                return lhs / rhs;
-            }
-
-            real moduloReal(real lhs, real rhs) {
-                return lhs % rhs;
-            }
-
-            unittest {
-                real lhs = 6.0L;
-                real rhs = 4.0L;
-
-                assert(addReal(lhs, rhs) == 10.0L);
-                assert(subtractReal(lhs, rhs) == 2.0L);
-                assert(multiplyReal(lhs, rhs) == 24.0L);
-                assert(divideReal(lhs, rhs) == 1.5L);
-                assert(moduloReal(lhs, rhs) == 2.0L);
-
-                real negativeLhs = -6.0L;
-                assert(moduloReal(negativeLhs, rhs) == -2.0L);
-            }
-        });
-    }
-}
-
-static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -914,6 +824,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
         "assert formatter uses sprintf",
     )
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -963,33 +874,6 @@ static foreach (backend; Matrix!()) {
                 E e = E.a;
                 e = E.b;
                 assert(cast(real) e == 2.5L);
-            }
-        });
-    }
-}
-
-// `enum Foo : ubyte { ... }` declared inside a function body (rather than at
-// module scope) is a local type declaration: DMD wraps it in a
-// `DeclarationExp`, the same AST shape used for a local `struct`.
-static foreach (backend; Matrix!()) {
-    @("enum.localDeclarationInsideUnittestCompiles." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                enum Foo : ubyte {
-                    bar = 0,
-                    baz = 1,
-                }
-
-                ubyte[] raw = [0, 1];
-                size_t index;
-
-                Foo first = cast(Foo) raw[index++];
-                Foo second = cast(Foo) raw[index++];
-
-                assert(first == Foo.bar);
-                assert(second == Foo.baz);
             }
         });
     }
@@ -1111,6 +995,36 @@ static foreach (backend; Matrix!()) {
 
                 assert(packed.re == 42);
                 assert(packed.im == 1);
+            }
+        });
+    }
+}
+
+// `TypeBasic.dotExp` lowers `imaginaryVar.im` by relabelling the same
+// `VarExp` to the matching real type rather than wrapping a `CastExp`
+// around it (unlike the complex `.re`/`.im` case above), and does so
+// separately for each of the three imaginary widths -- a fixture per width
+// pins that the interpreter's read of the relabelled `VarExp` reinterprets
+// its bytes as the property's real type instead of rejecting it (or, if it
+// went through a genuine cast, silently returning 0).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core's scalar type switch has no Timaginary32/64/80 " ~
+        "case at all (compiler.d's `scalarType`), unlike the interpreter " ~
+        "and CTFE backends"),
+)) {
+    @("imaginary.dotImPropertyReadsMagnitudeAtRuntimeForEachWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ifloat narrow = 42.0fi;
+                idouble wide = 42.0i;
+                ireal widest = 42.0Li;
+
+                assert(narrow.im == 42);
+                assert(wide.im == 42);
+                assert(widest.im == 42);
             }
         });
     }
@@ -1523,39 +1437,6 @@ static foreach (backend; Matrix!(
                 auto reading = Reading(3);
                 auto expected = Reading(3);
                 assert(wrap(reading).equals(expected));
-            }
-        });
-    }
-}
-
-// An immediately-invoked function literal (`() { return S(value); }()`)
-// evaluates its single `return` expression exactly as if it were written
-// directly in the enclosing function's own body: reading `value`, an
-// `auto ref` parameter of that enclosing function, from inside the literal
-// must still see the argument the caller passed, not an unrelated value.
-static foreach (backend; Matrix!()) {
-    @("closure.immediatelyInvokedLiteralConstructsFromEnclosingRefParameter." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Reading {
-                int amount;
-
-                this(int amount) {
-                    this.amount = amount;
-                }
-            }
-
-            auto wrap(V)(auto ref V value) {
-                return () { return Reading(value); }();
-            }
-
-            unittest {
-                int measured = 5;
-                auto reading = wrap(measured);
-
-                assert(reading.amount == measured);
             }
         });
     }
@@ -2045,6 +1926,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Widget {}
@@ -2517,6 +2399,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.ptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -2591,6 +2474,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.funcptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -4304,6 +4188,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A whole-slice assignment from an array literal (`actions[] = [&addFirst,
+// &addSecond];`) constructs the right-hand side as its own independent
+// native array, then re-reads each of THAT array's elements while filling
+// `actions`' own range (`runSliceAssignExpression`'s literal-fill loop).
+// That intermediate element read must reach the same out-of-band
+// delegate-slot bookkeeping every other delegate-element path in this file
+// uses; a live delegate has no native-bytes representation to copy.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "\"Unsupported expression in bytecode core: &addFirst\""),
+)) {
+    @("delegate.dynamicArraySliceAssignedFromLiteralIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 10;
+                int second = 20;
+                int addFirst() { return first; }
+                int addSecond() { return second; }
+
+                int delegate()[] actions;
+                actions.length = 2;
+                actions[] = [&addFirst, &addSecond];
+
+                assert(actions[0]() == 10);
+                assert(actions[1]() == 20);
+            }
+        });
+    }
+}
+
 // The static-array twin: `int delegate()[2] dgs;` default-initializes each
 // element to `null` (DMD's whole-array `NullExp` blit), and each element is
 // then assignable and readable like any other inline aggregate slot.
@@ -5735,15 +5652,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A pointer local reassigned twice within the same activation, each
-// assignment a genuine host address (`values.ptr`, not `&scalar` -- see the
-// carrier fixture below), exercises `impl.d`'s verified frame mirror on its
-// ACCEPT path twice: `setLocal`/`mirrorToFrame` writes the new address into
-// the frame slot, and the next read's `assertFrameMirror` recomposes it
-// through the identical `place_value.writeValue` and compares raw bytes
-// (`ai/plans/value.md` "Remaining work" item 5, the pointer leaf). A wrong
-// scan policy or an asymmetric write/verify guard would surface here as an
-// `AssertError` from inside the interpreter, not a wrong return value.
+// Reassigning a pointer local must make later dereferences use the new
+// address. Each source array remains live while the pointer can refer to it.
 static foreach (backend; Matrix!()) {
     @("pointer.mirroredAcrossReassignment." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -8002,6 +7912,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.staticArrayPointerSurvivesWholeArrayAssignment.ctfeDivergence." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int one() {
@@ -8567,18 +8478,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A class field whose own type is a class -- an object GRAPH, not only a
-// single object -- built as a short linked list, then mutated and read back
-// through the SAME chain of field accesses throughout: this is the
-// real-object-graph shape the native frame mirror's class-body composition
-// now has to compose and verify without asserting. Deliberately built and
-// read through one root reference only (`first.next...`), never through a
-// second, independent local bound to an interior node: `ai/plans/value.md`'s
-// Cell coherence contract already names class-typed fields as having "no
-// cell support on either the read or write side", and a second alias into
-// the middle of the graph is exactly the shape that gap affects -- out of
-// this fixture's scope, which is the mirror's own composition, not that
-// pre-existing boxed-authority limit.
+// A linked object graph keeps each node's identity through chained field
+// access. Mutating the tail must not change either preceding node.
 static foreach (backend; Matrix!()) {
     @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -8685,18 +8586,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A shared object graph's nested body, rewritten through a DIFFERENT
-// binding's own mirror after `parent`'s own mirror last established, must
-// not crash a later read of `parent`: `child`'s own `mirrorClassToFrame`
-// write (`child.x = 5;`) rewrites the SAME `object_table.ObjectTable`-owned
-// body `parent`'s established graph already composed (`parent.child` is the
-// identical identity), strictly AFTER `parent`'s own mirror recorded what
-// it wrote. The pre-existing boxed-authority gap
-// (`ai/plans/value.md`'s Cell coherence "Known gaps") already means
-// `parent`'s own boxed `locals[]` copy of `child`'s field goes stale here --
-// a wrong VALUE on a correct guest program, on master too -- but the native
-// mirror's own verify step must not turn that pre-existing wrong answer
-// into an internal `AssertError` crash.
+// Two class bindings that refer to the same child object share its identity.
+// A field write through the child binding must be visible through the
+// parent's field.
 static foreach (backend; Matrix!()) {
     @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
         backend.stringof)
@@ -9119,11 +9011,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A class-typed field reassigned to a NEW object must observe the new
-// object's own fields afterward, not retain the old object's -- ordinary
-// class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
-// coherence contract), which the native mirror's object-graph composition
-// must not disturb.
+// Reassigning a class-typed field binds it to the new object's identity.
+// Later field writes and reads must not retain the old object's state.
 static foreach (backend; Matrix!()) {
     @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -11364,6 +11253,58 @@ static foreach (backend; Matrix!(
                     Probe(1, &log).id + Probe(2, &log).id + Probe(3, &log).id;
                 assert(total == 6);
                 assert(log == [3, 2, 1]);
+            }
+        });
+    }
+}
+
+// Every temporary armed by one full expression is destroyed in reverse
+// construction order even when a destructor throws. Each later destructor
+// failure is appended to the first failure's Throwable chain. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the full-expression temporaries' destructors never run, so `log` "
+        ~ "stays empty instead of accumulating ids in reverse order"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(1, & log)).id"),
+)) {
+    @("destructor.throwingFullExpressionDestroysAllAndChainsFailures." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    *log ~= id;
+                    if (id == 3)
+                        throw new Exception("three");
+                    if (id == 2)
+                        throw new Exception("two");
+                    throw new Exception("one");
+                }
+            }
+
+            unittest {
+                int[] log;
+                Throwable failure;
+                try
+                    cast(void) (
+                        Probe(1, &log).id + Probe(2, &log).id +
+                        Probe(3, &log).id
+                    );
+                catch (Throwable caught)
+                    failure = caught;
+
+                assert(log == [3, 2, 1]);
+                assert(failure !is null);
+                assert(failure.msg == "three");
+                assert(failure.next.msg == "two");
+                assert(failure.next.next.msg == "one");
+                assert(failure.next.next.next is null);
             }
         });
     }
@@ -14705,9 +14646,8 @@ static foreach (backend; Matrix!()) {
 
 // The static-array sibling of the fixture above: `*&buf[2]` carries DMD's
 // own already-computed byte offset for element 2 in the `SymOffExp` it folds
-// to, which the `ref` bind must apply directly to `buf`'s own storage
-// (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
-// an element index.
+// to. The `ref` bind must apply that offset directly to `buf`'s storage
+// rather than re-derive it as an element index.
 static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
         backend.stringof)
@@ -16054,15 +15994,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variables `arr`/" ~
         "`calls` at compile time"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "a pointer/index assignment-chain receiver (`(*next() = value)." ~
-        "method()`) would need `next()`'s side effect evaluated exactly " ~
-        "once when resolving the method's `this` address, which the " ~
-        "current architecture can't guarantee without duplicating it; " ~
-        "`runMemberFunction` refuses the shape with \"Unsupported eval " ~
-        "expression: chained postblit/method call receiver's assignment " ~
-        "target is a pointer/index expression...\" rather than risk the " ~
-        "double evaluation"),
     Omit!(Bytecode, Because.unconfirmed,
         "independent, unconfirmed gap: \"Unsupported struct value in " ~
         "bytecode core: *next() = P(10)\" -- the bytecode core doesn't " ~
@@ -16101,6 +16032,7 @@ static foreach (backend; Matrix!(
 // other null-class-dereference site in the backend.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class C {}
@@ -16192,6 +16124,332 @@ static foreach (backend; Matrix!()) {
 
                 assert(evaluations == 1);
                 assert(value == 7);
+            }
+        });
+    }
+}
+
+// D's pointer post-increment/decrement moves the pointer by one element of
+// its pointee type, the same scaling `p + n`/`p - n` pointer arithmetic
+// already applies -- not by one byte. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.postIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p++;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.postDecrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p--;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` post-increment arm.
+    @("pointer.structFieldPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p++;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` post-increment arm, where the array's
+    // own elements are pointers.
+    @("pointer.arrayElementPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0]++;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // `(*pp)++` through a pointer to a pointer post-increments the
+    // pointee -- itself a pointer -- so it too moves by one element of its
+    // own pointee type.
+    @("pointer.dereferencedPointerToPointerPostIncrementAdvancesByElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto pp = &p;
+                auto a = **pp;
+                (*pp)++;
+                auto b = **pp;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}
+
+// D's pointer compound assignment (`p += n`/`p -= n`) moves the pointer by
+// `n` elements of its pointee type, the same scaling plain `p + n` pointer
+// arithmetic and `p++`/`p--` already apply -- not by `n` bytes. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 1;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.addAssignAdvancesByMultipleElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 2;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` compound-assignment arm.
+    @("pointer.structFieldAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p += 1;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` compound-assignment arm, where the
+    // array's own elements are pointers.
+    @("pointer.arrayElementAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0] += 1;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}
+
+// The bytecode core does not yet implement pointer `-=`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported compound assignment in bytecode core: p -= 4L"),
+)) {
+    @("pointer.subAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p -= 1;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+}
+
+// D's compound assignment through a dereferenced, side-effecting
+// pointer-returning call (`*p() += v`) evaluates `p()` exactly once, the
+// same evaluation-order guarantee
+// `struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce` already
+// pins for a plain method-call receiver. `hasDirectWriteProjectionPlace`
+// never accepts a `PtrExp` target, so `runCompoundAssignExpression`'s slow
+// arm handles this case. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `target == 11` against a stale `1`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughDereferencedCallEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int target = 10;
+            int calls;
+            int* sideEffectingPointerReturn() {
+                calls++;
+                return &target;
+            }
+            unittest {
+                *sideEffectingPointerReturn() += 1;
+                assert(calls == 1);
+                assert(target == 11);
+            }
+        });
+    }
+}
+
+// The pointer-index sibling of the fixture above: D's compound assignment
+// through a pointer-typed index target (`(*q)[i] += v`) evaluates the index
+// expression exactly once, the same evaluation-order guarantee
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` already pins
+// for a plain method-call receiver. `hasDirectWriteProjectionPlace`'s
+// `IndexExp` arm excludes a pointer-typed `e1` outright, so this also
+// reaches the slow arm. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: & arr"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `arr[1] == 12` against a stale `13`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughPointerIndexEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[4] arr = [10, 11, 12, 13];
+            int* p;
+            int** q;
+            int calls;
+            int sideEffectingIndex() {
+                calls++;
+                return 1;
+            }
+            unittest {
+                p = arr.ptr;
+                q = &p;
+                (*q)[sideEffectingIndex()] += 1;
+                assert(calls == 1);
+                assert(arr[1] == 12);
             }
         });
     }

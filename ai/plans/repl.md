@@ -54,16 +54,14 @@ Benchmarks below):
 5. **Stateless backend interface**: `eval(Cell)` hands backends a
    fresh-parsed snapshot each cell — no delta, no session handle, no symbol
    continuity. No implementation of this interface can pass the finding-2
-   test. This is the pivotal fault: the `ai/plans/dmd-backend.md` REPL
-   slice as specified can only be implemented as replay.
+   test. This is the pivotal fault: a codegen backend behind this interface
+   can only implement replay.
 6. **Replay × dlopen multiplies runtime obligations**: whole-transcript
    compile + link + load per cell re-runs module ctors and re-registers
    eh_frame/TypeInfo/GC ranges, N times over.
 7. **No result transport for native code**: no mechanism exists to
-   extract a cell's result from machine-code execution. (Per the
-   2026-06-12 decision in `ai/plans/value.md` the result is a rendered
-   display string, not a `quickbite.lang.Value`; the finding stands, the
-   fix shrank.) The existing backend-matrix tests are the exposing tests.
+   extract a cell's rendered result from machine-code execution. The existing
+   matrix tests are the exposing tests.
 8. **Crash isolation** (deferred — see Deferred Work).
 9. **Ergonomics**: no user-visible last-value binding; diagnostic line
    numbers point into invisible transcript text. (Retracted during review:
@@ -77,10 +75,9 @@ Benchmarks below):
     permanently claims that module's `importedFrom`, so template instances
     (e.g. `std.range.iota`'s Voldemort `Result` from `3.iota`) home on a
     transient classification module not in any link set and strand at link
-    in the native backends. This is the cold trigger for the `3.iota` bug;
-    full mechanism and the fix in `ai/plans/dmd-backend.md` lessons 17–20.
-    A cleanup candidate: classify by parse only, without `fullSemantic`, so
-    classification never claims ownership.
+    in the native backends. This is the cold trigger for the `3.iota` bug. A
+    cleanup candidate is to classify by parse only, without `fullSemantic`,
+    so classification never claims ownership.
 
 ## Current Status
 
@@ -93,15 +90,11 @@ This does not change the architecture target below: pure backends may still use
 snapshot replay, and future native/persistent sessions still need
 backend-owned state.
 
-Ownership note (2026-07-07): REPL *display* work is split across plans to
-keep parallel agents off each other's deletion targets. The prelude
-formatter (`__quickbiteFormat`) and its frontend gate belong to
-`ai/plans/value.md` (Ctfe/Interpreter opt-in, interim-scaffolding
-deletion); the bytecode engines earn display by *executing* the formatter
-in `ai/plans/bytecode.md` slice 11, and their `repl.d` display rows are
-frozen until then. New or changed display tests are matrixed over
-formatter-capable backends only. An agent working from this plan should not
-add display rendering to `backends/bytecode/**`.
+This plan is the sole owner of REPL display syntax, result transport, and
+formatter verification. Each backend earns display by executing the guest
+formatter; backend-specific host rendering is interim scaffolding. New or
+changed display tests use only formatter-capable backends until the remaining
+engines can execute the formatter.
 
 ## Constraints
 
@@ -120,10 +113,9 @@ add display rendering to `backends/bytecode/**`.
   capability (`createReplSession`) grows out of the eval primitive. The "dmd
   objects stay behind frontend boundaries" rule applies to VM-family
   backends; the dmd-codegen backend is inherently a dmd client.
-- **`ai/plans/dmd-backend.md` is a non-authoritative sketch.** Use it for
-  loading mechanics (memfd + mold + dlopen, in-process relocation) only;
-  re-validate at implementation time. Its REPL slices are superseded by
-  this plan.
+- **Native loading mechanics need fresh evidence.** Re-validate memfd, mold,
+  dlopen, and in-process relocation choices when the native session starts;
+  no live plan owns an implementation sketch for them.
 - **`SystemLinker` (compiled D) is the single oracle**
   (`AGENTS.md`, Testing). Replay is *correct* for pure backends and
   stays as their session implementation, but it is an implementation note,
@@ -262,43 +254,56 @@ Enabled by the structured transcript; semantics agreed during review:
   under persistent state, executed effects are immutable. Unobservable
   for pure backends — exactly the boundary where replay is sound.
 
-### 5. Result transport (native Evaluator only)
+### 5. Result transport and display
 
-Frontend-synthesized in-cell formatting. (Decision 2026-06-12,
-`ai/plans/value.md`: the `Evaluator` contract carries a rendered display
-string, so transport is a string crossing the dlsym boundary. The earlier
-design here — TLV serialization of `Value`'s variants, deserialized
-host-side — is dead.)
+The `Evaluator` contract carries a rendered display string. The frontend
+synthesizes expression cells as `__quickbiteFormat(expr)`, so semantic
+analysis instantiates the guest formatter against the expression's static
+type. Every formatter-capable backend executes that same D function.
 
-- A quickbite-owned **REPL prelude module** provides the canonical
-  formatter template `string __quickbiteFormat(T)(T value)`: type-directed
-  via `static if` introspection, implementing the type-revealing display
-  spec (`3u`, quoted strings — injective per type, see
-  `ai/plans/value.md`) — integrals, floats, strings, arrays, AAs, structs
-  (field recursion), enums; ranges consumed element-wise; anything else
-  renders an `undisplayable` marker plus the type name. v1 vocabulary =
-  exactly what the CTFE conversion supports, guaranteeing oracle
-  agreement on the existing matrix.
-- The frontend synthesizes expression cells as `__quickbiteFormat(expr)`,
-  so semantic analysis instantiates the formatter against the real static
-  type and the evaluated program itself produces the display string —
-  one formatter implementation for every backend that can execute it.
-- The synthesized `extern(C)` entry point calls `__qb_eval_N()`, catches
-  `Throwable`, and hands the host the resulting string (or error text)
-  via length + pointer copy. C ABI, raw callback: nothing druntime-shaped
-  crosses the dlsym boundary.
-- All type and ABI knowledge stays on the D-source side, where the
-  compiler handles it. (Cling-style host-side ABI capture was considered
-  and rejected: it permanently embeds calling-convention knowledge in the
-  host and is Cling's most crash-prone subsystem. The earlier objection
-  to text rendering — "fails the test matrix, which compares structured
-  Values" — is obsolete: the matrix moves to text per
-  `ai/plans/value.md`.)
-- The string transport is process-boundary-safe by construction, so the
-  deferred crash-isolation work reuses it unchanged.
-- **De-risking**: the formatter is plain D with no loader dependency —
-  it can be written and fully tested under CTFE and compiled unittests
-  before any native backend exists.
+A native session exports only the rendered string or diagnostic through a C
+entry point and a length-plus-pointer copy. No D runtime object crosses the
+loader boundary. This transport also works across the deferred crash-isolation
+process boundary.
+
+#### Display syntax
+
+The formatter produces concise inspection text. It is not injective by type,
+and current output is not universally valid D source. The current syntax is:
+
+- `bool`, signed integrals, and the default `int` use their ordinary text.
+  `uint`, `long`, and `ulong` add `u`, `L`, and `UL`.
+- Floating values always contain a decimal point or exponent. `float` adds
+  `f`, `real` adds `L`, and `double` has no suffix.
+- Characters use single quotes. Strings use double quotes; `wstring` and
+  `dstring` add `w` and `d`. Width is not shown for characters, and narrow
+  signed and unsigned integral types have no suffix.
+- Arrays render as `[element, ...]`. Associative arrays render as
+  `[key:value, ...]`; their iteration order is unspecified.
+- Structs render as `Type(field, ...)` using declared fields only. Declared
+  enum members render as `Type.member`.
+- Null pointers, references, functions, and delegates render as `null`.
+  Non-null functions, delegates, classes, and interfaces render as
+  `<undisplayable>`. Non-null pointer text is otherwise unspecified.
+- Type qualifiers and mutability are not displayed. A `void` cell produces no
+  display output.
+
+Three parseability gaps have issue owners: character and string escaping is
+[issue #559], non-member enum casts are [issue #557], and typed empty
+associative arrays are [issue #564]. Do not claim general D-source round-trip
+until those public behavior contracts are complete.
+
+#### Formatter verification
+
+- Fast hermetic tests compare public cell output with hand-written expected
+  text. They do not test private formatter helpers.
+- [Issue #567] owns the differential layer that compares the same cell with
+  `SystemLinker` and each formatter-capable backend.
+- Runtime semantic tests prove behavior that display cannot reveal. Static
+  type queries do not prove a backend used the correct runtime width or
+  signedness.
+- Representation fixtures seed values from runtime expressions when DMD
+  folding would otherwise remove the behavior under test.
 
 ### 6. Ergonomics
 
@@ -392,24 +397,16 @@ expressiveness gaps are exposed by straight-line behaviour tests.
 Strict TDD per slice: failing test → dumbest green → refactor → ask.
 Dependencies are noted; order within independent slices is flexible.
 
-1. **Formatter prelude** (the canonical display formatter,
-   `ai/plans/value.md`; independent of 7; testable today under CTFE and
-   compiled unittests). The formatter surface and the first frontend wiring
-   rungs are active for formatter-capable backends; `value.md` owns the
-   detailed ledger. As of 2026-07-08, CTFE and Interpreter expression cells
-   synthesize `__quickbiteFormat(expr)` for primitive display scalars,
-   selected structs/enums/AAs, and arrays whose element type can use the
-   prelude. CTFE formatter-wrapped REPL cells no longer route their display
-   through the private `ctfeValue`/`displayString` path. Remaining slice-8
-   work stays in `value.md`: keep expanding the per-backend gate, then retire
-   each backend's interim display scaffolding only after its display rows are
-   covered by formatter execution.
+1. **Formatter prelude.** CTFE and Interpreter expression cells synthesize
+   `__quickbiteFormat(expr)` for supported scalars and aggregates. Section 5
+   owns the syntax and verification contract. Add a backend to display rows
+   only after it executes the guest formatter; then remove its interim host
+   rendering.
 2. **Native REPL session** (depends on 5, 7, 8, and a working
-   codegen-and-load path from the dmd-backend work): delta modules,
-   lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on
-   the native backend, the full existing REPL matrix, and B1's split
-   criterion (execution-slope flatness; compile slope measured and
-   documented).
+   codegen-and-load path): delta modules, lifting, per-cell link/load, symbol
+   continuity. Gated by T1, T2/T3 on the native backend, the full existing
+   REPL matrix, and B1's split criterion (execution-slope flatness; compile
+   slope measured and documented).
 
 ## Deferred Work
 
@@ -444,8 +441,6 @@ per test.
 - `source/quickbite/backends/runner.d` — whole-module unittest execution.
 - `source/quickbite/backends/package.d` — composition of evaluator and runner
   capabilities for full backends.
-- `ai/plans/dmd-backend.md` — loading mechanics sketch
-  (non-authoritative; its REPL slices are superseded by this plan).
 - `tests/ut/backends/api/repl.d` — behaviour matrix every change must
   keep green; the acceptance gate for the native session.
 
@@ -477,3 +472,12 @@ per test.
   the lifting approach works for D specifically.
 - gore (Go): the replay cautionary tale — same architecture as today's
   quickbite REPL; its README recommends alternatives.
+
+[issue #557]:
+  https://github.com/atilaneves/quickbite/issues/557
+[issue #559]:
+  https://github.com/atilaneves/quickbite/issues/559
+[issue #564]:
+  https://github.com/atilaneves/quickbite/issues/564
+[issue #567]:
+  https://github.com/atilaneves/quickbite/issues/567

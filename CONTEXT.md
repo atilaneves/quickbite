@@ -111,12 +111,13 @@ Turning a cell-local declaration into a module-level variable so it has real
 storage across cells.
 
 **Interception**:
-Diverting a call by name to a host implementation, sanctioned by an
-enumerated exemption entry with a stated retirement condition.
+Diverting a call by name to a host implementation. The Interpreter target
+has no interceptions; a temporary deviation needs an owning issue and a
+retirement condition.
 
 **Shim**:
-A name-based diversion or approximation without an exemption entry and
-retirement condition. Always a defect.
+A name-based diversion or approximation without explicit temporary
+ownership and a retirement condition. Always a defect.
 
 **Lightning rod**:
 The first root module parsed in a process, which deliberately accumulates
