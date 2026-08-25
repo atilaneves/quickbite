@@ -41,6 +41,7 @@ int main(string[] args) {
         "ut.backends.runner.lang.cerealed",
         "ut.backends.runner.lang.pollution",
         "ut.backends.runner.lang.imports",
+        "ut.backends.runner.lang.callable_identity",
         "ut.backends.runner.sys.concurrency",
         "ut.backends.runner.sys.cstdlib",
         "ut.backends.runner.sys.file",
