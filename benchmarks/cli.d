@@ -1,6 +1,8 @@
 module benchmarks.cli;
 
-import benchmarks.harness: measure, measureVerdictsWithResults, Result;
+import benchmarks.cgroup_peak: CgroupPeakMeter;
+import benchmarks.harness:
+    measure, measureVerdictsWithResults, Result, VerdictKind;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner:
     CompileTimeReporter, DgcAllocationReporter, Runner, TestResult, runTests;
@@ -239,6 +241,9 @@ public int run(string[] args) {
                 auto compileReporter = cast(CompileTimeReporter) runner;
                 auto allocationReporter = cast(DgcAllocationReporter) runner;
                 Duration[] compileDeltas;
+                auto cgroupPeakMeter = CgroupPeakMeter.fromEnvironment;
+                Nullable!ulong firstCgroupPeak;
+                ulong[] repeatedCgroupPeaks;
                 TestResult[] runAndSampleCompileTime() {
                     if (compileReporter is null)
                         return runTests(runner, modules);
@@ -246,6 +251,23 @@ public int run(string[] args) {
                     auto results = runTests(runner, modules);
                     compileDeltas ~= compileReporter.compileTime - before;
                     return results;
+                }
+                void beforeSample(VerdictKind kind) {
+                    cgroupPeakMeter.reset;
+                }
+                void afterSample(VerdictKind kind) {
+                    if (!cgroupPeakMeter.available)
+                        return;
+
+                    const peak = cgroupPeakMeter.read;
+                    final switch (kind) {
+                        case VerdictKind.first:
+                            firstCgroupPeak = Nullable!ulong(peak);
+                            break;
+                        case VerdictKind.repeated:
+                            repeatedCgroupPeaks ~= peak;
+                            break;
+                    }
                 }
 
                 try {
@@ -256,7 +278,12 @@ public int run(string[] args) {
                         () => allocationReporter is null
                             ? 0
                             : allocationReporter.dGcAllocation,
+                        &beforeSample,
+                        &afterSample,
                     );
+                    measured.first.cgroupPeakMemory = firstCgroupPeak;
+                    measured.repeated.cgroupPeakMemory =
+                        medianCgroupPeak(repeatedCgroupPeaks);
                     if (!skipCheck) {
                         warmupResults[pairKey(unit.displayName, name)] =
                             measured.warmupResults;
@@ -773,6 +800,21 @@ private Nullable!Duration firstCompileTime(Duration[] deltas) {
         : Nullable!Duration(deltas[0]);
 }
 
+private Nullable!ulong medianCgroupPeak(ulong[] peaks) {
+    import std.algorithm.sorting: sort;
+
+    if (peaks.length == 0)
+        return Nullable!ulong.init;
+
+    peaks.sort;
+    return Nullable!ulong(
+        peaks.length % 2 == 1
+            ? peaks[$ / 2]
+            : peaks[$ / 2 - 1]
+                + (peaks[$ / 2] - peaks[$ / 2 - 1]) / 2,
+    );
+}
+
 // One unit's preparation outcome. A failure to prepare is reported here, never
 // as a `skipping ...` line that reads like a backend skip: preparation happens
 // before any backend runs, so a unit that did not prepare was never benchmarked
@@ -904,9 +946,9 @@ public DubInfo dubInfoFromDescribeData(
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s",
+        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s",
         "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC.allocatedInCurrentThread delta",
+        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
     );
     writeln;
 }
@@ -923,7 +965,7 @@ public void printRow(
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB",
+        "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s",
         fixture,
         backendName,
         verdict,
@@ -934,6 +976,7 @@ public void printRow(
         result.stddevHnsecs / hnsecsPerMs,
         compileDisplay(compileTime),
         result.dGcKiB,
+        cgroupPeakDisplay(result.cgroupPeakMemory),
     );
 }
 
@@ -949,6 +992,14 @@ private string compileDisplay(in Nullable!Duration compileTime) {
         );
 }
 
+private string cgroupPeakDisplay(in Nullable!ulong peak) {
+    import std.format: format;
+
+    return peak.isNull
+        ? "n/a"
+        : format("%.1f KiB", peak.get / 1024.0);
+}
+
 public string renderBenchmarkSection(
     in string title,
     in BenchmarkRow[] rows,
@@ -959,14 +1010,14 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s\n\n",
+        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s\n\n",
         "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC.allocatedInCurrentThread delta",
+        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB\n",
+            "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s\n",
             row.fixture,
             row.backend,
             row.verdict,
@@ -977,6 +1028,7 @@ public string renderBenchmarkSection(
             row.result.stddevHnsecs / hnsecsPerMs,
             compileDisplay(row.compileMedian),
             row.result.dGcKiB,
+            cgroupPeakDisplay(row.result.cgroupPeakMemory),
         ));
     }
     output.put("\n");

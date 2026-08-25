@@ -10,6 +10,7 @@ public struct Result {
     public double stddevHnsecs;
     // Median for repeated verdicts; the one observed value for a first verdict.
     public ulong dGcAllocation;
+    public imported!"std.typecons".Nullable!ulong cgroupPeakMemory;
 }
 
 public struct Measurement(T) {

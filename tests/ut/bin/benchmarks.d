@@ -83,8 +83,7 @@ printf '\n'
         result.status.should == 0;
         result.output.should ==
             "inherited memory.peak: 3145728\n"
-            ~ "bench arguments: <--backend=bytecode> <--runs=1> <fixture.d>\n"
-            ~ "cgroup peak memory: 3145728 bytes\n";
+            ~ "bench arguments: <--backend=bytecode> <--runs=1> <fixture.d>\n";
     }
 }
 

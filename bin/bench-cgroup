@@ -58,6 +58,4 @@ else
     bench_status=$?
 fi
 
-IFS= read -r peak < "$peak_path"
-printf 'cgroup peak memory: %s bytes\n' "$peak"
 exit "$bench_status"
