@@ -13,6 +13,17 @@ public class IndexOutOfBoundsException: Exception {
 }
 
 
+// A delegate's undecoded native ABI words, `Place.loadDelegateWords`'s
+// result: `context` is the receiver/closure-frame address (or the native
+// callback trampoline's context), `funcptr` is the callable identity --
+// a real code address for a native delegate, or the address of a
+// per-identity heap object for an interpreted one.
+public struct DelegateWords {
+    public void* context;
+    public const(void)* funcptr;
+}
+
+
 // An addressable location: a host address plus the static DMD `Type` at
 // that address, nothing more. `field`/`index` below compute another
 // `Place` by address arithmetic over DMD's own offsets/strides, read
@@ -259,6 +270,53 @@ public struct Place {
             );
 
         writeStoredPointer(_address, reference);
+    }
+
+    // Store a delegate's two native ABI words directly: `context` at this
+    // place's own address, `funcptr` immediately after it, matching the
+    // `{ptr, funcptr}` layout `native_call_adapter.d`'s `nativeDelegateMetadata`
+    // already decodes. Same GC-safety contract as `storeReference`, checked
+    // for either word: a delegate destination this interpreter allocates is
+    // always scanned (`layout.typeHasPointers` already treats `Tdelegate` as
+    // pointer-carrying, per DMD's own `hasPointers`), so this only ever fires
+    // for a genuine caller mistake.
+    public void storeDelegateWords(void* context, const(void)* funcptr) @safe {
+        if (_type.isTypeDelegate is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.storeDelegateWords: "
+                ~ "only a delegate place can store delegate words",
+            );
+
+        if (
+            (referenceIsGcOwned(context) || referenceIsGcOwned(cast(void*) funcptr)) &&
+            !destinationIsScanned(_address)
+        )
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.storeDelegateWords: "
+                ~ "this place is not scanned by the GC, but a stored word is "
+                ~ "a live GC pointer",
+            );
+
+        writeStoredPointer(_address, context);
+        writeStoredPointer(placeAdd(_address, (void*).sizeof), cast(void*) funcptr);
+    }
+
+    // The read side of `storeDelegateWords`: the delegate's own two native
+    // ABI words, undecoded -- a caller distinguishes an interpreted callable
+    // from a native one by resolving `funcptr` against its own identity
+    // registry, the same boundary `native_call_adapter.d`'s
+    // `nativeDelegateMetadata` crosses for a native-only read.
+    public DelegateWords loadDelegateWords() @safe {
+        if (_type.isTypeDelegate is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.loadDelegateWords: "
+                ~ "only a delegate place can load delegate words",
+            );
+
+        return DelegateWords(
+            readStoredPointer(_address),
+            readStoredPointer(placeAdd(_address, (void*).sizeof)),
+        );
     }
 
     // Copy one complete native-layout value into this typed destination,

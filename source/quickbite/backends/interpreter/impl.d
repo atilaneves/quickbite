@@ -32,10 +32,11 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     private imported!"quickbite.backends.interpreter.native_aggregate".
         NativeAggregate[void*] _nativeClassOwners;
     // A function-local struct instance stored in such a global keeps working
-    // across the boundary too: its hidden context field names the same
-    // enclosing-activation chain the module table's bytes already anchor, so
-    // this table shares their lifetime for exactly the same reason.
-    private FrameBlock[][void*] _nestedContextFrames;
+    // across the boundary too: its hidden context field's bytes name a
+    // FrameBlock's own base address, and this table shares the module
+    // table's lifetime so that address keeps resolving to the enclosing
+    // activation chain across executions.
+    private FrameBlock[][const(void)*] _framesByBaseAddress;
 
     private enum ExecutionMode {
         regular,
@@ -92,7 +93,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             scope(exit) {
                 _nativeClassTypes = walker.nativeClassTypes;
                 _nativeClassOwners = walker.nativeClassOwners;
-                _nestedContextFrames = walker.nestedContextFrames;
+                _framesByBaseAddress = walker.framesByBaseAddress;
                 walker.closeDurableInboundSession;
             }
             walker._executionState = new InterpreterExecutionState;
@@ -103,7 +104,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = _moduleTable;
             walker.nativeClassTypes = _nativeClassTypes.dup;
             walker.nativeClassOwners = _nativeClassOwners.dup;
-            walker.nestedContextFrames = _nestedContextFrames.dup;
+            walker.framesByBaseAddress = _framesByBaseAddress.dup;
             walker.inUnitTest = mode == ExecutionMode.unitTest;
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 
@@ -510,11 +511,13 @@ private struct FrameMetadataLifetime {
     public FrameMetadataLifetime* caller;
 }
 
-// `nativeDelegateSlots`' payload: a live delegate is either an opaque
-// native-code {context, funcptr} pair or the interpreter's own callable id,
-// looked up again in `_executionState.delegates` for the full
-// `RuntimeDelegate`. The two shapes share one table, keyed by the
-// delegate-typed slot's own address, but never share a representation.
+// A delegate value's decoded payload: either an opaque native-code
+// {context, funcptr} pair, or the interpreter's own callable id, looked up
+// again in `_executionState.delegates` for the full `RuntimeDelegate`.
+// `loadDelegateSlot`/`storeDelegateSlot` translate between this and a
+// delegate-typed place's raw `{context, funcptr}` words
+// (`Place.loadDelegateWords`/`storeDelegateWords`); the two shapes share one
+// struct but never a representation.
 private struct DelegateSlot {
     public bool isNative;
     public const(void)* context;
@@ -584,19 +587,28 @@ private struct InterpreterExecutionState {
     public Throwable[const(void)*] nativeThrowableRoots;
     public ClassObject[void*] nativeThrowableNext;
 
-    // Writes to guest ABI slots register symbolic interpreted callables and
-    // TypeInfos; any later activation that reads the same address must see
-    // the entry, including after the writing call returns or throws.
-    public size_t[const(void)*] nativeFunctionPointerSlots;
-    public string[void*] nativeTypeInfoSlots;
-    public DelegateSlot[void*] nativeDelegateSlots;
-
     // Function and delegate identities are allocated once per evaluation.
     // Both directions and the next id therefore form one shared registry.
     public imported!"dmd.func".FuncDeclaration[size_t] functionPointers;
     public size_t[imported!"dmd.func".FuncDeclaration] functionPointerIds;
     public size_t nextFunctionPointerId;
     public RuntimeDelegate[size_t] delegates;
+    // A function pointer or a delegate's `funcptr` word is the address of a
+    // per-identity heap object (or a native trampoline's own code address,
+    // aliased here too -- see `native_call_adapter.d`'s
+    // `InboundTrampolineRegistry`), exactly as a compiled function pointer's
+    // bytes are its own code address. Resolving a callable is then a lookup
+    // by that stored VALUE, not by the address of the slot holding it: an
+    // ordinary byte copy, move, or clear already carries the identity, and
+    // nothing has to reconcile a side table when storage relocates. Both
+    // directions share one id space with `functionPointers` above.
+    public size_t[const(void)*] identityByPointer;
+    public const(void)*[size_t] pointerByFunctionPointerId;
+    // The `TypeInfo`/`ClassInfo` sibling of the callable identity pair above:
+    // one heap object per symbolic type name, its address the value a
+    // class-typed `TypeInfo` place stores.
+    public string[const(void)*] nameByPointer;
+    public const(void)*[string] pointerByTypeInfoName;
     public void*[][size_t] callArgumentStorage;
     public void*[][size_t] nativeCallArgumentStorage;
     public imported!"quickbite.backends.interpreter.frame_block".FrameBlock[][
@@ -612,14 +624,17 @@ private struct InterpreterExecutionState {
     // A struct declared inside a function reads that function's locals through
     // its hidden context field, and its methods can run long after the
     // enclosing activation returned. An interpreted activation is a
-    // `FrameBlock`, not a guest address the field's bytes could name, so this
-    // table retains the enclosing activation chain (nearest first) keyed by
-    // that field's own address -- the same out-of-band shape
-    // `nativeDelegateSlots` uses, and carried across value copies by
-    // `copyStoredMetadata`. The retained handles keep the frames' GC-owned
-    // storage alive for exactly as long as an instance can still be called.
-    public imported!"quickbite.backends.interpreter.frame_block".FrameBlock[][void*]
-        nestedContextFrames;
+    // `FrameBlock`, not a guest address the field's bytes could name, so a
+    // nested struct's hidden context field stores its declaring FrameBlock's
+    // own base address, and this table resolves that VALUE to the enclosing
+    // activation chain (nearest first) -- keyed by frame base address, not by
+    // the struct instance's own address, so a struct value copy needs no
+    // separate relocation: the stored address is already the right key
+    // wherever the copy lands. Entries are never removed (#563): the frame
+    // base address a stored instance still names must keep resolving for as
+    // long as any interpreter execution could still call through it.
+    public imported!"quickbite.backends.interpreter.frame_block".FrameBlock[][
+        const(void)*] framesByBaseAddress;
 }
 
 private class InterpretedException: Exception {
@@ -696,18 +711,20 @@ private struct Walker {
         return _executionState.nativeThrowableNext;
     }
 
-    private @property ref size_t[const(void)*]
-        nativeFunctionPointerSlots()
-    {
-        return _executionState.nativeFunctionPointerSlots;
+    private @property ref size_t[const(void)*] identityByPointer() {
+        return _executionState.identityByPointer;
     }
 
-    private @property ref string[void*] nativeTypeInfoSlots() {
-        return _executionState.nativeTypeInfoSlots;
+    private @property ref const(void)*[size_t] pointerByFunctionPointerId() {
+        return _executionState.pointerByFunctionPointerId;
     }
 
-    private @property ref DelegateSlot[void*] nativeDelegateSlots() {
-        return _executionState.nativeDelegateSlots;
+    private @property ref string[const(void)*] nameByPointer() {
+        return _executionState.nameByPointer;
+    }
+
+    private @property ref const(void)*[string] pointerByTypeInfoName() {
+        return _executionState.pointerByTypeInfoName;
     }
 
     private @property ref FuncDeclaration[size_t] functionPointers() {
@@ -726,8 +743,8 @@ private struct Walker {
         return _executionState.nativeClassTypes;
     }
 
-    private @property ref FrameBlock[][void*] nestedContextFrames() {
-        return _executionState.nestedContextFrames;
+    private @property ref FrameBlock[][const(void)*] framesByBaseAddress() {
+        return _executionState.framesByBaseAddress;
     }
 
     private @property ref imported!"quickbite.backends.interpreter.native_aggregate".
@@ -785,7 +802,7 @@ private struct Walker {
     // Per-activation native storage block. Every local binding resolves to an
     // owning or reference place in this block.
     private FrameBlock _activationFrame;
-    private bool _activationFrameMetadataRetained;
+    private bool _activationFrameAddressEscaped;
     private FrameMetadataLifetime _activationFrameMetadataLifetime;
     private FrameMetadataLifetime* _callerFrameMetadataLifetime;
     // Native static links for lexically enclosing activations, nearest first.
@@ -1139,233 +1156,88 @@ private struct Walker {
         bindingPlace(variable).storeNativeScalar(value);
     }
 
-    // Out-of-band callable and symbolic-reference entries are part of the
-    // value stored in their native byte range. Copy them by byte offset so
-    // unions, nested aggregates, and mixed metadata fields obey the same
-    // value-copy semantics as the native bytes. Snapshot first because source
-    // and destination ranges may overlap. Callers that replace temporary or
-    // reallocated storage may consume its entries after the copy; ordinary D
-    // value copies retain them at the source.
-    private void copyStoredMetadata(
-        imported!"dmd.mtype".Type type,
-        void* oldAddress,
-        void* newAddress,
-        in bool consumeSource = false,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        copyStoredMetadataRange(
-            oldAddress,
-            newAddress,
-            typeByteSize(type),
-            consumeSource,
-        );
+    // A fresh, unique, GC-heap address with no meaning of its own beyond
+    // being distinguishable from every other identity's address -- the same
+    // role a compiled function's own code address plays for a real function
+    // pointer. Shared by callable identities and `TypeInfo` names alike.
+    private static const(void)* newIdentityBox() @trusted {
+        return cast(const(void)*) new size_t;
     }
 
-    private void copyStoredMetadataRange(
-        void* oldAddress,
-        void* newAddress,
-        in size_t byteLength,
-        in bool consumeSource = false,
-    ) {
+    // The identity pointer a function-pointer or delegate `funcptr` slot
+    // stores for `functionPointerId`: one per id, allocated once and reused
+    // on every later store or load of the same id, so repeated writes of the
+    // same callable keep comparing equal by their stored bytes.
+    private const(void)* identityPointerFor(in size_t functionPointerId) {
+        if (auto pointer = functionPointerId in pointerByFunctionPointerId)
+            return *pointer;
+
+        auto pointer = newIdentityBox;
+        pointerByFunctionPointerId[functionPointerId] = pointer;
+        identityByPointer[pointer] = functionPointerId;
+        return pointer;
+    }
+
+    // The `TypeInfo`/`ClassInfo` sibling of `identityPointerFor`: one heap
+    // address per symbolic type name.
+    private const(void)* pointerForTypeInfoName(in string name) {
+        if (auto pointer = name in pointerByTypeInfoName)
+            return *pointer;
+
+        auto pointer = newIdentityBox;
+        pointerByTypeInfoName[name] = pointer;
+        nameByPointer[pointer] = name;
+        return pointer;
+    }
+
+    // The stored pointer/class/associative-array bytes at `place`, or `null`
+    // for any other static type -- a defensive read for a caller (an
+    // identity lookup) that does not itself know whether `place` denotes one
+    // of those representations, mirroring the address-only probe the
+    // deleted address-keyed metadata tables used to make possible.
+    private static const(void)* pointerBytesAt(Place place) @trusted {
+        auto base = place.type.toBasetype;
         if (
-            nativeDelegateSlots.length == 0 &&
-            nativeFunctionPointerSlots.length == 0 &&
-            nativeTypeInfoSlots.length == 0 &&
-            nestedContextFrames.length == 0
+            base.isTypePointer is null &&
+            base.isTypeClass is null &&
+            base.isTypeAArray is null
         )
-            return;
+            return null;
 
-        if (oldAddress is newAddress)
-            return;
-
-        size_t[] delegateOffsets;
-        DelegateSlot[] delegateValues;
-        size_t[] functionOffsets;
-        size_t[] functionValues;
-        size_t[] typeInfoOffsets;
-        string[] typeInfoValues;
-        foreach (offset; 0 .. byteLength) {
-            auto address = cast(void*) (cast(ubyte*) oldAddress + offset);
-            if (auto value = address in nativeDelegateSlots) {
-                delegateOffsets ~= offset;
-                delegateValues ~= *value;
-            }
-            if (auto value = cast(const(void)*) address in nativeFunctionPointerSlots) {
-                functionOffsets ~= offset;
-                functionValues ~= *value;
-            }
-            if (auto value = address in nativeTypeInfoSlots) {
-                typeInfoOffsets ~= offset;
-                typeInfoValues ~= *value;
-            }
-        }
-
-        size_t[] contextOffsets;
-        FrameBlock[][] contextFrames;
-        foreach (offset; 0 .. byteLength) {
-            auto address = cast(void*) (cast(ubyte*) oldAddress + offset);
-            if (auto frames = address in nestedContextFrames) {
-                contextOffsets ~= offset;
-                contextFrames ~= *frames;
-            }
-        }
-
-        clearStoredMetadataRange(newAddress, byteLength);
-
-        foreach (index, offset; contextOffsets)
-            nestedContextFrames[cast(void*) (cast(ubyte*) newAddress + offset)] =
-                contextFrames[index];
-        foreach (index, offset; delegateOffsets)
-            nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
-                delegateValues[index];
-        foreach (index, offset; functionOffsets)
-            nativeFunctionPointerSlots[
-                cast(const(void)*) (cast(ubyte*) newAddress + offset)
-            ] = functionValues[index];
-        foreach (index, offset; typeInfoOffsets)
-            nativeTypeInfoSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
-                typeInfoValues[index];
-
-        if (
-            consumeSource &&
-            !rangesOverlap(
-                cast(size_t) oldAddress,
-                byteLength,
-                cast(size_t) newAddress,
-                byteLength,
-            )
-        )
-            clearStoredMetadataRange(oldAddress, byteLength);
-    }
-
-    // Any write invalidates every symbolic entry whose slot overlaps the
-    // overwritten bytes. This is especially important for unions: writing a
-    // non-symbolic sibling still overwrites the active symbolic member.
-    private void clearStoredMetadata(
-        imported!"dmd.mtype".Type type,
-        void* address,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        clearStoredMetadataRange(address, typeByteSize(type));
-    }
-
-    private void clearStoredMetadataRange(
-        void* address,
-        in size_t byteLength,
-    ) {
-        if (
-            nativeDelegateSlots.length == 0 &&
-            nativeFunctionPointerSlots.length == 0 &&
-            nativeTypeInfoSlots.length == 0 &&
-            nestedContextFrames.length == 0
-        )
-            return;
-
-        if (byteLength == 0)
-            return;
-
-        const start = cast(size_t) address;
-        enum precedingBytes = 2 * (void*).sizeof - 1;
-        const prefixLength = start < precedingBytes ? start : precedingBytes;
-        const scanStart = start - prefixLength;
-        const scanLength = prefixLength + byteLength;
-        foreach (offset; 0 .. scanLength) {
-            const candidate = scanStart + offset;
-            if (
-                cast(void*) candidate in nativeDelegateSlots &&
-                rangesOverlap(
-                    candidate,
-                    2 * (void*).sizeof,
-                    start,
-                    byteLength,
-                )
-            )
-                nativeDelegateSlots.remove(cast(void*) candidate);
-            if (
-                cast(const(void)*) candidate in nativeFunctionPointerSlots &&
-                rangesOverlap(
-                    candidate,
-                    (void*).sizeof,
-                    start,
-                    byteLength,
-                )
-            )
-                nativeFunctionPointerSlots.remove(cast(const(void)*) candidate);
-            if (
-                cast(void*) candidate in nativeTypeInfoSlots &&
-                rangesOverlap(
-                    candidate,
-                    (void*).sizeof,
-                    start,
-                    byteLength,
-                )
-            )
-                nativeTypeInfoSlots.remove(cast(void*) candidate);
-            if (
-                cast(void*) candidate in nestedContextFrames &&
-                rangesOverlap(
-                    candidate,
-                    (void*).sizeof,
-                    start,
-                    byteLength,
-                )
-            )
-                nestedContextFrames.remove(cast(void*) candidate);
-        }
-    }
-
-    private static bool rangesOverlap(
-        in size_t firstStart,
-        in size_t firstLength,
-        in size_t secondStart,
-        in size_t secondLength,
-    ) @safe @nogc nothrow pure {
-        return firstStart < secondStart + secondLength &&
-            secondStart < firstStart + firstLength;
+        return place.loadReference;
     }
 
     private void storeDelegateSlot(Place place, in DelegateSlot slot) {
-        import quickbite.backends.interpreter.place: clearPlace;
-
-        clearStoredMetadata(place.type, place.address);
-        nativeDelegateSlots[place.address] = slot;
-        clearPlace(place);
+        if (slot.isNative)
+            place.storeDelegateWords(cast(void*) slot.context, slot.funcptr);
+        else
+            place.storeDelegateWords(
+                null,
+                identityPointerFor(slot.functionPointerId),
+            );
     }
 
     private DelegateSlot loadDelegateSlot(Place place) {
-        import quickbite.backends.interpreter.native_call_adapter:
-            NativeOperand, nativeDelegateMetadata;
-
-        if (auto slot = place.address in nativeDelegateSlots)
-            return *slot;
-        const native = nativeDelegateMetadata(
-            NativeOperand(place.type, place.address),
-        );
-        return DelegateSlot(true, native.context, native.funcptr, 0);
+        const words = place.loadDelegateWords;
+        if (auto id = words.funcptr in identityByPointer)
+            return interpretedDelegateSlot(*id);
+        return DelegateSlot(true, words.context, words.funcptr, 0);
     }
 
     private void storeFunctionPointerId(Place place, in size_t id) {
-        clearStoredMetadata(place.type, place.address);
-        nativeFunctionPointerSlots[place.address] = id;
-        place.storeReference(null);
+        place.storeReference(cast(void*) identityPointerFor(id));
     }
 
     private size_t* loadFunctionPointerId(Place place) {
-        return cast(const(void)*) place.address in nativeFunctionPointerSlots;
+        return pointerBytesAt(place) in identityByPointer;
     }
 
     private void storeTypeInfoName(Place place, in string name) {
-        import quickbite.backends.interpreter.place: clearPlace;
-
-        clearStoredMetadata(place.type, place.address);
-        nativeTypeInfoSlots[place.address] = name;
-        clearPlace(place);
+        place.storeReference(cast(void*) pointerForTypeInfoName(name));
     }
 
     private string* loadTypeInfoName(Place place) {
-        return place.address in nativeTypeInfoSlots;
+        return pointerBytesAt(place) in nameByPointer;
     }
 
     private void retainTemporaryPointerOwner(NativeBlock owner) @safe {
@@ -1873,7 +1745,6 @@ private struct Walker {
             return;
 
         auto destination = bindingPlace(catch_.var);
-        clearStoredMetadata(destination.type, destination.address);
         destination.storeReference(object.address);
         clearUninitializedBindingAddress(destination.address);
     }
@@ -2118,7 +1989,6 @@ private struct Walker {
         }
 
         auto field = classFieldNamed(tail, "_nextInChainPtr");
-        clearStoredMetadata(field.type, field.address);
         field.storeReference(next.address);
         nativeThrowableNext[tail.address] = next;
         return thrown;
@@ -3594,7 +3464,6 @@ private struct Walker {
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
         child.bindFunctionParameters(
             call.f,
@@ -3743,7 +3612,6 @@ private struct Walker {
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
         child.thisValue = receiver;
         child.hasThis = true;
@@ -3855,7 +3723,7 @@ private struct Walker {
     private void forkExecutionStateInto(ref Walker child) {
         _activationFrameMetadataLifetime = FrameMetadataLifetime(
             &_activationFrame,
-            &_activationFrameMetadataRetained,
+            &_activationFrameAddressEscaped,
             _callerFrameMetadataLifetime,
         );
         child._callerFrameMetadataLifetime = &_activationFrameMetadataLifetime;
@@ -3881,23 +3749,6 @@ private struct Walker {
         child._lazyArgumentMapsBorrowed = true;
     }
 
-    // A returned activation normally has no storage lifetime left, so its
-    // address-keyed callable metadata must leave the execution registry with
-    // it. A closure capture or lazy thunk can retain the frame itself; those
-    // two cases keep its metadata live under the same lifetime.
-    private void retireActivationFrameMetadata() {
-        if (_activationFrameMetadataRetained)
-            return;
-
-        foreach (frame; lazyArgumentFrames.byValue)
-            if (frame.block.address is _activationFrame.block.address)
-                return;
-
-        _activationFrame.eachStorageBlock((address, byteLength) {
-            clearStoredMetadataRange(address, byteLength);
-        });
-    }
-
     private FrameBlock acquireActivationFrame(
         FuncDeclaration function_,
         FrameLayout layout,
@@ -3913,12 +3764,16 @@ private struct Walker {
         return frame;
     }
 
+    // Pooling a frame whose address escaped (a closure captured a local's
+    // address, or a nested struct's hidden context field named it) would let
+    // a later, unrelated call overwrite storage something can still reach
+    // through that address; `_activationFrameAddressEscaped` (set by
+    // `retainEscapedFrameAddress`) refuses that reuse.
     private void releaseActivationFrame(
         FuncDeclaration function_,
         in bool addressMayEscape = false,
     ) {
-        retireActivationFrameMetadata;
-        if (_activationFrameMetadataRetained || addressMayEscape)
+        if (_activationFrameAddressEscaped || addressMayEscape)
             return;
 
         foreach (frame; lazyArgumentFrames.byValue)
@@ -4658,8 +4513,7 @@ private struct Walker {
     // A function literal's typed destination decides its D value shape. Both
     // shapes use the same callable identity and runtime record, but a
     // delegate owns a two-word delegate slot while a function pointer owns a
-    // one-word pointer slot. Keep that distinction in the address-keyed
-    // metadata.
+    // one-word pointer slot.
     private void constructFunctionLiteralInto(
         imported!"dmd.expression".FuncExp literal,
         imported!"quickbite.backends.interpreter.place".Place destination,
@@ -4691,19 +4545,16 @@ private struct Walker {
         }
 
         _executionState.delegates[functionPointerId] = runtime;
-        clearPlaceValue(destination);
 
         if (isDelegate) {
-            nativeDelegateSlots[destination.address] = DelegateSlot(
-                false,
-                null,
-                null,
-                functionPointerId,
+            storeDelegateSlot(
+                destination,
+                interpretedDelegateSlot(functionPointerId),
             );
             return;
         }
 
-        nativeFunctionPointerSlots[destination.address] = functionPointerId;
+        storeFunctionPointerId(destination, functionPointerId);
     }
 
     // Each of `function_`'s captured outer variables (`frame_layout.
@@ -4728,7 +4579,7 @@ private struct Walker {
                 auto address = capturedBindingAddress(variable);
                 if (address !is null) {
                     addresses[variable] = address;
-                    retainCapturedFrameMetadata(address);
+                    retainEscapedFrameAddress(address);
                 }
             } catch (Exception) {
                 continue;
@@ -4738,13 +4589,17 @@ private struct Walker {
         return addresses;
     }
 
-    // Mark the activation that owns a captured address, following ordinary
-    // dynamic callers as well as lexical static links. A `ref` capture can
-    // point through several reference slots before reaching the owning frame,
-    // so address containment, not declaration identity, is authoritative.
-    private void retainCapturedFrameMetadata(const(void)* address) {
+    // Mark the activation that owns an address something outside it can now
+    // reach directly (a closure's capture, or a nested struct's hidden
+    // context field), following ordinary dynamic callers as well as lexical
+    // static links. A `ref` capture can point through several reference
+    // slots before reaching the owning frame, so address containment, not
+    // declaration identity, is authoritative. `releaseActivationFrame` reads
+    // the mark to refuse pooling that frame while the address can still be
+    // followed.
+    private void retainEscapedFrameAddress(const(void)* address) {
         if (_activationFrame.ownsAddress(address)) {
-            _activationFrameMetadataRetained = true;
+            _activationFrameAddressEscaped = true;
             return;
         }
 
@@ -4820,22 +4675,15 @@ private struct Walker {
     // is always its own storage slot's stored address. A class reference is
     // excluded even though `Place.deref` reads it the same way, because a `typeid`/
     // `.classinfo` result IS class-typed and has no native-layout place at
-    // all. A function pointer (`Tpointer` to `Tfunction`) is excluded too:
-    // it has no native binding address in this interpreter yet
-    // (`expressions.d`'s
-    // `nonCapturingLambdaReturningLambdaIsAFunctionPointer` divergence).
+    // all. A function pointer (`Tpointer` to `Tfunction`) belongs here too:
+    // its stored bytes are its whole identity now, interpreted or native
+    // alike, so comparing them is the same stored-address comparison an
+    // ordinary pointer already gets.
     private bool pointerLikeIdentityType(imported!"dmd.mtype".Type type) {
         import dmd.astenums: TY;
 
-        // `auto`: `nextOf` is a mutable-only `dmd.mtype.Type` method, so
-        // `base` cannot be `const`.
         auto base = type.toBasetype;
-        if (base.ty == TY.Taarray)
-            return true;
-        if (base.ty != TY.Tpointer)
-            return false;
-
-        return base.nextOf.toBasetype.ty != TY.Tfunction;
+        return base.ty == TY.Taarray || base.ty == TY.Tpointer;
     }
 
     private bool identityPlaces(
@@ -4861,7 +4709,14 @@ private struct Walker {
             case Tdelegate:
                 return delegatePlacesAreIdentical(left, right);
             case Tpointer:
-                return functionPointerPlacesAreIdentical(left, right);
+                // Never reached in practice: `identityOperands` already
+                // routes every `Tpointer`-vs-`Tpointer` comparison through
+                // its `pointerLikeIdentityType` fast path above, which
+                // compares these same stored bytes directly. Kept as an
+                // explicit, trivially correct fallback rather than an
+                // `assert(false)` in case some caller ever reaches
+                // `identityPlaces` with a pointer operand another way.
+                return left.deref.address is right.deref.address;
             case Timaginary32:
                 return scalarPlacesAreEqual!ifloat(left, right);
             case Timaginary64:
@@ -4886,8 +4741,6 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import dmd.astenums: TY;
-        import quickbite.backends.interpreter.native_call_adapter:
-            NativeOperand, nativeDelegateMetadata;
 
         auto type = place.type.toBasetype;
         switch (type.ty) with (TY) {
@@ -4898,23 +4751,13 @@ private struct Walker {
                 // array identity: every empty slice is identical to null.
                 return place.arrayLength == 0;
             case Tdelegate:
-                return place.address !in nativeDelegateSlots &&
-                    nativeDelegateMetadata(
-                        NativeOperand(place.type, place.address),
-                    ).isNull;
+                const words = place.loadDelegateWords;
+                return words.context is null && words.funcptr is null;
             case Tclass:
-                if (place.address in nativeTypeInfoSlots)
-                    return false;
                 return place.deref.address is null;
             case Taarray:
                 return place.deref.address is null;
             case Tpointer:
-                if (
-                    type.nextOf.toBasetype.ty == Tfunction &&
-                    cast(const(void)*) place.address
-                        in nativeFunctionPointerSlots
-                )
-                    return false;
                 return place.deref.address is null;
             default:
                 return false;
@@ -4928,15 +4771,15 @@ private struct Walker {
         return equalStructPlaces(left, right);
     }
 
+    // A class reference and a `TypeInfo`/`ClassInfo` place both store a
+    // plain pointer value now -- a real object address, or an identity
+    // pointer `pointerForTypeInfoName` minted for a symbolic type name -- so
+    // comparing them is an ordinary stored-pointer comparison with no
+    // side-table lookup.
     private bool classPlacesAreIdentical(
         imported!"quickbite.backends.interpreter.place".Place left,
         imported!"quickbite.backends.interpreter.place".Place right,
     ) {
-        auto leftTypeInfo = left.address in nativeTypeInfoSlots;
-        auto rightTypeInfo = right.address in nativeTypeInfoSlots;
-        if (leftTypeInfo !is null || rightTypeInfo !is null)
-            return leftTypeInfo !is null && rightTypeInfo !is null &&
-                *leftTypeInfo == *rightTypeInfo;
         return left.deref.address is right.deref.address;
     }
 
@@ -4944,23 +4787,10 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place left,
         imported!"quickbite.backends.interpreter.place".Place right,
     ) {
-        import quickbite.backends.interpreter.native_call_adapter:
-            NativeOperand, nativeDelegateMetadata;
-
-        auto leftSlot = left.address in nativeDelegateSlots;
-        auto rightSlot = right.address in nativeDelegateSlots;
-        if (leftSlot !is null || rightSlot !is null)
-            return leftSlot !is null && rightSlot !is null &&
-                delegateSlotsAreIdentical(*leftSlot, *rightSlot);
-
-        const leftNative = nativeDelegateMetadata(
-            NativeOperand(left.type, left.address),
+        return delegateSlotsAreIdentical(
+            loadDelegateSlot(left),
+            loadDelegateSlot(right),
         );
-        const rightNative = nativeDelegateMetadata(
-            NativeOperand(right.type, right.address),
-        );
-        return leftNative.context is rightNative.context &&
-            leftNative.funcptr is rightNative.funcptr;
     }
 
     private bool delegateSlotsAreIdentical(
@@ -4972,19 +4802,6 @@ private struct Walker {
         return left.isNative
             ? left.context is right.context && left.funcptr is right.funcptr
             : left.functionPointerId == right.functionPointerId;
-    }
-
-    private bool functionPointerPlacesAreIdentical(
-        imported!"quickbite.backends.interpreter.place".Place left,
-        imported!"quickbite.backends.interpreter.place".Place right,
-    ) {
-        auto leftId = cast(const(void)*) left.address
-            in nativeFunctionPointerSlots;
-        auto rightId = cast(const(void)*) right.address
-            in nativeFunctionPointerSlots;
-        if (leftId !is null || rightId !is null)
-            return leftId !is null && rightId !is null && *leftId == *rightId;
-        return left.deref.address is right.deref.address;
     }
 
     private bool scalarPlacesAreEqual(T)(
@@ -5991,6 +5808,7 @@ private struct Walker {
             if (durableInboundSession is null)
                 durableInboundSession = new InterpreterInboundTrampolineSession(
                     _executionState.invokeNativeCallback,
+                    &_executionState.identityByPointer,
                 );
             auto request = NativeCallRequest(
                 delegateSignature: functionType,
@@ -6121,12 +5939,13 @@ private struct Walker {
         return null;
     }
 
-    // `AggregateValue.elementAt`'s plain memory read sees a delegate-typed
-    // element's zeroed bytes, not its live callable identity. A live
-    // delegate entry is registered out-of-band in
-    // `nativeDelegateSlots`, keyed by its own element address, exactly the
-    // same gap `loadNativePointerElement`'s identical `TY.Tdelegate` arm
-    // checks before falling through to a plain read.
+    // `AggregateValue.elementAt`'s plain memory read gets a delegate
+    // element's raw `{context, funcptr}` words, not its full callable
+    // identity: an interpreted delegate's captured/receiver state lives in
+    // `_executionState.delegates`, resolved from `funcptr` through
+    // `loadDelegateSlot`, exactly the same gap `loadNativePointerElement`'s
+    // identical `TY.Tdelegate` arm checks before falling through to a plain
+    // read.
     private void runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces,
@@ -6896,8 +6715,6 @@ private struct Walker {
             case Tclass: return classPlacesAreIdentical(left, right);
             case Taarray: return left.loadReference is right.loadReference;
             case Tpointer:
-                if (left.type.toBasetype.nextOf.toBasetype.ty == Tfunction)
-                    return functionPointerPlacesAreIdentical(left, right);
                 return left.loadReference is right.loadReference;
             case Tbool: return scalarPlacesAreEqual!bool(left, right);
             case Tint8: return scalarPlacesAreEqual!byte(left, right);
@@ -6998,7 +6815,7 @@ private struct Walker {
     // runtime (a plain function pointer, never registered in `delegates`)
     // falls back to comparing the two ids directly. A delegate backed by
     // native code has no `functionPointerId` at all -- its `{context,
-    // funcptr}` pair from `nativeDelegateSlots` already IS the runtime
+    // funcptr}` pair, read via `loadDelegateSlot`, already IS the runtime
     // identity D's builtin equality compares, with no registry indirection
     // to resolve.
     private bool equalDelegatePlaces(
@@ -7431,7 +7248,6 @@ private struct Walker {
                 if (auto type = typeidObjectType(typeid_)) {
                     auto unqualified = unqualifiedTypeInfoType(type);
                     if (auto address = resolvedClassTypeInfoAddress(unqualified)) {
-                        clearStoredMetadata(destination.type, destination.address);
                         destination.storeReference(cast(void*) address);
                     } else {
                         storeTypeInfoName(destination, typeInfoName(unqualified));
@@ -7575,7 +7391,6 @@ private struct Walker {
         }
 
         if (auto address = resolvedClassTypeInfoAddress(classInfo.e1.type)) {
-            clearStoredMetadata(destination.type, destination.address);
             destination.storeReference(cast(void*) address);
             return;
         }
@@ -7627,7 +7442,6 @@ private struct Walker {
             throw new Exception("Unsupported interpreter field read.");
 
         if (name == "ptr") {
-            clearStoredMetadata(destination.type, destination.address);
             destination.storeReference(runtime.contextPointer);
             return;
         }
@@ -7709,7 +7523,6 @@ private struct Walker {
         }
 
         if (auto address = resolvedClassTypeInfoAddress(resolvedType)) {
-            clearStoredMetadata(destination.type, destination.address);
             destination.storeReference(cast(void*) address);
             return;
         }
@@ -7912,7 +7725,7 @@ private struct Walker {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
-            copyPlaceValue(value, bindingPlace(variable), true);
+            copyPlaceValue(value, bindingPlace(variable));
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return;
         }
@@ -8132,16 +7945,9 @@ private struct Walker {
 
         auto sourceAggregate = borrowedAggregate(current);
         const oldLength = current.arrayLength;
-        const previousData = current.sliceDataPointer;
         auto resized = AggregateValue.withArrayLength(sourceAggregate, newLength);
         auto elementType = arrayElementType(type);
         auto destination = Place(resized.address, type);
-        relocatePriorAppendedElementSlots(
-            elementType,
-            previousData,
-            destination,
-            oldLength,
-        );
         foreach (index; oldLength .. newLength) {
             auto element = ConstructionDestination(destination.index(index));
             runExpression(elementType.defaultInitLiteral(Loc.initial), element);
@@ -8683,61 +8489,16 @@ private struct Walker {
         imported!"dmd.expression".Expression rhs,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.frontend.dmd.types: arrayElementType;
 
         auto contribution = concatenationOperand(current.type, rhs);
         const oldLength = current.arrayLength;
-        const previousData = current.sliceDataPointer;
         auto resized = AggregateValue.withArrayLength(
             borrowedAggregate(current),
             oldLength + contribution.count,
         );
         auto appended = Place(resized.address, current.type);
-        relocatePriorAppendedElementSlots(
-            arrayElementType(current.type),
-            previousData,
-            appended,
-            oldLength,
-        );
         writeConcatenationOperand(appended, oldLength, contribution);
         return appended;
-    }
-
-    // `withAppendedArrayElement` reallocates a fresh backing block as soon
-    // as the array's current block has no spare capacity -- true again
-    // immediately for a freshly one-element array's second append -- and
-    // copies every existing element's bytes into the new block. That plain
-    // byte copy carries ordinary element bytes fine, but does not duplicate
-    // each PRIOR element's `nativeDelegateSlots` registration at its new
-    // address: the same gap
-    // the newly appended element's own registration above needs relocating
-    // for, just for every earlier element instead of only the latest one.
-    // Detect the reallocation by comparing the slice's data pointer before
-    // and after this iteration's append. If it moved, relocate the prior
-    // storage as one byte range: symbolic entries already retain their byte
-    // offsets, including entries in nested structs and static arrays. The old
-    // registrations remain because another live slice may still alias the old
-    // allocation.
-    private void relocatePriorAppendedElementSlots(
-        imported!"dmd.mtype".Type elementType,
-        in const(void)* previousData,
-        Place appended,
-        in size_t count,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        if (count == 0)
-            return;
-
-        const appendedData = appended.sliceDataPointer;
-        if (previousData is appendedData)
-            return;
-
-        copyStoredMetadataRange(
-            cast(void*) previousData,
-            cast(void*) appendedData,
-            count * typeByteSize(elementType),
-        );
     }
 
     private Place runArrayConcatenateAssignExpression(
@@ -8856,17 +8617,17 @@ private struct Walker {
                 sourceType.ty == TY.Tpointer &&
                 sourceType.nextOf.toBasetype.ty == TY.Tfunction
             ) {
-                if (auto id = loadFunctionPointerId(source))
-                    storeDelegateSlot(destination, interpretedDelegateSlot(*id));
-                else
-                    storeDelegateSlot(
-                        destination,
-                        DelegateSlot(true, null, source.loadReference, 0),
-                    );
+                // The source's stored pointer bytes already ARE the
+                // callable's identity, interpreted or native alike; a
+                // delegate built from a bare function pointer just carries
+                // that same value as `funcptr` with a null context.
+                storeDelegateSlot(
+                    destination,
+                    DelegateSlot(true, null, source.loadReference, 0),
+                );
                 return true;
             }
             if (sourceType.ty == TY.Tnull) {
-                clearStoredMetadata(destination.type, destination.address);
                 clearPlace(destination);
                 return true;
             }
@@ -8889,15 +8650,10 @@ private struct Walker {
                 sourceType.ty == TY.Tclass ||
                 sourceType.ty == TY.Taarray
             ) {
-                if (
-                    sourceType.ty == TY.Tpointer &&
-                    sourceType.nextOf.toBasetype.ty == TY.Tfunction
-                ) {
-                    if (auto id = loadFunctionPointerId(source)) {
-                        storeFunctionPointerId(destination, *id);
-                        return true;
-                    }
-                }
+                // The source's stored pointer bytes are the whole value,
+                // whether they name an interpreted callable's identity or an
+                // ordinary pointer/reference: a plain byte copy is correct
+                // either way, function pointer included.
                 destination.storeReference(source.loadReference);
                 return true;
             }
@@ -9156,10 +8912,15 @@ private struct Walker {
 
     // A struct declared inside a function gets a hidden context field
     // (DMD's `AggregateDeclaration.vthis`) naming the enclosing activation.
-    // Record the activations live right now against that field's own address,
-    // so a method call on this instance can still reach them after the
-    // enclosing function has returned. Nearest activation first, matching
-    // `_enclosingFrames`' own order.
+    // Store that activation's own `FrameBlock` base address as the field's
+    // bytes -- an ordinary pointer value, the same role a compiled
+    // closure's static-link field plays -- and register the chain of
+    // activations live right now (nearest first, matching
+    // `_enclosingFrames`' own order) against that same address, so a method
+    // call on this instance can resolve it after the enclosing function has
+    // returned. Entries are never removed (#563): the frame base address a
+    // stored instance still names must keep resolving for as long as any
+    // interpreter execution could still call through it.
     private void bindNestedContextFrames(
         imported!"dmd.dstruct".StructDeclaration declaration,
         imported!"quickbite.backends.interpreter.place".Place value,
@@ -9167,8 +8928,16 @@ private struct Walker {
         if (declaration is null || declaration.vthis is null)
             return;
 
-        nestedContextFrames[value.field(declaration.vthis).address] =
-            [_activationFrame] ~ _enclosingFrames;
+        // The frame's own base address is about to escape into `value`'s
+        // vthis field, reachable for as long as the instance is. Refuse
+        // pooling this activation (`releaseActivationFrame` reads the same
+        // flag) so the address this registration keys on can never be
+        // reused for an unrelated later call: address reuse can then never
+        // make a live instance's vthis resolve to a stale context.
+        _activationFrameAddressEscaped = true;
+        const frameAddress = _activationFrame.block.address;
+        framesByBaseAddress[frameAddress] = [_activationFrame] ~ _enclosingFrames;
+        value.field(declaration.vthis).storeReference(cast(void*) frameAddress);
     }
 
     // The captured-variable addresses a method of a function-local struct
@@ -9191,8 +8960,8 @@ private struct Walker {
         if (contextField is null)
             return null;
 
-        auto frames = receiver.field(contextField)
-            .address in nestedContextFrames;
+        auto frames = receiver.field(contextField).loadReference
+            in framesByBaseAddress;
         if (frames is null)
             return null;
 
@@ -9348,7 +9117,6 @@ private struct Walker {
     ) {
         if (destination is null)
             return;
-        clearStoredMetadata(destination.place.type, destination.place.address);
         destination.place.storeReference(address);
         destination.markConstructed;
     }
@@ -9421,6 +9189,7 @@ private struct Walker {
         if (durableInboundSession is null)
             durableInboundSession = new InterpreterInboundTrampolineSession(
                 _executionState.invokeNativeCallback,
+                &_executionState.identityByPointer,
             );
         auto receiverOperand = receiverExpression is null
             ? receiver.address is null
@@ -9480,6 +9249,7 @@ private struct Walker {
         if (durableInboundSession is null)
             durableInboundSession = new InterpreterInboundTrampolineSession(
                 _executionState.invokeNativeCallback,
+                &_executionState.identityByPointer,
             );
         fillNativeCallOperands(
             function_,
@@ -9565,9 +9335,8 @@ private struct Walker {
                 argumentTypes[index].toBasetype.ty == TY.Tdelegate &&
                 argumentPlaces[index].address !is null
             ) {
-                auto slot = cast(const(void)*) argumentPlaces[index].address
-                    in nativeDelegateSlots;
-                if (slot !is null && !slot.isNative) {
+                const slot = loadDelegateSlot(argumentPlaces[index]);
+                if (!slot.isNative) {
                     operands[index] = NativeOperand(
                         argumentTypes[index],
                         null,
@@ -9755,7 +9524,6 @@ private struct Walker {
             child._returnDestination = &returnDestination;
             child.hasThis = true;
             forkExecutionStateInto(child);
-            scope(exit) child.retireActivationFrameMetadata;
             child.bindFunctionParameters(
                 new_.member,
                 argumentPlaces,
@@ -9830,7 +9598,6 @@ private struct Walker {
                 child._returnDestination = &returnDestination;
                 child.hasThis = true;
                 forkExecutionStateInto(child);
-                scope(exit) child.retireActivationFrameMetadata;
                 child.bindThisReferenceAddress(new_.member, child.thisValue);
                 child.bindFunctionParameters(
                     new_.member,
@@ -10628,7 +10395,6 @@ destinationFallback:
                     throw new Exception(
                         "Variable symbol offset has no reference destination.",
                     );
-                clearStoredMetadata(place.type, place.address);
                 place.storeReference(pointerDestination.loadReference);
                 destination.markConstructed;
                 return true;
@@ -10862,7 +10628,6 @@ destinationFallback:
         // `const` would qualify the stored context pointer and prevent this
         // typed pointer place from accepting it.
         auto runtime = requireInterpretedDelegate(expression.e1);
-        clearStoredMetadata(destination.type, destination.address);
         destination.storeReference(runtime.contextPointer);
     }
 
@@ -10871,10 +10636,7 @@ destinationFallback:
         Place destination,
     ) {
         const runtime = requireInterpretedDelegate(expression.e1);
-        clearStoredMetadata(destination.type, destination.address);
-        nativeFunctionPointerSlots[destination.address] =
-            runtime.functionPointerId;
-        destination.storeReference(null);
+        storeFunctionPointerId(destination, runtime.functionPointerId);
     }
 
     private RuntimeDelegate* requireInterpretedDelegate(Expression expression) {
@@ -10889,25 +10651,16 @@ destinationFallback:
     }
 
     private DelegateSlot constructedDelegateSlot(Expression expression) {
-        import quickbite.backends.interpreter.native_call_adapter:
-            NativeOperand, nativeDelegateMetadata;
-
         auto destination = ConstructionDestination(Place(
             _activationFrame.temporaryAddress(expression),
             expression.type,
         ));
         runExpression(expression, destination);
 
-        if (auto slot = destination.place.address in nativeDelegateSlots)
-            return *slot;
-
-        const native = nativeDelegateMetadata(NativeOperand(
-            destination.place.type,
-            destination.place.address,
-        ));
-        if (native.isNull)
+        const slot = loadDelegateSlot(destination.place);
+        if (slot.isNative && slot.context is null && slot.funcptr is null)
             throw new Exception("Expected function pointer.");
-        return DelegateSlot(true, native.context, native.funcptr, 0);
+        return slot;
     }
 
     private void requireReceiverExpression(Expression expression) {
@@ -11243,7 +10996,6 @@ destinationFallback:
             return false;
         }
 
-        clearStoredMetadata(destination.type, destination.address);
         destination.storeReference(addressOfExpression(address.e1, address.op));
         return true;
     }
@@ -12206,34 +11958,23 @@ destinationFallback:
             hasDirectWriteProjectionPlace(rvalue);
     }
 
-    // Leave a typed place holding no value at all: zero bytes and no
-    // out-of-band callable or symbolic identity, the same state freshly
-    // allocated storage arrives in.
+    // Leave a typed place holding no value at all: all-zero bytes, the same
+    // state freshly allocated storage arrives in.
     private void clearPlaceValue(
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: clearPlace;
 
-        clearStoredMetadataRange(place.address, typeByteSize(place.type));
         clearPlace(place);
     }
 
-    // Copy one typed place's complete value into another: the native bytes
-    // plus the out-of-band identity of any callable or symbolic slot inside
-    // them, which is part of the value in that byte range and stays registered
-    // at the source as well (`copyStoredMetadata`'s own value-copy rule).
+    // Copy one typed place's complete value into another: an ordinary byte
+    // copy, since every value -- including a callable or symbolic
+    // `TypeInfo` identity -- lives entirely in its own native byte range.
     private void copyPlaceValue(
         imported!"quickbite.backends.interpreter.place".Place source,
         imported!"quickbite.backends.interpreter.place".Place destination,
-        in bool consumeMetadata = false,
     ) {
-        copyStoredMetadata(
-            destination.type,
-            cast(void*) source.address,
-            destination.address,
-            consumeMetadata,
-        );
         destination.copyFromUnchecked(source);
     }
 

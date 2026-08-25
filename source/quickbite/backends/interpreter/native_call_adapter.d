@@ -111,15 +111,27 @@ private struct InboundTrampolineRegistry {
     private InboundCallbackInvoker _invoke;
     private InboundClosureContext*[] _contexts;
     private void*[] _closures;
+    // Shared with the owning `InterpreterExecutionState`: a callable handed
+    // out to native code through a fresh trampoline gets its own code
+    // pointer aliased to the same interpreted identity here, so a value that
+    // later flows back from native code (a callback stored and called again,
+    // a returned function pointer) resolves to the same callable instead of
+    // being read as an opaque native one.
+    private size_t[const(void)*]* _identityByPointer;
 
-    public this(InboundCallbackInvoker invoke) {
+    public this(
+        InboundCallbackInvoker invoke,
+        size_t[const(void)*]* identityByPointer,
+    ) {
         _invoke = invoke;
+        _identityByPointer = identityByPointer;
     }
 
     public void setupDelegateArgument(
         ubyte[] buffer,
         imported!"dmd.mtype".Type delegateType,
         in size_t callbackId,
+        in size_t functionPointerId,
         in imported!"quickbite.ffi.ffi".CompilerAbi compilerAbi,
     ) {
         setupInboundDelegateArgument(
@@ -129,6 +141,8 @@ private struct InboundTrampolineRegistry {
             compilerAbi,
             &this,
         );
+        if (_identityByPointer !is null)
+            (*_identityByPointer)[trampolineCode(buffer)] = functionPointerId;
     }
 
     public void close() {
@@ -283,9 +297,12 @@ public struct InterpreterInboundTrampolineSession {
     private DelegateInvoker _invokeDelegate;
     private InboundTrampolineRegistry* _registry;
 
-    public this(DelegateInvoker invokeDelegate) {
+    public this(
+        DelegateInvoker invokeDelegate,
+        size_t[const(void)*]* identityByPointer,
+    ) {
         _invokeDelegate = invokeDelegate;
-        _registry = new InboundTrampolineRegistry(&invoke);
+        _registry = new InboundTrampolineRegistry(&invoke, identityByPointer);
     }
 
     public InboundTrampolineRegistry* registry() {
@@ -295,6 +312,13 @@ public struct InterpreterInboundTrampolineSession {
     public size_t register(in InterpretedDelegate callback) {
         _callbacks ~= callback;
         return _callbacks.length - 1;
+    }
+
+    // The interpreted identity a registered callback dispatches to, so a
+    // caller preparing its native-visible trampoline can alias the
+    // trampoline's own code pointer to the same identity.
+    public size_t functionPointerId(in size_t callbackId) const {
+        return _callbacks[callbackId].functionPointerId;
     }
 
     // Durable callbacks are valid only while their owning Walker can service
@@ -716,6 +740,7 @@ private bool prepareNativeOperand(
         owner.bytes,
         type,
         supplied.callbackId,
+        supplied.callbackSession.functionPointerId(supplied.callbackId),
         invocation.callable.compilerAbi,
     );
     result = TypedAddress(type, owner.address);
@@ -885,6 +910,12 @@ private NativeOperand nativeResultOperand(
     if (address !is null && type !is null && type.toBasetype.ty == TY.Tdelegate)
         result.delegateMetadata = nativeDelegateMetadata(result);
     return result;
+}
+
+// The trampoline code pointer `setupInboundDelegateArgument` just wrote at
+// `buffer`'s second word, the same layout `nativeDelegateMetadata` decodes.
+private const(void)* trampolineCode(ubyte[] buffer) @trusted {
+    return *cast(const(void)**) (buffer.ptr + (void*).sizeof);
 }
 
 // Read a D delegate's native ABI words from a typed address. Native delegate
