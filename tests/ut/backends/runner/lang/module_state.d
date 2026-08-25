@@ -358,7 +358,9 @@ static foreach (backend; Matrix!(
 
 // A module constructor in an imported module runs before any unittest in
 // the importing module, the same way it runs before any unittest in its
-// own module.
+// own module. Bytecode (#547) and Interpreter/LLVMJit (#543) do not yet
+// run an imported module's constructor before the importing module's
+// unittest.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `seed` cannot be read at compile time"),

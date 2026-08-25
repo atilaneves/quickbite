@@ -6503,10 +6503,8 @@ static foreach (backend; Matrix!(
 // type is `string`, not an integral, still defaults to its own declared
 // member -- not the empty string a plain `string` variable's own unset
 // value would be. `Ctfe` cannot read dataseg storage at compile time.
-// `Interpreter`'s `Place.index` matches only a literal static-array,
-// pointer, or slice DMD type; it never unwraps an enum type to its base
-// type's own representation, so a non-scalar-base enum place always
-// refuses here regardless of the base's shape (issue #517).
+// The Interpreter's place lookup matches the declared type tag and never
+// unwraps an enum (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `s` cannot be read at compile time"),
@@ -6532,9 +6530,9 @@ static foreach (backend; Matrix!(
 
 // The array-element counterpart: a `string`-base enum element of a
 // module-level static array still defaults to its own declared member,
-// the same way a plain `int` element defaults to `0`. `Interpreter` has
-// the same `Place.index` gap as the whole-variable fixture above (issue
-// #517); scope (element vs. whole variable) makes no difference.
+// the same way a plain `int` element defaults to `0`. The Interpreter's
+// place lookup matches the declared type tag and never unwraps an enum
+// (#517); scope (element vs. whole variable) makes no difference.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `arr` cannot be read at compile time"),
@@ -6562,9 +6560,9 @@ static foreach (backend; Matrix!(
 // The struct-field counterpart: a `string`-base enum field with no
 // initializer of its own still takes the enum's own declared default
 // member, the same way the integral-base enum field above already does.
-// `Interpreter` has the same `Place.index` gap as the two fixtures above
-// (issue #517); scope (struct field vs. whole variable) makes no
-// difference.
+// The Interpreter's place lookup matches the declared type tag and never
+// unwraps an enum (#517); scope (struct field vs. whole variable) makes
+// no difference.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `t` cannot be read at compile time"),
@@ -6591,10 +6589,8 @@ static foreach (backend; Matrix!(
 
 // The static-array-base counterpart: an enum whose base type is itself a
 // static array still defaults to its own declared member, not the base
-// array's own all-zero default. `Interpreter` has the same `Place.index`
-// gap as the string-base fixtures above (issue #517): `_type.isTypeSArray`
-// is false for the enum type itself, so this static-array-base place
-// refuses too, the same as a slice-base place does.
+// array's own all-zero default. The Interpreter's place lookup matches
+// the declared type tag and never unwraps an enum (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `x` cannot be read at compile time"),
@@ -6621,11 +6617,8 @@ static foreach (backend; Matrix!(
 
 // The struct-base counterpart: an enum whose base type is a struct still
 // defaults to its own declared member, not the struct's own field-wise
-// `.init`. `Interpreter`'s `placeOfLvalue` checks a `DotVarExp` receiver's
-// place against a literal struct/class/pointer DMD type without unwrapping
-// an enum type to its base type, so a struct-base enum place refuses
-// field access -- the same enum-place gap as issue #517, on a different
-// dispatch point.
+// `.init`. The Interpreter's place lookup matches the declared type tag
+// and never unwraps an enum (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `p` cannot be read at compile time"),
@@ -6656,10 +6649,9 @@ static foreach (backend; Matrix!(
 // (`enum S: string { a = null }`) is a genuine null string -- the same
 // all-zero slice descriptor a plain `string` variable's own unset value
 // already is -- not a shape the enum-default writer should refuse.
-// `Ctfe` cannot read dataseg storage at compile time. `Interpreter` does
-// not lay out an enum-typed place with a slice base as a slice, so the
-// identity comparison tries to read it as a native scalar instead
-// (issue #517).
+// `Ctfe` cannot read dataseg storage at compile time. The Interpreter's
+// place lookup matches the declared type tag and never unwraps an enum
+// (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `s` cannot be read at compile time"),
@@ -6713,11 +6705,37 @@ static foreach (backend; Matrix!(
 // `char[2]` (DMD does not lower it to an `ArrayLiteralExp`), the same
 // static-array-base shape as the `int[2]`-base fixture above but with a
 // string literal in place of an array literal. `Ctfe` cannot read dataseg
-// storage at compile time; `Interpreter` has the same `Place.index` gap
-// as the other static-array-base fixture above (issue #517). Comparing a
-// `char[2]` local to a string literal (`c == "ab"`) is unsupported in
-// bytecode core even outside an enum -- a pre-existing equality-compiler
-// gap, not this default-writer's own decline.
+// storage at compile time. The Interpreter's place lookup matches the
+// declared type tag and never unwraps an enum (#517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `c` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleCharArrayEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum C: char[2] { a = "ab" }
+
+            __gshared C c;
+
+            unittest {
+                size_t i = 1;
+                assert(c.length == 2);
+                assert(c[i] == 'b');
+            }
+        });
+    }
+}
+
+// Comparing a `char[2]` local to a string literal (`c == "ab"`) is
+// unsupported in bytecode core even outside an enum -- the equality
+// compiler refuses a `Tsarray` operand (`char[2]`) against a `Tarray`
+// operand (the string literal), a pre-existing gap in the equality
+// compiler, not the default-writer's own decline (issue #574).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `c` cannot be read at compile time"),
@@ -6727,7 +6745,7 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.refusal,
         "Unsupported equality in bytecode core: c == \"ab\""),
 )) {
-    @("dataseg.moduleCharArrayEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @("dataseg.moduleCharArrayEnumEqualsStringLiteral." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -6742,14 +6760,68 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The `wchar[2]`-base twin of the `char[2]`-base fixture above: a
+// `wchar`-code-unit-width static-array-base enum still defaults to its
+// own declared member, the same `StringExp`-typed-to-static-array shape.
+// `Ctfe` cannot read dataseg storage at compile time. The Interpreter's
+// place lookup matches the declared type tag and never unwraps an enum
+// (#517).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `w` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleWcharArrayEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum W: wchar[2] { a = "xy" }
+
+            __gshared W w;
+
+            unittest {
+                size_t i = 1;
+                assert(w.length == 2);
+                assert(w[i] == 'y');
+            }
+        });
+    }
+}
+
+// The `dchar[2]`-base twin of the fixture above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `d` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "quickbite.backends.interpreter.place.Place.index: only a " ~
+        "static-array, pointer, or slice place can be indexed"),
+)) {
+    @("dataseg.moduleDcharArrayEnumDefaultsToDeclaredMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum D: dchar[2] { a = "xy" }
+
+            __gshared D d;
+
+            unittest {
+                size_t i = 1;
+                assert(d.length == 2);
+                assert(d[i] == 'y');
+            }
+        });
+    }
+}
+
 // A struct-base enum whose declared member has a nested-struct field
 // still defaults to its own declared member, the same way the flat
 // `int`-field struct-base fixture above already does. `Ctfe` cannot read
-// dataseg storage at compile time; `Interpreter` has the same
-// `placeOfLvalue` gap as the flat struct-base fixture above (issue #517).
-// `writeStructLiteralFieldBytes` writes only scalar/floating-point
-// fields, so a nested-struct field declines and the variable's own
-// registration is refused.
+// dataseg storage at compile time. The Interpreter's place lookup matches
+// the declared type tag and never unwraps an enum (#517). The bytecode
+// backend cannot yet lay out a struct literal with an aggregate field as
+// module storage (#575).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `q` cannot be read at compile time"),
@@ -6780,9 +6852,9 @@ static foreach (backend; Matrix!(
 
 // The `wstring`-base counterpart of the `string`-base fixture above: a
 // `wchar`-code-unit-width enum still defaults to its own declared member.
-// `Ctfe` cannot read dataseg storage at compile time; `Interpreter` has
-// the same `Place.index` gap as the string-base fixture above (issue
-// #517).
+// `Ctfe` cannot read dataseg storage at compile time. The Interpreter's
+// place lookup matches the declared type tag and never unwraps an enum
+// (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `w` cannot be read at compile time"),
@@ -6835,10 +6907,9 @@ static foreach (backend; Matrix!(
 // An enum whose own base type is another enum (`enum T: S`) still resolves
 // its declared member through `S`'s own string-base representation, not a
 // scalar default -- `Type.defaultInit` on `T` returns `S.a`'s own value
-// expression, already the shape `writeEnumDefaultInitializerBytes` expects.
-// `Ctfe` cannot read dataseg storage at compile time; `Interpreter` has
-// the same `Place.index` gap as the string-base fixture above (issue
-// #517).
+// expression. `Ctfe` cannot read dataseg storage at compile time. The
+// Interpreter's place lookup matches the declared type tag and never
+// unwraps an enum (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `t` cannot be read at compile time"),
@@ -6865,8 +6936,8 @@ static foreach (backend; Matrix!(
 // The nested-static-array-base counterpart of the static-array-base
 // fixture above: an enum whose base type is itself a two-dimensional
 // static array still defaults to its own declared member. `Ctfe` cannot
-// read dataseg storage at compile time; `Interpreter` has the same
-// `Place.index` gap as the static-array-base fixture above (issue #517).
+// read dataseg storage at compile time. The Interpreter's place lookup
+// matches the declared type tag and never unwraps an enum (#517).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `m` cannot be read at compile time"),

@@ -729,12 +729,10 @@
   from a separate callee after the return so handler lifetime is observable.
 
 - A zero-hit probe over the current suite does not prove a fallback dead:
-  if the condition it guards can still arise (a registration that may
-  decline), keep the fallback and pin it with a fixture that reaches it.
-
-- A path that routes declarations to module storage needs an explicit
-  fallback or refusal for a declined registration, and a "decline"
-  helper must itself never throw on the shape it declines.
+  if a registration that may decline can still arise, keep the fallback
+  (module storage needs an explicit fallback or refusal for it) and pin
+  it with a fixture that reaches it; a "decline" helper must itself
+  never throw on the shape it declines.
 
 - When manually stripping a cast chain to find a source place, size the
   result from the argument's own outermost (post-cast) type, not from
@@ -755,8 +753,6 @@
   struct-base enum's field-wise `.init`): call `Type.defaultInit` on the
   enum type itself, which already returns the real default expression.
 
-- The interpreter backend's place-dispatch helpers (`Place.index`,
-  `Place.loadScalar`, `placeOfLvalue`'s `DotVarExp` receiver check) match a
-  literal `isTypeSArray`/`isTypeDArray`/`isTypeStruct`/etc. tag without
-  unwrapping an enum type, so ANY non-scalar-base enum place refuses there
-  regardless of the base's shape (issue #517).
+- Before wording an `Omit` as a storage-shape gap, read the dispatch
+  helper: the refusal may be a type-tag match that never unwraps enums
+  (issue #517).

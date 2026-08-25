@@ -10189,13 +10189,13 @@ package(quickbite.backends.bytecode) struct Compiler {
     // expression -- a `StringExp`/`ArrayLiteralExp` for a string/array
     // base, a `StructLiteralExp` for a struct base -- rather than the
     // all-zero or field-wise default a plain variable of the same shape
-    // would get. Declines (`false`, `bytes` untouched) for a
-    // representation the switch itself refuses (a vector base, or one of
-    // the scalar-ish shapes with no enum-default writer of its own), and
-    // for a struct base whose declared member has an aggregate
-    // (`Tstruct`/`Tsarray`/`Tarray`/`Tdelegate`) field --
-    // `writeStructLiteralFieldBytes` writes only scalar/floating-point
-    // fields.
+    // would get. Declines (`false`; callers discard `bytes`) whenever the
+    // reused literal writer declines -- e.g. a struct base whose declared
+    // member has an aggregate (`Tstruct`/`Tsarray`/`Tarray`/`Tdelegate`)
+    // field, which `writeStructLiteralFieldBytes` writes only
+    // scalar/floating-point fields for -- and explicitly for a vector
+    // base, or one of the scalar-ish shapes with no enum-default writer
+    // of its own.
     private bool writeEnumDefaultInitializerBytes(Type type, ubyte[] bytes) {
         import dmd.location: Loc;
         import dmd.typesem: defaultInit;
@@ -10219,7 +10219,7 @@ package(quickbite.backends.bytecode) struct Compiler {
                 if (auto string_ = expression.isStringExp) {
                     import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
 
-                    auto codeUnitBytes = stringCodeUnitBytes(string_);
+                    const codeUnitBytes = stringCodeUnitBytes(string_);
                     if (codeUnitBytes.length != bytes.length)
                         return false;
                     bytes[] = codeUnitBytes[];
