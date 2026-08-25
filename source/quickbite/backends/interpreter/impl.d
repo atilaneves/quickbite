@@ -4950,7 +4950,7 @@ private struct Walker {
         imported!"dmd.expression".CallExp call,
         ConstructionDestination* constructionDestination,
     ) {
-        import dmd.expression: Expression;
+        import dmd.expression: BinExp, Expression;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
         import quickbite.backends.interpreter.place: Place;
@@ -5060,6 +5060,14 @@ private struct Walker {
                 receiverPointerAddress = receiverPlace.address;
                 hasReceiverPointerAddress = true;
                 receiverValuePlace = receiverPlace;
+            } else if (assignmentTarget(dot.e1) !is null) {
+                // The assignment selects its target before it constructs and
+                // writes the value. Keep that selected place as the method
+                // receiver, so a side-effecting target is not selected again
+                // when the callee binds `this`.
+                receiverValuePlace = runAssignExpression(cast(BinExp) dot.e1);
+                receiverPointerAddress = receiverValuePlace.address;
+                hasReceiverPointerAddress = true;
             } else if (auto pointerReceiver = dot.e1.isPtrExp) {
                 receiverPointerAddress =
                     pointerOperandPlace(pointerReceiver.e1).deref.address;
@@ -6255,19 +6263,18 @@ private struct Walker {
 
             // An assign/construct/blit receiver (`(place = value).method()`)
             // already wrote `value` into `place` when `receiver` above was
-            // computed (evaluating this call's own receiver expression runs
-            // the assignment); resolve the writable address from `place`
-            // itself rather than re-evaluating the assignment a second time.
+            // computed. The ordinary call path also preserves that selected
+            // address. A caller without it may re-address only a target that
+            // has no side-effecting operands.
             auto placeExpression = assignmentTarget(receiverExpression);
-            if (placeExpression !is null && !isPeelableAssignmentTarget(placeExpression))
-                // `place` is a `PtrExp`/`IndexExp` (e.g. `(*next() = value).
-                // bump()`, `(arr[i++] = value).bump()`): it may embed a
-                // side-effecting operand, and there is no precomputed
-                // address for it to reuse (that precompute only exists for
-                // a bare `PtrExp`/`IndexExp` *receiver expression itself*,
-                // not one recovered by peeling an assignment) -- refuse
-                // outright rather than re-evaluate that operand a second
-                // time via `addressOfExpression` below.
+            if (
+                precomputedReceiverAddress is null &&
+                placeExpression !is null &&
+                !isPeelableAssignmentTarget(placeExpression)
+            )
+                // `place` is a `PtrExp`/`IndexExp` and may embed a
+                // side-effecting operand. Refuse instead of selecting a
+                // possibly different target through a second evaluation.
                 throw new Exception(
                     "Unsupported eval expression: chained postblit/method " ~
                     "call receiver's assignment target is a pointer/index " ~
@@ -6381,20 +6388,10 @@ private struct Walker {
         return null;
     }
 
-    // Whether `expression` -- a target recovered from an assign/construct/
-    // blit chain by `assignmentTarget` -- is safe to resolve an address from
-    // directly, i.e. carries no side-effecting operand that a second
-    // evaluation could re-run. Only a plain local variable or a `this`-
-    // rooted field-access chain qualify: the only shapes the commit's actual
-    // use case (`emplaceRef`'s `(this.payload = args).__postblit()`-style
-    // lowerings) ever produces. A `PtrExp`/`IndexExp` target (e.g.
-    // `(*next() = value).bump()`, `(arr[i++] = value).bump()`) may embed an
-    // arbitrary side-effecting operand; the receiver-level
-    // `precomputedReceiverPointerAddress` precompute that protects a bare
-    // `PtrExp`/`IndexExp` *receiver* doesn't reach a target recovered by
-    // peeling, so re-deriving its address via `addressOfExpression` would
-    // silently re-run that side effect a second time -- callers must refuse
-    // that shape outright instead (see `runMemberFunction`).
+    // Whether a target recovered from an assign/construct/blit chain is safe
+    // to re-address when the caller did not preserve the assignment's own
+    // selected place. A plain binding or a `this`-rooted field-access chain
+    // has no side-effecting operand to repeat.
     private static bool isPeelableAssignmentTarget(
         imported!"dmd.expression".Expression expression,
     ) {

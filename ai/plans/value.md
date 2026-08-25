@@ -56,19 +56,6 @@ like other native-layout reference values; autovivifying a null handle
 writes it through the referenced binding before inserting, so the caller
 retains both the allocation and later mutations.
 
-A method call chained off an assign/construct/blit whose target is itself a
-side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
-address to rebind `this` to without re-running that side effect a second
-time: `assignmentTarget`'s peel only trusts a `VarExp` or a `this`-rooted
-`DotVarExp` chain as safe to re-address, so `runMemberFunction` refuses the
-`PtrExp`/`IndexExp` shape outright (fixture:
-`struct.methodCallThroughAssignmentChainedPtrExpReceiverEvaluatesOnce`).
-Lifting the refusal needs the assignment's own write to hand back the
-address it used, the same way the receiver-level
-`precomputedReceiverPointerAddress` precompute does for a bare
-`PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
-recovered by peeling.
-
 Two unverified language-surface findings need a proving test before work:
 a native delegate slot's `.ptr`/`.funcptr` access throws, and an `opAssign`
 and postblit interaction may disagree with compiled D.

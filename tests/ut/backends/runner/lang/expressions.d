@@ -15487,15 +15487,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variables `arr`/" ~
         "`calls` at compile time"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "a pointer/index assignment-chain receiver (`(*next() = value)." ~
-        "method()`) would need `next()`'s side effect evaluated exactly " ~
-        "once when resolving the method's `this` address, which the " ~
-        "current architecture can't guarantee without duplicating it; " ~
-        "`runMemberFunction` refuses the shape with \"Unsupported eval " ~
-        "expression: chained postblit/method call receiver's assignment " ~
-        "target is a pointer/index expression...\" rather than risk the " ~
-        "double evaluation"),
     Omit!(Bytecode, Because.unconfirmed,
         "independent, unconfirmed gap: \"Unsupported struct value in " ~
         "bytecode core: *next() = P(10)\" -- the bytecode core doesn't " ~
