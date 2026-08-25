@@ -6645,7 +6645,7 @@ static foreach (backend; Matrix!(
 // A string-base enum whose declared default is explicitly `null`
 // (`enum S: string { a = null }`) is a genuine null string -- the same
 // all-zero slice descriptor a plain `string` variable's own unset value
-// already is -- not a shape the enum-default writer should refuse.
+// already is -- a genuine null/empty slice, not a refusal case.
 // `Ctfe` cannot read dataseg storage at compile time. The Interpreter's
 // place lookup matches the declared type tag and never unwraps an enum
 // (#517).
@@ -6673,7 +6673,7 @@ static foreach (backend; Matrix!(
 
 // The array-base counterpart: an `int[]`-base enum whose declared default
 // is an empty array literal (`enum E: int[] { a = [] }`) is likewise a
-// genuine empty slice, not a shape the enum-default writer should refuse.
+// genuine null/empty slice, not a refusal case.
 // `Ctfe` and `Interpreter` have the same gaps as the fixture above (issue
 // #517).
 static foreach (backend; Matrix!(
@@ -6728,11 +6728,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Comparing a `char[2]` local to a string literal (`c == "ab"`) is
-// unsupported in bytecode core even outside an enum -- the equality
-// compiler refuses a `Tsarray` operand (`char[2]`) against a `Tarray`
-// operand (the string literal), a pre-existing gap in the equality
-// compiler, not the default-writer's own decline (issue #574).
+// Comparing a `char[2]` value to a string literal (`c == "ab"`) is not
+// yet supported on Bytecode even outside an enum; the static-array
+// default itself is covered by the fixture above (#574).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "static variable `c` cannot be read at compile time"),

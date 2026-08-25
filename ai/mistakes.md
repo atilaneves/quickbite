@@ -732,9 +732,8 @@
 
 - A zero-hit probe over the current suite does not prove a fallback dead:
   if a registration that may decline can still arise, keep the fallback
-  (module storage needs an explicit fallback or refusal for it) and pin
-  it with a fixture that reaches it; a "decline" helper must itself
-  never throw on the shape it declines.
+  and pin it with a fixture that reaches it; a "decline" helper must
+  itself never throw on the shape it declines.
 
 - When manually stripping a cast chain to find a source place, size the
   result from the argument's own outermost (post-cast) type, not from
