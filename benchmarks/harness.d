@@ -8,7 +8,7 @@ public struct Result {
     // Sample standard deviation in hnsecs; floating-point because Duration
     // cannot represent a sub-integer-hnsec spread.
     public double stddevHnsecs;
-    // Median for repeated verdicts; the one observed value for a first verdict.
+    // Median dGC allocation across the timed iterations.
     public ulong dGcAllocation;
     public imported!"std.typecons".Nullable!ulong cgroupPeakMemory;
 }
@@ -22,21 +22,8 @@ public struct Measurement(T) {
     public T[] results;
 }
 
-public struct VerdictMeasurement(T) {
-    public Result first;
-    public Result repeated;
-    public T firstResult;
-    public T[] warmupResults;
-    public T[] results;
-}
-
-public enum VerdictKind {
-    first,
-    repeated,
-}
-
 public alias AdditionalAllocation = ulong delegate();
-public alias SampleBoundary = void delegate(VerdictKind);
+public alias SampleBoundary = void delegate();
 
 public Result measure(
     scope void delegate() runTests,
@@ -114,11 +101,11 @@ public Measurement!T measureWithResults(T)(
 
     foreach (i; 0 .. iterations) {
         if (beforeSample !is null)
-            beforeSample(VerdictKind.repeated);
+            beforeSample();
         {
             scope(exit)
                 if (afterSample !is null)
-                    afterSample(VerdictKind.repeated);
+                    afterSample();
 
             const allocationBaseline = GC.allocatedInCurrentThread;
             const start = MonoTime.currTime;
@@ -159,53 +146,5 @@ public Measurement!T measureWithResults(T)(
         Result(timings[0], median, stddev, medianAllocation),
         warmupResults,
         results,
-    );
-}
-
-public VerdictMeasurement!T measureVerdictsWithResults(T)(
-    scope T delegate() operation,
-    in size_t warmup,
-    in size_t iterations,
-    scope AdditionalAllocation additionalAllocation = null,
-    scope SampleBoundary beforeSample = null,
-    scope SampleBoundary afterSample = null,
-) {
-    import core.memory: GC;
-    import core.time: MonoTime;
-
-    if (beforeSample !is null)
-        beforeSample(VerdictKind.first);
-
-    T firstResult;
-    typeof(MonoTime.currTime - MonoTime.currTime) elapsed;
-    ulong firstAllocation;
-    {
-        scope(exit)
-            if (afterSample !is null)
-                afterSample(VerdictKind.first);
-
-        const allocationBaseline = GC.allocatedInCurrentThread;
-        const start = MonoTime.currTime;
-        firstResult = operation();
-        elapsed = MonoTime.currTime - start;
-        firstAllocation = GC.allocatedInCurrentThread - allocationBaseline;
-        if (additionalAllocation !is null)
-            firstAllocation += additionalAllocation();
-    }
-
-    auto repeated = measureWithResults(
-        operation,
-        warmup,
-        iterations,
-        additionalAllocation,
-        beforeSample,
-        afterSample,
-    );
-    return VerdictMeasurement!T(
-        Result(elapsed, elapsed, 0.0, firstAllocation),
-        repeated.timing,
-        firstResult,
-        repeated.warmupResults,
-        repeated.results,
     );
 }

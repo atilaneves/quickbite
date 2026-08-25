@@ -2,7 +2,7 @@ module benchmarks.cli;
 
 import benchmarks.cgroup_peak: CgroupPeakMeter;
 import benchmarks.harness:
-    measure, measureVerdictsWithResults, Result, VerdictKind;
+    measure, measureWithResults, Result;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner:
     CompileTimeReporter, DgcAllocationReporter, Runner, TestResult, runTests;
@@ -242,8 +242,7 @@ public int run(string[] args) {
                 auto allocationReporter = cast(DgcAllocationReporter) runner;
                 Duration[] compileDeltas;
                 auto cgroupPeakMeter = CgroupPeakMeter.fromEnvironment;
-                Nullable!ulong firstCgroupPeak;
-                ulong[] repeatedCgroupPeaks;
+                ulong[] cgroupPeaks;
                 TestResult[] runAndSampleCompileTime() {
                     if (compileReporter is null)
                         return runTests(runner, modules);
@@ -252,26 +251,18 @@ public int run(string[] args) {
                     compileDeltas ~= compileReporter.compileTime - before;
                     return results;
                 }
-                void beforeSample(VerdictKind kind) {
+                void beforeSample() {
                     cgroupPeakMeter.reset;
                 }
-                void afterSample(VerdictKind kind) {
+                void afterSample() {
                     if (!cgroupPeakMeter.available)
                         return;
 
-                    const peak = cgroupPeakMeter.read;
-                    final switch (kind) {
-                        case VerdictKind.first:
-                            firstCgroupPeak = Nullable!ulong(peak);
-                            break;
-                        case VerdictKind.repeated:
-                            repeatedCgroupPeaks ~= peak;
-                            break;
-                    }
+                    cgroupPeaks ~= cgroupPeakMeter.read;
                 }
 
                 try {
-                    auto measured = measureVerdictsWithResults(
+                    auto measured = measureWithResults(
                         () { return runAndSampleCompileTime; },
                         warmup,
                         runs,
@@ -281,31 +272,22 @@ public int run(string[] args) {
                         &beforeSample,
                         &afterSample,
                     );
-                    measured.first.cgroupPeakMemory = firstCgroupPeak;
-                    measured.repeated.cgroupPeakMemory =
-                        medianCgroupPeak(repeatedCgroupPeaks);
+                    measured.timing.cgroupPeakMemory =
+                        medianCgroupPeak(cgroupPeaks);
                     if (!skipCheck) {
                         warmupResults[pairKey(unit.displayName, name)] =
                             measured.warmupResults;
                         measuredResults[pairKey(unit.displayName, name)] =
-                            [measured.firstResult] ~ measured.results;
+                            measured.results;
                     }
                     const tests = skipCheck ? "unchecked" : "";
                     rows ~= BenchmarkRow(
                         unit.displayName,
                         name,
-                        "first",
-                        tests,
-                        measured.first,
-                        firstCompileTime(compileDeltas),
-                    );
-                    rows ~= BenchmarkRow(
-                        unit.displayName,
-                        name,
                         "repeated",
                         tests,
-                        measured.repeated,
-                        medianCompileTime(compileDeltas, warmup + 1),
+                        measured.timing,
+                        medianCompileTime(compileDeltas, warmup),
                     );
                 } catch (Exception e) {
                     executionFailed = true;
@@ -794,12 +776,6 @@ public Nullable!Duration medianCompileTime(
     );
 }
 
-private Nullable!Duration firstCompileTime(Duration[] deltas) {
-    return deltas.length == 0
-        ? Nullable!Duration.init
-        : Nullable!Duration(deltas[0]);
-}
-
 private Nullable!ulong medianCgroupPeak(ulong[] peaks) {
     import std.algorithm.sorting: sort;
 
@@ -1172,7 +1148,7 @@ void printRunHeader(in size_t warmup, in size_t runs) {
         ~ "(host + executor where used)",
     );
     writefln(
-        "sampling:    1 first + %s repeated warmup + %s repeated runs",
+        "sampling:    %s warmup + %s runs",
         warmup,
         runs,
     );
