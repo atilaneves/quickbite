@@ -133,6 +133,19 @@ Expression interpretCtfe(Expression expr, out string diagnostic) {
   - Write a `SystemLinker` backend to call dmd codegen.
 * Parse/sema -> feed into different backends.
 
+# Benchmarking
+
+```
+== post-parse (excludes dmd parse + semantic) ==
+fixture      backend        verdict    tests             min     median     stddev
+
+example      ctfe           repeated   105/105      7.243 ms   7.375 ms   0.110 ms
+example      bytecode       repeated   105/105      5.096 ms   5.174 ms   0.090 ms
+example      interpreter    repeated   105/105     25.994 ms  26.276 ms   9.696 ms
+example      system-linker  repeated   105/105     64.810 ms  70.119 ms   5.818 ms
+example      llvmjit        repeated   105/105     63.125 ms  64.873 ms   3.819 ms
+```
+
 # D oops #1
 
 ::: columns
