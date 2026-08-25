@@ -1070,6 +1070,9 @@ package(quickbite.backends.bytecode) struct Program {
     // literal is compiled and appended.
     ubyte[][] literalBlocks;
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
+    // Initial bytes for the mutable module storage. Lazy compilation appends
+    // new slots to both arrays before guest code can change those slots.
+    ubyte[] initialModuleData;
     NativeCall[] nativeCalls;
     ClassInfo[] classes;
     // Roots the host TypeInfo mirrors used by `typeid` on VM class objects.

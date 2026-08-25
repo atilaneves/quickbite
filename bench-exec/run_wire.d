@@ -41,6 +41,11 @@ public struct WireResult {
     public string message;
 }
 
+public struct RunResponse {
+    public ulong dGcAllocation;
+    public WireResult[] results;
+}
+
 public ubyte[] encodeRequest(in RunRequest request) @safe pure nothrow {
     ubyte[] bytes;
     bytes ~= ubyte(request.kind);
@@ -81,13 +86,14 @@ public RunRequest decodeRequest(in ubyte[] bytes) @safe pure {
     return request;
 }
 
-// The result frame. The first byte is the kind: 1 is a results frame (a count
-// followed by that many records), 0 is an error frame (a single message), used
-// when the executor cannot even run the tests (bad .so, missing symbol).
-public ubyte[] encodeResults(in WireResult[] results) @safe pure nothrow {
+// The result frame. The first byte is the kind: 1 is a results frame (the D GC
+// allocation volume and a count followed by that many records), 0 is an error
+// frame (a single message), used when the executor cannot even run the tests.
+public ubyte[] encodeResults(in RunResponse response) @safe pure nothrow {
     ubyte[] bytes = [ubyte(1)];
-    bytes.putSizeT(results.length);
-    foreach (result; results) {
+    bytes.putUlong(response.dGcAllocation);
+    bytes.putSizeT(response.results.length);
+    foreach (result; response.results) {
         bytes ~= ubyte(result.passed ? 1 : 0);
         bytes.putString(result.name);
         bytes.putString(result.location);
@@ -96,18 +102,28 @@ public ubyte[] encodeResults(in WireResult[] results) @safe pure nothrow {
     return bytes;
 }
 
+public void setResultsDgcAllocation(
+    ubyte[] bytes,
+    in ulong dGcAllocation,
+) @safe pure {
+    if (bytes.length < 1 + ulong.sizeof || bytes[0] != 1)
+        throw new Exception("invalid run-wire results frame");
+    bytes[1 .. 1 + ulong.sizeof].setUlong(dGcAllocation);
+}
+
 public ubyte[] encodeError(in string message) @safe pure nothrow {
     ubyte[] bytes = [ubyte(0)];
     bytes.putString(message);
     return bytes;
 }
 
-public WireResult[] decodeResults(in ubyte[] bytes) @safe pure {
+public RunResponse decodeResults(in ubyte[] bytes) @safe pure {
     size_t pos;
     const kind = bytes.getByte(pos);
     if (kind == 0)
         throw new Exception(bytes.getString(pos));
 
+    const dGcAllocation = bytes.getUlong(pos);
     const count = bytes.getSizeT(pos);
     WireResult[] results;
     results.reserve(count);
@@ -118,7 +134,19 @@ public WireResult[] decodeResults(in ubyte[] bytes) @safe pure {
             bytes.getString(pos),
             bytes.getString(pos),
         );
-    return results;
+    return RunResponse(dGcAllocation, results);
+}
+
+// @trusted: the byte view covers exactly the local ulong value.
+private void putUlong(ref ubyte[] bytes, in ulong value) @trusted pure nothrow {
+    bytes ~= (cast(const(ubyte)*) &value)[0 .. ulong.sizeof];
+}
+
+// @trusted: the caller supplies a slice of exactly ulong.sizeof writable
+// bytes, and the source view covers exactly the local ulong value.
+private void setUlong(ubyte[] bytes, in ulong value) @trusted pure nothrow {
+    assert(bytes.length == ulong.sizeof);
+    bytes[] = (cast(const(ubyte)*) &value)[0 .. ulong.sizeof];
 }
 
 private void putSizeT(ref ubyte[] bytes, in size_t value) @trusted pure nothrow {
@@ -142,6 +170,18 @@ private size_t getSizeT(in ubyte[] bytes, ref size_t pos) @trusted pure {
     size_t value;
     (cast(ubyte*) &value)[0 .. size_t.sizeof] = bytes[pos .. pos + size_t.sizeof];
     pos += size_t.sizeof;
+    return value;
+}
+
+// @trusted: the bounds check proves the source and local destination slices
+// have exactly ulong.sizeof writable bytes.
+private ulong getUlong(in ubyte[] bytes, ref size_t pos) @trusted pure {
+    if (pos + ulong.sizeof > bytes.length)
+        throw new Exception("truncated run-wire stream");
+    ulong value;
+    (cast(ubyte*) &value)[0 .. ulong.sizeof] =
+        bytes[pos .. pos + ulong.sizeof];
+    pos += ulong.sizeof;
     return value;
 }
 

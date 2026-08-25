@@ -11,7 +11,8 @@ private:
 // differs from SystemLinker only after the objects exist on disk.
 public class LLVMJit:
     imported!"quickbite.backends".Backend,
-    imported!"quickbite.backends.runner".GroupedRunner
+    imported!"quickbite.backends.runner".GroupedRunner,
+    imported!"quickbite.backends.runner".DgcAllocationReporter
 {
     import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
@@ -20,6 +21,7 @@ public class LLVMJit:
     import dmd.func: FuncDeclaration;
 
     private const LLVMJitInputs _inputs;
+    private ulong _dGcAllocation;
 
     public alias eval = Evaluator.eval;
 
@@ -74,10 +76,17 @@ public class LLVMJit:
     }
 
     public override TestResult[] runTests(Module[] modules) {
+        _dGcAllocation = 0;
         version (LDC)
-            return runTestsViaExecutor(modules, _inputs);
+            return runTestsViaExecutor(modules, _inputs, _dGcAllocation);
         else
             return runTestsInChild(modules, _inputs);
+    }
+
+    public override ulong dGcAllocation()
+        @safe @nogc nothrow pure const scope
+    {
+        return _dGcAllocation;
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
@@ -359,6 +368,7 @@ version (LDC)
 private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     imported!"dmd.dmodule".Module[] modules,
     in LLVMJitInputs inputs,
+    ref ulong dGcAllocation,
 ) {
     import quickbite.backends.runner: TestResult;
     import quickbite.backends.native.run_executor: runExecutor;
@@ -402,8 +412,10 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     )));
     runExecutor(requestFile, resultsFile);
 
+    const response = decodeResults(cast(ubyte[]) read(resultsFile));
+    dGcAllocation = response.dGcAllocation;
     TestResult[] cases;
-    foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
+    foreach (result; response.results)
         cases ~= TestResult(result.passed, result.name, result.location, result.message);
     return cases;
 }

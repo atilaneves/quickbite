@@ -37,3 +37,23 @@ unittest {
 
     assert(allocated < 1024 * 1024, text("allocated ", allocated, " bytes"));
 }
+
+@("repeatedRunResetsModuleStorage")
+@Tags("Bytecode")
+unittest {
+    import quickbite.backends.bytecode: Bytecode;
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+
+    auto backend = new Bytecode;
+    auto module_ = parseSnippetWithCheckActionContext(q{
+        int[] values;
+
+        unittest {
+            values ~= 2;
+            assert(values == [2]);
+        }
+    }, []).module_;
+
+    backend.runTests(module_)[0].passed.should == true;
+    backend.runTests(module_)[0].passed.should == true;
+}
