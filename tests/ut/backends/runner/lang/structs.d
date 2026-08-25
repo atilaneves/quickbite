@@ -28,6 +28,309 @@ static foreach (backend; Matrix!()) {
 }
 
 
+// A function-local struct that reads an enclosing parameter in a method has a
+// hidden context field. Default construction must initialize that field even
+// when the struct literal is returned directly, because the method call occurs
+// after the enclosing function has returned.
+// DMD CTFE cannot read the captured lazy parameter after `wrapper` returns;
+// compiled D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+)) {
+    @("struct.returnedNestedStructPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrapper(lazy int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Wrapper();
+            }
+
+            unittest {
+                int value = 42;
+                assert(wrapper(value).get == 42);
+            }
+        });
+    }
+}
+
+
+// A struct method call may be reached only through a helper the struct's own
+// declaring function calls; the returned struct still needs its hidden
+// context field pointed at the declaring function, not at the helper, since
+// the helper itself captures nothing from the enclosing scope.
+// DMD CTFE cannot read the captured `value` after `wrapper` returns; compiled
+// D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+)) {
+    @("struct.nestedStructReturnedViaHelperPreservesDeclaringContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                Wrapper make() {
+                    return Wrapper();
+                }
+
+                return make();
+            }
+
+            unittest {
+                int value = 42;
+                assert(wrapper(value).get == 42);
+            }
+        });
+    }
+}
+
+
+// A container struct's own type need not be nested, but one of its fields can
+// be a nested struct capturing a local from the container's returning
+// function. Filling in that field default-initializes its hidden context
+// field exactly like a directly-returned nested struct does. `decoy` sits
+// immediately before `value` in the enclosing scope: an uninitialized hidden
+// context field would misresolve the captured read to whatever the current
+// frame holds instead, so a stray read lands on `decoy`.
+// DMD CTFE cannot read the captured `value` after `wrapper` returns; compiled
+// D keeps the nested struct's context alive.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+)) {
+    @("struct.nestedStructFieldInNonNestedContainerPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box(T) {
+                T payload;
+            }
+
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Box!Wrapper(Wrapper());
+            }
+
+            unittest {
+                int decoy = 999;
+                int value = 42;
+                auto boxed = wrapper(value);
+                assert(boxed.payload.get == 42);
+                assert(decoy == 999);
+            }
+        });
+    }
+}
+
+
+// A nested struct's hidden context field is not necessarily its own first
+// field: DMD appends it after every declared field, so a declared field
+// ahead of the captured read must land at its own offset rather than being
+// overwritten by (or overwriting) the context pointer.
+// CTFE cannot read a function's parameter once that function has returned:
+// `variable 'value' cannot be read at compile time`, reproduced with stock
+// dmd on the same shape.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+)) {
+    @("struct.nestedStructDeclaredFieldPrecedesContextPointer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrapper(int value) {
+                struct Wrapper {
+                    long a;
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Wrapper(5);
+            }
+
+            unittest {
+                auto w = wrapper(42);
+                assert(w.a == 5);
+                assert(w.get == 42);
+            }
+        });
+    }
+}
+
+
+// A nested struct held in a returned container's dynamic-array field needs
+// its declaring function's context just like a direct struct field does.
+// `decoy` sits immediately before `value` in the enclosing scope: an
+// uninitialized hidden context field would misresolve the captured read to
+// whatever the current frame holds instead, so a stray read lands on
+// `decoy`.
+// CTFE cannot read a function's parameter once that function has returned:
+// `variable 'value' cannot be read at compile time`, reproduced with stock
+// dmd on the same shape. The Interpreter segfaults (signal 11) on this
+// shape, a separate pre-existing defect outside this fixture's scope; no
+// in-process assertion can observe a crash.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+    Omit!(Interpreter, Because.unassertable,
+        "segfaults (signal 11) reading a nested struct's context out of a "
+        ~ "dynamic-array field: https://github.com/atilaneves/quickbite/"
+        ~ "issues/551"),
+)) {
+    @("struct.nestedStructDynamicArrayFieldPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box(T) {
+                T[] payloads;
+            }
+
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Box!Wrapper([Wrapper()]);
+            }
+
+            unittest {
+                int decoy = 999;
+                int value = 42;
+                auto boxed = wrapper(value);
+                assert(boxed.payloads[0].get == 42);
+                assert(decoy == 999);
+            }
+        });
+    }
+}
+
+
+// A nested struct held in a returned container's static-array field needs
+// its declaring function's context just like a direct struct field does.
+// `decoy` sits immediately before `value` in the enclosing scope: an
+// uninitialized hidden context field would misresolve the captured read to
+// whatever the current frame holds instead, so a stray read lands on
+// `decoy`.
+// CTFE cannot read a function's parameter once that function has returned:
+// `variable 'value' cannot be read at compile time`, reproduced with stock
+// dmd on the same shape. The Interpreter segfaults (signal 11) on this
+// shape, a separate pre-existing defect outside this fixture's scope; no
+// in-process assertion can observe a crash.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+    Omit!(Interpreter, Because.unassertable,
+        "segfaults (signal 11) reading a nested struct's context out of a "
+        ~ "static-array field: https://github.com/atilaneves/quickbite/"
+        ~ "issues/551"),
+)) {
+    @("struct.nestedStructStaticArrayFieldPreservesContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box(T) {
+                T[1] payloads;
+            }
+
+            auto wrapper(int value) {
+                struct Wrapper {
+                    int get() {
+                        return value;
+                    }
+                }
+
+                return Box!Wrapper([Wrapper()]);
+            }
+
+            unittest {
+                int decoy = 999;
+                int value = 42;
+                auto boxed = wrapper(value);
+                assert(boxed.payloads[0].get == 42);
+                assert(decoy == 999);
+            }
+        });
+    }
+}
+
+
+// A struct declared in a function carries a hidden context field even when
+// no method of it reads an enclosing local, and returning such a struct does
+// not extend the declaring frame's lifetime: compiled D allocates a closure
+// only for a frame that something escaping actually reads. So a caller can
+// loop over many such calls -- as any range pipeline built from local lambdas
+// does -- allocating as it goes, and a pointer it took to one of its own
+// locals beforehand names that local throughout. The loop runs enough
+// iterations that the total memory every declaring-function call would need,
+// summed across all of them, would dwarf what the caller's own loop needs at
+// once; the per-iteration allocation is ordinary loop work (e.g. building a
+// buffer each pass), not a workaround for the test itself.
+static foreach (backend; Matrix!()) {
+    @("struct.returnedNestedStructWithoutCapturesLeavesCallerLocalsInPlace." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto counter() {
+                struct Counter {
+                    int next() {
+                        return 1;
+                    }
+                }
+
+                return Counter();
+            }
+
+            unittest {
+                int guard;
+                int* pointer = &guard;
+                int total;
+                foreach (i; 0 .. 20_000) {
+                    auto scratch = new ubyte[](4096);
+                    scratch[0] = 1;
+                    total += counter.next + scratch[0];
+                    guard = i;
+                    assert(*pointer == i);
+                }
+                assert(total == 40_000);
+            }
+        });
+    }
+}
+
+
 // Each static-array element is initialized as a struct value. Its declared
 // field initializer applies independently to every element.
 static foreach (backend; Matrix!(

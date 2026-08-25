@@ -1,6 +1,7 @@
 module ut.ffi.ffi;
 
 
+import core.sys.posix.dlfcn: dlopen, RTLD_GLOBAL, RTLD_NOW;
 import dmd.astenums: LINK, STC, VarArg;
 import dmd.arraytypes: Dsymbols;
 import dmd.func: FuncDeclaration;
@@ -9,7 +10,11 @@ import dmd.mtype:
     TypeReference, TypeStruct, TypeVector;
 import dmd.typesem: arrayOf, constOf, merge, sarrayOf;
 import quickbite.ffi.ffi:
-    Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
+    Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call,
+    resolveCallable;
+import std.file: thisExePath;
+import std.path: buildPath, dirName;
+import std.string: toStringz;
 import unit_threaded;
 
 
@@ -2251,6 +2256,31 @@ unittest {
         ).should == true;
         nativeResult.should == nativeReceiver.combine(value);
     }
+}
+
+
+@("ffi.resolveCallableRetriesAfterLateGlobalLoad")
+unittest {
+    auto declaration = functionDeclaration(q{
+        extern(C) int ffiResolveCacheLateLoadFixture();
+    }, "ffiResolveCacheLateLoadFixture");
+
+    const imagePath = buildPath(
+        thisExePath.dirName,
+        "ffi-resolve-cache-late-load-fixture.so",
+    );
+
+    // The symbol is not present in the process yet, so resolution fails.
+    (resolveCallable(declaration, false).address is null).should == true;
+
+    // Load the image the way any ordinary native call could: a bare dlopen,
+    // with no special registration step involved.
+    const loaded = dlopen(imagePath.toStringz, RTLD_NOW | RTLD_GLOBAL);
+    (loaded is null).should == false;
+
+    // Resolving the same declaration again must retry the lookup rather than
+    // remember the earlier failure, and now find the symbol.
+    (resolveCallable(declaration, false).address is null).should == false;
 }
 
 

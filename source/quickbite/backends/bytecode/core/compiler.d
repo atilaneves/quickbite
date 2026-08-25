@@ -174,6 +174,14 @@ package(quickbite.backends.bytecode) struct Compiler {
 
     private static struct CatchProtection {
         size_t depth;
+        // `_loopStack.length`/labels lexically inside the try body when this
+        // was registered, mirroring `TryFinallyContext.loopDepth`/`labels`:
+        // `compileBreakStatement`/`compileContinueStatement` compare against
+        // `loopDepth` and `compileGotoStatement` looks the target up in
+        // `labels`, exactly as they already do for `_tryFinallyStack`, to
+        // decide whether their exit leaves this try body too.
+        size_t loopDepth;
+        bool[const(void)*] labels;
         ClassDeclaration[] catchClasses;
     }
     // The label ident of a `label:` that immediately wraps the next loop, so the
@@ -269,9 +277,10 @@ package(quickbite.backends.bytecode) struct Compiler {
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
     private imported!"dmd.statement".CompoundAsmStatement _currentAsm;
-    // The frame offset of the current method's hidden `this` block when it is a
-    // nested struct whose first field (`vthis`) holds the enclosing-frame
-    // context index; 0 otherwise. Set while compiling such a method.
+    // True while compiling a method of a nested struct (`_thisLocal` is that
+    // struct's hidden `this` block, whose `vthis` field holds the enclosing
+    // frame's context index): a captured enclosing local read routes through
+    // that context pointer instead of the current frame. False otherwise.
     private bool _hasNestedContext;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -481,6 +490,19 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+        syncInitialModuleData;
+    }
+
+    private void syncInitialModuleData() {
+        if (_program.initialModuleData.length >= _program.moduleData.length)
+            return;
+
+        const start = _program.initialModuleData.length;
+        _program.initialModuleData ~= _program.moduleData[start .. $];
+    }
+
+    public void resetModuleData() {
+        _program.moduleData[] = _program.initialModuleData[];
     }
 
     private void registerFrameParameter(
@@ -594,9 +616,25 @@ package(quickbite.backends.bytecode) struct Compiler {
             layout.blockSize,
             functionResultType(function_),
             layout.hasThis,
+            needsPreservedFrame(function_),
             nativeCallIndex,
         );
         return cast(ushort) index;
+    }
+
+    // DMD's own escape analysis for the function's frame: true when a nested
+    // function or a nested struct's method that reads this function's locals
+    // can outlive the call (a returned nested struct, an escaping delegate,
+    // ...). Compiled D heap-allocates the frame in exactly these cases; the
+    // machine keeps the frame's stack slots out of later callees' reach
+    // instead (`CompiledFunction.preservesFrame`). A nested struct that reads
+    // nothing from the frame still carries a context field, but its frame
+    // needs no such treatment -- and every phobos range built from a local
+    // lambda is such a struct, so gating on the struct's shape rather than
+    // on actual captures would preserve a frame per call in ordinary loops.
+    private static bool needsPreservedFrame(FuncDeclaration function_) {
+        import dmd.funcsem: needsClosure;
+        return needsClosure(function_);
     }
 
     // Registers a native leaf's `Program.nativeCalls` entry for indirect
@@ -1298,8 +1336,10 @@ package(quickbite.backends.bytecode) struct Compiler {
             _pendingGotos.remove(cast(const(void)*) label.ident);
         }
 
-        // A `label:` wrapping a loop names it for labeled `break`/`continue`:
-        // hand the ident to the loop so it records it on its loop context.
+        // A `label:` wrapping a loop or switch names it for labeled
+        // `break`/`continue` (a switch only ever accepts a labeled `break`,
+        // enforced by `targetLoopIndex`'s `isSwitch` check, not by this
+        // lookup): hand the ident to it so it records it on its loop context.
         if (label.statement !is null) {
             // DMD wraps a labeled `for` as `label: { init?; for }`; the label
             // governs the contained loop, so hand it the ident. The flag
@@ -1311,10 +1351,25 @@ package(quickbite.backends.bytecode) struct Compiler {
         }
     }
 
+    // A runtime `foreach` is never a leaf here: DMD's semantic pass lowers it
+    // to a `ForStatement` (an array/range `foreach`) or an
+    // `UnrolledLoopStatement` (a compile-time tuple `foreach`) before bytecode
+    // core ever sees the labeled statement wrapping it, so only the AST node
+    // kinds `compileStatement` itself dispatches as loops or a switch need a
+    // case here -- mirrors `collectLabels`' same set of statement kinds above.
+    // No `isWhileStatement` case: DMD's `statementSemantic` also rewrites
+    // every `while` into a `ForStatement` before this ever runs, so a
+    // `WhileStatement` node never reaches here either.
     private static bool containsLoop(Statement statement) pure nothrow {
         if (statement is null)
             return false;
         if (statement.isForStatement !is null)
+            return true;
+        if (statement.isDoStatement !is null)
+            return true;
+        if (statement.isUnrolledLoopStatement !is null)
+            return true;
+        if (statement.isSwitchStatement !is null)
             return true;
         if (auto scope_ = statement.isScopeStatement)
             return containsLoop(scope_.statement);
@@ -1335,13 +1390,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         // does not define the target label (the goto stays within the first
         // scope that does, and within every scope outside it).
         const target = cast(const(void)*) goto_.ident;
-        size_t exited;
-        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
-            if (target in _tryFinallyStack[index].labels)
-                break;
-            ++exited;
-        }
-        runExitedFinally(exited);
+        const exited = tryFinallyScopesExitedByGoto(target);
+        runExitedFinally(
+            exited, (in CatchProtection cp) => (target in cp.labels) is null,
+        );
 
         const index = emitJump;
         const key = cast(const(void)*) goto_.ident;
@@ -1383,13 +1435,48 @@ package(quickbite.backends.bytecode) struct Compiler {
     }
 
     // Re-emit the `finally` blocks of the innermost `count` `try`/`finally`
-    // scopes, innermost-first, on an exit edge (a `goto`/`break`/`continue`
-    // leaving those scopes). Each finally is compiled with the exited scopes
-    // removed from the stack so a transfer inside a finally targets only the
-    // surviving outer scopes.
-    private void runExitedFinally(in size_t count) {
+    // scopes, innermost-first, on an exit edge (a `return`/`goto`/`break`/
+    // `continue` leaving those scopes). Each finally is compiled with the
+    // exited scopes removed from the stack so a transfer inside a finally
+    // targets only the surviving outer scopes.
+    //
+    // `exits`, when given, also pops the runtime handler of every
+    // catch-protected try body this same exit leaves, interleaved so a
+    // handler is popped before the finally scope lexically inside it runs:
+    // otherwise that finally's own `throw` could be caught by a handler for
+    // a try body execution has already left, rather than propagating to
+    // whatever (if anything) lexically wraps the finally. `throw`'s own
+    // calls pass no `exits`: a throw never pops a handler itself, since the
+    // runtime search for a matching handler is what decides whether it
+    // lands in one of these still-active try bodies at all
+    // (`throwExitedFinallyCount`). `_catchProtectedDepths` is restored
+    // afterwards -- it tracks lexical nesting during compilation, not
+    // runtime handler state, so later sibling statements must still see it
+    // exactly as it was before this exit.
+    private void runExitedFinally(
+        in size_t count,
+        scope bool delegate(in CatchProtection) @safe exits = null,
+    ) {
+        // `const` would prevent restoring it below: assigning back to
+        // the mutable `_catchProtectedDepths` field cannot take a
+        // `const(CatchProtection)[]`.
+        auto savedCatchDepths = _catchProtectedDepths;
+
+        void popExitedHandlersDeeperThan(in size_t tryFinallyIndex) {
+            if (exits is null)
+                return;
+            while (_catchProtectedDepths.length != 0 &&
+                    _catchProtectedDepths[$ - 1].depth > tryFinallyIndex &&
+                    exits(_catchProtectedDepths[$ - 1]))
+            {
+                _code ~= Instruction(Op.popHandler);
+                _catchProtectedDepths.length -= 1;
+            }
+        }
+
         foreach (step; 0 .. count) {
             const index = _tryFinallyStack.length - 1 - step;
+            popExitedHandlersDeeperThan(index);
             auto finalbody = _tryFinallyStack[index].finalbody;
             if (finalbody is null)
                 continue;
@@ -1402,6 +1489,30 @@ package(quickbite.backends.bytecode) struct Compiler {
             _pendingFinallyExceptionClassIndex = savedExceptionClass;
             _tryFinallyStack = saved;
         }
+
+        if (exits !is null)
+            while (_catchProtectedDepths.length != 0 &&
+                    exits(_catchProtectedDepths[$ - 1]))
+            {
+                _code ~= Instruction(Op.popHandler);
+                _catchProtectedDepths.length -= 1;
+            }
+
+        _catchProtectedDepths = savedCatchDepths;
+    }
+
+    // The count of innermost `_tryFinallyStack` scopes a `goto` to `target`
+    // exits: those whose try body's labels do not include `target` (the goto
+    // stays within the first scope that does, and within every scope outside
+    // it).
+    private size_t tryFinallyScopesExitedByGoto(in const(void)* target) {
+        size_t count;
+        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
+            if (target in _tryFinallyStack[index].labels)
+                break;
+            ++count;
+        }
+        return count;
     }
 
     // The count of innermost `_tryFinallyStack` scopes a `throw` at the
@@ -1507,9 +1618,12 @@ package(quickbite.backends.bytecode) struct Compiler {
             result = saved;
         }
 
-        // A `return` leaves every active `try` body in the function. Run the
-        // finalizers after the result expression has been captured.
-        runExitedFinally(_tryFinallyStack.length);
+        // A `return` leaves every active `try` body in the function -- every
+        // finally scope and every catch-protected try's handler -- after the
+        // result expression has been captured.
+        runExitedFinally(
+            _tryFinallyStack.length, (in CatchProtection _) => true,
+        );
 
         _code ~= hasResult ? Instruction(Op.ret, result) : Instruction(Op.ret);
     }
@@ -1553,10 +1667,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         ));
     }
 
-    // The labels defined lexically within a statement subtree, used to decide
-    // whether a `goto` stays inside an enclosing `try` body. Recurses through
-    // every nested statement container so a label inside a switch/loop/if within
-    // the try body is found (a `goto` to it does not exit the try).
+    // The control targets defined lexically within a statement subtree, used to
+    // decide whether an unconditional transfer stays inside an enclosing `try`
+    // body. Recurses through every nested statement container so a label, case,
+    // or default inside a switch/loop/if within the try body is found.
     private static void collectLabels(
         imported!"dmd.statement".Statement statement,
         ref bool[const(void)*] labels,
@@ -1587,10 +1701,13 @@ package(quickbite.backends.bytecode) struct Compiler {
             collectLabels(do_._body, labels);
         else if (auto switch_ = statement.isSwitchStatement)
             collectLabels(switch_._body, labels);
-        else if (auto case_ = statement.isCaseStatement)
+        else if (auto case_ = statement.isCaseStatement) {
+            labels[cast(const(void)*) case_] = true;
             collectLabels(case_.statement, labels);
-        else if (auto default_ = statement.isDefaultStatement)
+        } else if (auto default_ = statement.isDefaultStatement) {
+            labels[cast(const(void)*) default_] = true;
             collectLabels(default_.statement, labels);
+        }
         else if (auto with_ = statement.isWithStatement)
             collectLabels(with_._body, labels);
         else if (auto tryFinally = statement.isTryFinallyStatement) {
@@ -1644,8 +1761,11 @@ package(quickbite.backends.bytecode) struct Compiler {
         );
 
         if (tryCatch._body !is null) {
+            bool[const(void)*] labels;
+            collectLabels(tryCatch._body, labels);
             _catchProtectedDepths ~= CatchProtection(
-                _tryFinallyStack.length, catchTypeClasses((*tryCatch.catches)[]),
+                _tryFinallyStack.length, _loopStack.length, labels,
+                catchTypeClasses((*tryCatch.catches)[]),
             );
             compileNestedStatement(tryCatch._body);
             _catchProtectedDepths.length -= 1;
@@ -2009,7 +2129,10 @@ package(quickbite.backends.bytecode) struct Compiler {
         // Unlabeled `break` exits the innermost breakable statement, which
         // includes a switch; a switch's context is a break target like a loop.
         const loop = targetLoopIndex(break_.ident, false);
-        runExitedFinally(finallyScopesInsideLoop(loop));
+        runExitedFinally(
+            finallyScopesInsideLoop(loop),
+            (in CatchProtection cp) => cp.loopDepth > loop,
+        );
         _loopStack[loop].breakPatches ~= emitJump;
     }
 
@@ -2020,7 +2143,10 @@ package(quickbite.backends.bytecode) struct Compiler {
     ) {
         // Unlabeled `continue` skips a switch and targets the enclosing loop.
         const loop = targetLoopIndex(continue_.ident, true);
-        runExitedFinally(finallyScopesInsideLoop(loop));
+        runExitedFinally(
+            finallyScopesInsideLoop(loop),
+            (in CatchProtection cp) => cp.loopDepth > loop,
+        );
         _loopStack[loop].continuePatches ~= emitJump;
     }
 
@@ -2169,8 +2295,12 @@ package(quickbite.backends.bytecode) struct Compiler {
     private void compileGotoCaseStatement(
         imported!"dmd.statement".GotoCaseStatement gotoCase,
     ) {
-        _switchStack[$ - 1].gotoCasePatches[cast(const(void)*) gotoCase.cs] ~=
-            emitJump;
+        const target = cast(const(void)*) gotoCase.cs;
+        const exited = tryFinallyScopesExitedByGoto(target);
+        runExitedFinally(
+            exited, (in CatchProtection cp) => (target in cp.labels) is null,
+        );
+        _switchStack[$ - 1].gotoCasePatches[target] ~= emitJump;
     }
 
     // `goto default;` — an unconditional jump to the default case body, patched
@@ -2178,6 +2308,11 @@ package(quickbite.backends.bytecode) struct Compiler {
     private void compileGotoDefaultStatement(
         imported!"dmd.statement".GotoDefaultStatement gotoDefault,
     ) {
+        const target = cast(const(void)*) gotoDefault.sw.sdefault;
+        const exited = tryFinallyScopesExitedByGoto(target);
+        runExitedFinally(
+            exited, (in CatchProtection cp) => (target in cp.labels) is null,
+        );
         _switchStack[$ - 1].gotoDefaultPatches ~= emitJump;
     }
 
@@ -2551,8 +2686,8 @@ package(quickbite.backends.bytecode) struct Compiler {
 
             // A captured enclosing local read inside a nested struct's method
             // (`return seed;`): resolve it through the hidden `this` block's
-            // context pointer (vthis at offset 0), which holds the enclosing
-            // frame's base index.
+            // context pointer (`vthis`, at the struct's own `vthis.offset`),
+            // which holds the enclosing frame's base index.
             if (_hasNestedContext)
                 if (auto declaration = variable.var.isVarDeclaration)
                     if (auto captured = declaration in _capturedOffsets)
@@ -5813,12 +5948,11 @@ package(quickbite.backends.bytecode) struct Compiler {
 
         zeroFrameBlock(offset, typeFacts(variable.type).byteWidth);
 
-        // A nested struct carries a hidden context pointer (`vthis`) at offset 0
-        // recording the enclosing function's frame, so its methods can read
-        // captured enclosing locals. The empty `S()` literal leaves it zero, so
-        // set it here to the current frame base index.
-        if (declaration.isNested)
-            _code ~= Instruction(Op.frameBaseIndex, offset);
+        // A nested struct carries a hidden context pointer (`vthis`, appended
+        // after every declared field by DMD) recording the declaring
+        // function's frame, so its methods can read captured enclosing
+        // locals. The empty `S()` literal leaves it zero, so set it here.
+        initializeNestedContext(offset, declaration);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -6084,12 +6218,19 @@ package(quickbite.backends.bytecode) struct Compiler {
     // `base + field.offset`. Omitted trailing fields keep their zeroed default;
     // a static-array field initialised from a scalar broadcasts that scalar to
     // every element, and a dynamic-array field copies its slice descriptor.
+    //
+    // Every materialisation of a nested-struct literal -- direct, a struct
+    // field, or an element of a static/dynamic array field -- goes through
+    // here, so initializing the hidden context field here covers all of
+    // them; a non-nested struct's `initializeNestedContext` call is a no-op.
     private void compileStructLiteralInto(
         in ushort base,
         StructLiteralExp literal,
         bool isReturnEscaping = false,
     ) {
         import dmd.astenums: TY;
+
+        initializeNestedContext(base, literal.sd);
 
         if (literal.elements is null)
             return;
@@ -6112,6 +6253,10 @@ package(quickbite.backends.bytecode) struct Compiler {
                 // to heap-escape as one at the top level (see the `Tdelegate`
                 // branch below).
                 if (auto inner = element.isStructLiteralExp) {
+                    // `compileStructLiteralInto` itself initializes the
+                    // nested field's own hidden context field exactly like a
+                    // top-level nested struct does (`compileStructDeclaration`,
+                    // `structLiteralReturnOffset`).
                     compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
                     continue;
                 }
@@ -6354,6 +6499,60 @@ package(quickbite.backends.bytecode) struct Compiler {
         if (auto parent = function_.toParent2)
             return parent.isFuncDeclaration;
         return null;
+    }
+
+    // The function that lexically declared a nested struct -- the frame its
+    // hidden context field (`vthis`, at the struct's own `vthis.offset`) must
+    // point at so a later method call can still resolve a captured local of
+    // that function. Mirrors `enclosingMethodOf` above, generalised from a
+    // nested function's own parent to a nested struct's.
+    private static FuncDeclaration declaringFunctionOf(
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        if (auto parent = declaration.toParent2)
+            return parent.isFuncDeclaration;
+        return null;
+    }
+
+    // Initializes a nested struct instance's hidden context field to the live
+    // frame of the function that lexically declared it (a no-op for a
+    // non-nested struct). Every call site already zeroed the instance's block
+    // first, so a non-nested struct simply keeps that zero.
+    //
+    // The declaring function is ordinarily the function currently being
+    // compiled -- a struct default-constructed or returned directly by the
+    // same function that declared it -- in which case that function's own
+    // live frame (`Op.frameBaseIndex`) is the context; a nested struct whose
+    // declaring function cannot be determined falls back to the same current
+    // frame. It is a different, enclosing function when a nested helper
+    // constructs and returns a struct ITS enclosing function declared (the
+    // helper captures nothing itself, so the struct's method still needs the
+    // declaring function's frame, not the helper's); that frame is reached
+    // the same way a captured variable's owner frame is
+    // (`enclosingFrameBase`).
+    private void initializeNestedContext(
+        in ushort offset,
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        if (!declaration.isNested)
+            return;
+
+        // DMD appends `vthis` after every declared field
+        // (`AggregateDeclaration.makeNested`, "Append vthis field"), so the
+        // context pointer lands at the struct's OWN offset, not the
+        // instance's offset 0.
+        const vthisOffset = cast(ushort) (offset + declaration.vthis.offset);
+
+        auto owner = declaringFunctionOf(declaration);
+        if (owner is null || owner is _currentFunction) {
+            _code ~= Instruction(Op.frameBaseIndex, vthisOffset);
+            return;
+        }
+
+        _code ~= Instruction(
+            Op.copy, vthisOffset, enclosingFrameBase(owner),
+            cast(ushort) size_t.sizeof,
+        );
     }
 
     private Operand storageAddressOrValue(Expression expression) {
@@ -6655,12 +6854,22 @@ package(quickbite.backends.bytecode) struct Compiler {
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         if (_nestedContextOffset == ushort.max && _hasThis &&
             _thisLocal.declaration !is null &&
-            _thisLocal.declaration.isNested)
+            _thisLocal.declaration.isNested) {
+            // DMD appends `vthis` after every declared field, so it is not
+            // at the receiver's offset 0; `emitPointerLoad`'s index is
+            // scaled by `width` (`size_t.sizeof` here), so the byte offset
+            // is divided down to an element index. `vthis` is itself
+            // pointer-sized and DMD aligns every field to its own size, so
+            // the byte offset is always an exact multiple.
+            assert(_thisLocal.declaration.vthis.offset % size_t.sizeof == 0);
             emitPointerLoad(
-                contextBase, _thisLocal.offset, compileSizeConstant(0),
+                contextBase, _thisLocal.offset,
+                compileSizeConstant(
+                    _thisLocal.declaration.vthis.offset / size_t.sizeof,
+                ),
                 cast(uint) size_t.sizeof,
             );
-        else
+        } else
             _code ~= Instruction(
                 Op.copy,
                 contextBase,

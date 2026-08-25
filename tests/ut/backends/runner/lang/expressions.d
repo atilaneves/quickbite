@@ -1384,9 +1384,6 @@ static foreach (backend; Matrix!(
         "CTFE cannot read a function's parameter once that function has "
         ~ "returned: `variable 'value' cannot be read at compile time`, "
         ~ "reproduced with stock dmd on the same shape"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core does not yet give a function-local struct access "
-        ~ "to the enclosing function's variables"),
 )) {
     @("closure.nestedStructReadsEnclosingRefParameter." ~ backend.stringof)
     @Tags(backend.stringof)
