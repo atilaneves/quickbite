@@ -1498,10 +1498,8 @@ private struct Walker {
         import dmd.astenums: TY;
 
         // Still reached: this is the general "read a delegate-typed place"
-        // path; `runCallExpression`'s callee dispatch and `equalDelegateValues`
-        // derive their `DelegateSlot` from evaluating the callee/operand
-        // expression, which bottoms out here for a plain variable or field
-        // read.
+        // path; older aggregate adapters still bottom out here for a plain
+        // variable or field read.
         if (place.type.toBasetype.ty == TY.Tdelegate) {
             const slot = loadDelegateSlot(place);
             if (slot.isNative)
@@ -1519,10 +1517,9 @@ private struct Walker {
         )
             if (auto function_ = loadFunctionPointerId(place))
                 return ExpressionResult.functionPointerValue(*function_);
-        // Still reached: `.name`/`m_flags` field reads, `equalOperands`'s
-        // symbolic-identity compare, and `classCastValue`'s `TypeInfo_Class`
-        // narrowing all read a class-typed place generically and rely on
-        // this reconstructing the registered display name.
+        // Still reached: older `.name`/`m_flags` field adapters read a
+        // class-typed place generically and rely on this reconstructing the
+        // registered display name.
         if (place.type.toBasetype.isTypeClass !is null)
             if (auto typeInfo = loadTypeInfoName(place))
                 return ExpressionResult.typeName(*typeInfo);
@@ -5145,15 +5142,6 @@ private struct Walker {
         return null;
     }
 
-    private ExpressionResult[] arrayElements(in ExpressionResult value) {
-        auto aggregate = AggregateValue.native(value);
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(aggregate))
-            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
-
-        return elements;
-    }
-
     // `is`/`!is` never rewrites for operator overloading the way `==` does
     // (`opover.d` has no `opOverloadIdentity`), so every static operand
     // shape -- scalar, pointer, associative-array handle, class reference,
@@ -5229,10 +5217,7 @@ private struct Walker {
 
         switch (leftKind) with (TY) {
             case Tsarray, Tarray:
-                return equalArrayValues(
-                    borrowedAggregate(left),
-                    borrowedAggregate(right),
-                );
+                return equalArrayPlaces(left, right);
             case Tstruct:
                 return identityStructPlaces(left, right);
             case Tclass:
@@ -5304,16 +5289,7 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place left,
         imported!"quickbite.backends.interpreter.place".Place right,
     ) {
-        auto structType = left.type.toBasetype.isTypeStruct;
-        if (structType.sym.xeq !is null)
-            return equalValues(
-                borrowedAggregateValue(left),
-                borrowedAggregateValue(right),
-            );
-        return equalStructValues(
-            borrowedAggregate(left),
-            borrowedAggregate(right),
-        );
+        return equalStructPlaces(left, right);
     }
 
     private bool classPlacesAreIdentical(
@@ -7437,185 +7413,137 @@ private struct Walker {
     // answers them, rather than reading a runtime tag off an
     // already-evaluated carrier value.
     private bool equalOperands(imported!"dmd.expression".EqualExp equal) {
-        import dmd.astenums: TY;
         import quickbite.backends.interpreter.place: Place;
 
-        const ty = equal.e1.type.toBasetype.ty;
-
-        if (ty == TY.Tsarray || ty == TY.Tarray) {
-            // Only an address and native-layout aggregate view are needed
-            // here (`equalArrayValues`'s own recursion), so the temporary is
-            // read straight from its place, skipping the expression-carrier
-            // wrap/unwrap `readStoredValue`/`AggregateValue.native` would add.
-            auto leftTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(equal.e1),
-                equal.e1.type,
-            ));
-            runExpression(equal.e1, leftTemporary);
-            auto rightTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(equal.e2),
-                equal.e2.type,
-            ));
-            runExpression(equal.e2, rightTemporary);
-            return equalArrayValues(
-                borrowedAggregate(leftTemporary.place),
-                borrowedAggregate(rightTemporary.place),
-            );
-        }
-
-        if (ty == TY.Tdelegate) {
-            // A delegate's identity depends on the runtime closure registry
-            // (`_executionState.delegates`, keyed by a per-evaluation id),
-            // not a native-layout slot read; see `equalDelegateValues`.
-            auto leftTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(equal.e1),
-                equal.e1.type,
-            ));
-            runExpression(equal.e1, leftTemporary);
-            const left = readStoredValue(leftTemporary.place);
-            auto rightTemporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(equal.e2),
-                equal.e2.type,
-            ));
-            runExpression(equal.e2, rightTemporary);
-            const right = readStoredValue(rightTemporary.place);
-            return equalDelegateValues(left, right);
-        }
-
-        // Imaginary/complex operands, and the obscure `class == typeof(
-        // null)` pair `opOverloadEqual` leaves untyped: `equalValues`'s own
-        // numeric-widening comparison (and, for the latter, its raw
-        // fallback) still answers these directly off the carrier.
         auto leftTemporary = ConstructionDestination(Place(
             _activationFrame.temporaryAddress(equal.e1),
             equal.e1.type,
         ));
         runExpression(equal.e1, leftTemporary);
-        const left = readStoredValue(leftTemporary.place);
         auto rightTemporary = ConstructionDestination(Place(
             _activationFrame.temporaryAddress(equal.e2),
             equal.e2.type,
         ));
         runExpression(equal.e2, rightTemporary);
-        const right = readStoredValue(rightTemporary.place);
-        return equalValues(left, right);
+        return equalPlaces(leftTemporary.place, rightTemporary.place);
     }
 
-    private bool equalValues(in ExpressionResult left, in ExpressionResult right) {
-        // A character compares with a numeric scalar by code point, as D's
-        // integral promotions do: bytes read from native memory keep their
-        // integer kind through `cast(string)`, e.g. in std.file.readText.
+    private bool equalPlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+        const leftKind = nativeScalarKindOf(left.type);
+        const rightKind = nativeScalarKindOf(right.type);
+        if (leftKind == TY.Tnull)
+            return identityPlaceIsNull(right);
+        if (rightKind == TY.Tnull)
+            return identityPlaceIsNull(left);
         if (
-            (left.isNumericScalar || left.isCharacter) &&
-            (right.isNumericScalar || right.isCharacter) &&
-            (left.isCharacter || right.isCharacter)
+            leftKind != rightKind &&
+            scalarEqualityKind(leftKind) &&
+            scalarEqualityKind(rightKind)
         )
-            return left.castTo!real.asReal == right.castTo!real.asReal;
+            return scalarPlaceAsComplex(left) == scalarPlaceAsComplex(right);
 
-        if (left.isNumericScalar && right.isNumericScalar)
-            return left.asReal == right.asReal;
-
-        if (AggregateValue.isArray(left) && AggregateValue.isArray(right))
-            return equalArrayValues(AggregateValue.native(left), AggregateValue.native(right));
-
-        // DMD attaches an array comparison's `object.__equals` rewrite as
-        // `EqualExp.lowering` rather than replacing the AST node itself
-        // (`expressionsem.d`'s `EqualExp::semantic`, the array-comparison
-        // branch keeps `result = exp`), so an interpreter that walks `e1`/
-        // `e2` directly -- as `equalArrayValues`'s element recursion below
-        // does -- never sees that dispatch and reaches this struct arm for
-        // each element pair instead. A DIRECT struct `==` does not have this
-        // problem: `opOverloadEqual` rewrites it to a real `a.opEquals(b)`
-        // `CallExp` at semantic time, so normal call dispatch already runs
-        // the struct's own (possibly compiler-generated) `opEquals` body --
-        // which is how a struct's own AA-typed field ends up comparing
-        // through the interpreted `_d_aaEqual` call that body contains.
-        // Route this array-reached struct pair through that same dispatch
-        // (`StructDeclaration.xeq`, the resolved `opEquals`/`TypeInfo_Struct.
-        // xopEquals` DMD's own semantic already resolved) instead of
-        // reimplementing struct equality by hand: `equalStructValues`
-        // remains correct only for a POD struct (no `xeq`), where DMD itself
-        // lowers `==` to `is` (`identityOperands` explains why) and
-        // raw field/bitwise comparison is exactly right.
-        if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right)) {
-            auto structType = AggregateValue.native(left).type.toBasetype.isTypeStruct;
-            if (structType !is null && structType.sym.xeq !is null) {
-                import quickbite.backends.interpreter.layout:
-                    typeByteSize, typeHasPointers;
-                import quickbite.backends.interpreter.native_block: NativeBlock;
-                import quickbite.backends.interpreter.place: Place;
-
-                auto resultType = structType.sym.xeq.type.toBasetype.isTypeFunction.next;
-                auto resultBlock = NativeBlock.allocate(
-                    typeByteSize(resultType),
-                    typeHasPointers(resultType)
-                        ? NativeBlock.Scan.conservative
-                        : NativeBlock.Scan.no,
-                );
-                auto destination = ConstructionDestination(Place(
-                    resultBlock.address,
-                    resultType,
-                ));
-                runMemberFunction(
-                    structType.sym.xeq,
-                    null,
-                    Place(
-                        AggregateValue.native(left).address,
-                        AggregateValue.native(left).type,
-                    ),
-                    [Place(
-                        AggregateValue.native(right).address,
-                        AggregateValue.native(right).type,
-                    )],
-                    null,
-                    null,
-                    null,
-                    &destination,
-                );
-                return isTruthy(readStoredValue(destination.place));
-            }
-
-            return equalStructValues(AggregateValue.native(left), AggregateValue.native(right));
+        switch (leftKind) with (TY) {
+            case Tsarray, Tarray: return equalArrayPlaces(left, right);
+            case Tstruct: return equalStructPlaces(left, right);
+            case Tdelegate: return equalDelegatePlaces(left, right);
+            case Tclass: return classPlacesAreIdentical(left, right);
+            case Taarray: return left.loadReference is right.loadReference;
+            case Tpointer:
+                if (left.type.toBasetype.nextOf.toBasetype.ty == Tfunction)
+                    return functionPointerPlacesAreIdentical(left, right);
+                return left.loadReference is right.loadReference;
+            case Tbool: return scalarPlacesAreEqual!bool(left, right);
+            case Tint8: return scalarPlacesAreEqual!byte(left, right);
+            case Tuns8: return scalarPlacesAreEqual!ubyte(left, right);
+            case Tchar: return scalarPlacesAreEqual!char(left, right);
+            case Tint16: return scalarPlacesAreEqual!short(left, right);
+            case Tuns16: return scalarPlacesAreEqual!ushort(left, right);
+            case Twchar: return scalarPlacesAreEqual!wchar(left, right);
+            case Tint32: return scalarPlacesAreEqual!int(left, right);
+            case Tuns32: return scalarPlacesAreEqual!uint(left, right);
+            case Tdchar: return scalarPlacesAreEqual!dchar(left, right);
+            case Tint64: return scalarPlacesAreEqual!long(left, right);
+            case Tuns64: return scalarPlacesAreEqual!ulong(left, right);
+            case Tfloat32: return scalarPlacesAreEqual!float(left, right);
+            case Tfloat64: return scalarPlacesAreEqual!double(left, right);
+            case Tfloat80: return scalarPlacesAreEqual!real(left, right);
+            case Timaginary32: return scalarPlacesAreEqual!ifloat(left, right);
+            case Timaginary64: return scalarPlacesAreEqual!idouble(left, right);
+            case Timaginary80: return scalarPlacesAreEqual!ireal(left, right);
+            case Tcomplex32: return scalarPlacesAreEqual!cfloat(left, right);
+            case Tcomplex64: return scalarPlacesAreEqual!cdouble(left, right);
+            case Tcomplex80: return scalarPlacesAreEqual!creal(left, right);
+            case Tvector:
+                return borrowedAggregate(left).storage.bytes ==
+                    borrowedAggregate(right).storage.bytes;
+            default: throw new Exception("Unsupported interpreter equality operands.");
         }
+    }
 
-        // `EqualExp::semantic` (expressionsem.d) always lowers `aa1 == aa2`
-        // to a call to `object._d_aaEqual!(K, V)(aa1, aa2)` whenever the
-        // left operand's type is an associative array, so a top-level AA
-        // comparison never reaches this function. An AA-typed STRUCT FIELD
-        // cannot reach the raw fallback below either, now that the struct
-        // arm above dispatches through `xeq`: any struct holding an AA field
-        // is exactly the case DMD's own `needOpEquals` refuses to consider
-        // POD, so it always has a real `xeq` and never falls through to
-        // `equalStructValues`'s field-by-field walk. The raw fallback below
-        // stays correct for what it actually still receives -- plain
-        // pointers, class references, and other scalar-shaped values -- but
-        // it does NOT correctly answer for an AA handle: two content-equal,
-        // identity-distinct AAs are different `Impl*` pointers, so a raw
-        // compare would wrongly report them unequal.
+    private bool scalarEqualityKind(in imported!"dmd.astenums".TY kind) {
+        import dmd.astenums: TY;
 
-        if (left.isFunctionPointer || right.isFunctionPointer)
-            return equalDelegateValues(left, right);
+        switch (kind) with (TY) {
+            case Tbool, Tint8, Tuns8, Tchar, Tint16, Tuns16, Twchar,
+                Tint32, Tuns32, Tdchar, Tint64, Tuns64, Tfloat32,
+                Tfloat64, Tfloat80, Timaginary32, Timaginary64,
+                Timaginary80, Tcomplex32, Tcomplex64, Tcomplex80:
+                return true;
+            default: return false;
+        }
+    }
 
-        return left == right;
+    private creal scalarPlaceAsComplex(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_scalar: nativeScalarKindOf;
+
+        switch (nativeScalarKindOf(place.type)) with (TY) {
+            case Tbool: return cast(creal) place.loadNativeScalar!bool;
+            case Tint8: return cast(creal) place.loadNativeScalar!byte;
+            case Tuns8: return cast(creal) place.loadNativeScalar!ubyte;
+            case Tchar: return cast(creal) place.loadNativeScalar!char;
+            case Tint16: return cast(creal) place.loadNativeScalar!short;
+            case Tuns16: return cast(creal) place.loadNativeScalar!ushort;
+            case Twchar: return cast(creal) place.loadNativeScalar!wchar;
+            case Tint32: return cast(creal) place.loadNativeScalar!int;
+            case Tuns32: return cast(creal) place.loadNativeScalar!uint;
+            case Tdchar: return cast(creal) place.loadNativeScalar!dchar;
+            case Tint64: return cast(creal) place.loadNativeScalar!long;
+            case Tuns64: return cast(creal) place.loadNativeScalar!ulong;
+            case Tfloat32: return cast(creal) place.loadNativeScalar!float;
+            case Tfloat64: return cast(creal) place.loadNativeScalar!double;
+            case Tfloat80: return cast(creal) place.loadNativeScalar!real;
+            case Timaginary32: return cast(creal) place.loadNativeScalar!ifloat;
+            case Timaginary64: return cast(creal) place.loadNativeScalar!idouble;
+            case Timaginary80: return cast(creal) place.loadNativeScalar!ireal;
+            case Tcomplex32: return cast(creal) place.loadNativeScalar!cfloat;
+            case Tcomplex64: return cast(creal) place.loadNativeScalar!cdouble;
+            case Tcomplex80: return place.loadNativeScalar!creal;
+            default: throw new Exception("Unsupported scalar equality place.");
+        }
     }
 
     // A delegate compares equal to another by its runtime `{function,
     // context}` pair (D's builtin delegate equality) -- not by the internal
     // `functionPointerId` this walker mints fresh for every delegate
     // EXPRESSION evaluation. `&s1.get` evaluated twice yields two different
-    // ids for the identical function+receiver, so the raw
-    // `ExpressionResult == ExpressionResult` fallback (still correct for two
-    // results carrying the same id, e.g. after plain assignment) answers
-    // unequal for the exact case D
-    // requires equal. `contextPointer` already carries the receiver's own
+    // ids for the identical function+receiver, so comparing those ids alone
+    // would answer unequal. `contextPointer` already carries the receiver's own
     // binding address for a member-function delegate, not a copy
     // (`delegateContextPointer`'s `VarExp` arm resolves it the same way for
     // every delegate kind, member or closure), so comparing it directly is
     // sufficient for a NON-capturing delegate (bound method or plain
     // function pointer) -- no separate receiver-identity tracking is
     // needed there. A CAPTURING closure literal is different: every
-    // literal-created delegate shares the same `contextPointer` (`ExpressionResult.
-    // pointerValue(null)`, set in `constructFunctionLiteralInto`), so two
+    // literal-created delegate has a null `contextPointer`, so two
     // closures of the identical lambda over two different activations
     // (`make(1)` and `make(2)` each returning `() => y`) would otherwise
     // compare equal despite closing over distinct per-activation frame
@@ -7632,13 +7560,12 @@ private struct Walker {
     // funcptr}` pair from `nativeDelegateSlots` already IS the runtime
     // identity D's builtin equality compares, with no registry indirection
     // to resolve.
-    private bool equalDelegateValues(in ExpressionResult left, in ExpressionResult right) {
-        if (!left.isFunctionPointer && !left.isNativeDelegate ||
-            !right.isFunctionPointer && !right.isNativeDelegate)
-            return left == right;
-
-        const leftSlot = delegateSlotValue(left);
-        const rightSlot = delegateSlotValue(right);
+    private bool equalDelegatePlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        const leftSlot = loadDelegateSlot(left);
+        const rightSlot = loadDelegateSlot(right);
         if (leftSlot.isNative || rightSlot.isNative)
             return leftSlot.isNative == rightSlot.isNative &&
                 leftSlot.context is rightSlot.context &&
@@ -7670,46 +7597,59 @@ private struct Walker {
         return true;
     }
 
-    private bool equalArrayValues(NativeAggregate left, NativeAggregate right) {
-        if (AggregateValue.length(left) != AggregateValue.length(right))
+    private bool equalArrayPlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        if (left.arrayLength != right.arrayLength)
             return false;
 
-        foreach (index; 0 .. AggregateValue.length(left))
-            if (!equalValues(
-                arrayElementForEquality(left, index),
-                arrayElementForEquality(right, index),
-            ))
+        foreach (index; 0 .. left.arrayLength)
+            if (!equalPlaces(left.index(index), right.index(index)))
                 return false;
 
         return true;
     }
 
-    private ExpressionResult arrayElementForEquality(NativeAggregate aggregate, in size_t index) {
-        return readStoredValue(AggregateValue.elementAt(aggregate, index));
-    }
+    private bool equalStructPlaces(
+        imported!"quickbite.backends.interpreter.place".Place left,
+        imported!"quickbite.backends.interpreter.place".Place right,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            structFields, typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
 
-    // Recurse field-by-field through `equalValues` (mirroring
-    // `equalArrayValues`) instead of a raw `ExpressionResult ==
-    // ExpressionResult` compare (the `left == right` fallback above), so
-    // each field gets the same numeric-scalar coercion a top-level `==`
-    // already applies.
-    private bool equalStructValues(NativeAggregate left, NativeAggregate right) {
-        const count = AggregateValue.fieldCount(left);
-        if (count != AggregateValue.fieldCount(right))
-            return false;
+        auto structType = left.type.toBasetype.isTypeStruct;
+        if (structType.sym.xeq !is null) {
+            auto resultType = structType.sym.xeq.type.toBasetype.isTypeFunction.next;
+            auto resultBlock = NativeBlock.allocate(
+                typeByteSize(resultType),
+                typeHasPointers(resultType)
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            );
+            auto destination = ConstructionDestination(Place(
+                resultBlock.address,
+                resultType,
+            ));
+            runMemberFunction(
+                structType.sym.xeq,
+                null,
+                left,
+                [right],
+                null,
+                null,
+                null,
+                &destination,
+            );
+            return placeIsTruthy(destination.place);
+        }
 
-        foreach (index; 0 .. count)
-            if (!equalValues(
-                structFieldForEquality(left, index),
-                structFieldForEquality(right, index),
-            ))
+        foreach (field; structFields(structType))
+            if (!equalPlaces(left.field(field), right.field(field)))
                 return false;
-
         return true;
-    }
-
-    private ExpressionResult structFieldForEquality(NativeAggregate aggregate, in size_t index) {
-        return readStoredValue(AggregateValue.fieldAt(aggregate, index));
     }
 
     private imported!"dmd.expression".BinExp scalarCompoundAssignment(
@@ -8972,64 +8912,7 @@ private struct Walker {
                 );
         }
 
-        return castScalarToType(type, value);
-    }
-
-    // `storageValue`'s scalar-cast fallback is also used when a caller already
-    // knows that the value is a plain scalar and can skip the symbolic and
-    // aggregate checks above.
-    private ExpressionResult castScalarToType(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult value,
-    ) {
-        import quickbite.backends.interpreter.runtime_casts:
-            CastTarget,
-            tryCastTarget;
-
-        if (type is null)
-            return value;
-
-        CastTarget target;
-        if (!tryCastTarget(type, target))
-            return value;
-
-        return castScalarResult(value, target);
-    }
-
-    // Casts to the scalar's static type and writes through a typed place. This
-    // module does not re-derive scalar width or bit layout.
-    private ExpressionResult[] scalarBytes(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult value,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeScalarLeaf;
-
-        auto raw = new ubyte[](typeByteSize(type));
-        writeScalarLeaf(Place(raw.ptr, type), value);
-
-        ExpressionResult[] bytes;
-        foreach (byte_; raw)
-            bytes ~= ExpressionResult(byte_);
-        return bytes;
-    }
-
-    // The inverse of `scalarBytes` above. `place_value.readScalarLeaf` keeps
-    // this transitional ExpressionResult boundary outside `native_scalar`
-    // while preserving the codec's `float`/`double` behaviour.
-    private ExpressionResult scalarFromBytes(
-        imported!"dmd.mtype".Type type,
-        in ExpressionResult[] bytes,
-    ) {
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readScalarLeaf;
-
-        auto raw = new ubyte[](bytes.length);
-        foreach (index, byte_; bytes)
-            raw[index] = cast(ubyte) byte_.asLong;
-
-        return readScalarLeaf(Place(raw.ptr, type));
+        return value;
     }
 
     private void writeIndexLocation(
@@ -11081,409 +10964,249 @@ private struct Walker {
         return bindingPlace(variable).index(arrayIndex);
     }
 
-    private ExpressionResult castScalarResult(
-        in ExpressionResult value,
-        in imported!"quickbite.backends.interpreter.runtime_casts".CastTarget target,
-    ) {
-        import quickbite.backends.interpreter.runtime_casts: CastTarget;
-
-        final switch (target) with (CastTarget) {
-            case bool_: return value.castTo!bool;
-            case byte_: return value.castTo!byte;
-            case ubyte_: return value.castTo!ubyte;
-            case char_: return value.castTo!char;
-            case short_: return value.castTo!short;
-            case ushort_: return value.castTo!ushort;
-            case wchar_: return value.castTo!wchar;
-            case int_: return value.castTo!int;
-            case uint_: return value.castTo!uint;
-            case dchar_: return value.castTo!dchar;
-            case long_: return value.castTo!long;
-            case ulong_: return value.castTo!ulong;
-            case float_: return value.castTo!float;
-            case double_: return value.castTo!double;
-            case real_: return value.castTo!real;
-            case ifloat_, idouble_, ireal_: return value.castToImaginary;
-            case cfloat_, cdouble_, creal_: return value.castToComplex;
-        }
-    }
-
-    private ExpressionResult castValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget;
-        import quickbite.frontend.dmd.types: isPointerType;
-        import dmd.astenums: TY;
-
-        auto type = cast_.to.toBasetype;
-        if (type is null)
-            // No cast target type is known: read `cast_.e1` back through
-            // its own typed place instead of the carrier, preserving the
-            // pass-through value and single evaluation.
-            return constructedExpressionValue(cast_.e1);
-
-        if (type.ty == TY.Tvoid) {
-            executeForEffect(cast_.e1);
-            return ExpressionResult.void_;
-        }
-
-        if (type.ty == TY.Tclass)
-            return classCastValue(cast_);
-
-        if (type.ty == TY.Tident) {
-            ExpressionResult value;
-            if (tryIdentifierClassCastValue(cast_, value))
-                return value;
-        }
-
-        if (
-            type.ty == TY.Tarray &&
-            type.nextOf.toBasetype.ty == TY.Tvoid
-        ) {
-            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-            import quickbite.backends.interpreter.layout: typeByteSize;
-
-            // Read `cast_.e1` back through its own typed place -- same
-            // single evaluation as the carrier read, routed through
-            // `readStoredValue` instead.
-            const value = constructedExpressionValue(cast_.e1);
-            if (value.isNativeAggregate) {
-                auto aggregate = AggregateValue.native(value);
-                if (AggregateValue.isArray(aggregate) &&
-                    AggregateValue.nativeArrayAddress(aggregate) !is null)
-                    return ExpressionResult.nativeAggregateValue(
-                        AggregateValue.borrowArrayOwner(
-                            cast_.to,
-                            AggregateValue.length(aggregate) * typeByteSize(
-                                cast_.e1.type.toBasetype.nextOf,
-                            ),
-                            AggregateValue.nativeArrayAddress(aggregate),
-                        ),
-                    );
-            }
-            return value;
-        }
-
-        if (isTransparentArrayCastTarget(type)) {
-            ExpressionResult reinterpreted;
-            if (reinterpretScalarArrayCast(cast_, reinterpreted))
-                return reinterpreted;
-
-            // `cast(T[])staticArrayExpr` (same element type) is a full slice
-            // of the static array's own storage -- the implicit cast DMD
-            // inserts around `_d_arrayctor`'s arguments when lowering a
-            // static-array whole-value copy. Give it the same borrowed
-            // dynamic-array view an explicit `staticArrayExpr[]` gets via
-            // `AggregateValue.slice`, rather than passing the untouched
-            // static-array aggregate through as though the cast were a
-            // no-op.
-            import dmd.typesem: equivalent;
-
-            auto sourceStaticArray = cast_.e1.type is null
-                ? null
-                : cast_.e1.type.toBasetype.isTypeSArray;
-            if (
-                sourceStaticArray !is null &&
-                type.isTypeDArray !is null &&
-                equivalent(sourceStaticArray.nextOf, type.nextOf)
-            ) {
-                import quickbite.backends.interpreter.aggregate_value:
-                    AggregateValue;
-
-                // Read `cast_.e1` back through its own typed place -- same
-                // single evaluation as the carrier read, routed through
-                // `readStoredValue` instead.
-                const source = constructedExpressionValue(cast_.e1);
-                auto sourceAggregate = AggregateValue.native(source);
-                return ExpressionResult.nativeAggregateValue(
-                    AggregateValue.slice(
-                        sourceAggregate,
-                        cast_.to,
-                        0,
-                        AggregateValue.length(sourceAggregate),
-                    ),
-                );
-            }
-
-            return constructedExpressionValue(cast_.e1);
-        }
-
-        if (type.ty == TY.Tbool)
-            return boolCastValue(cast_);
-
-        if (type.ty == TY.Tdelegate)
-            return delegateCastValue(cast_);
-
-        if (isPointerType(type))
-            return pointerCastValue(cast_);
-
-        if (auto integer = cast_.e1.isIntegerExp)
-            if (integer.type !is null && integer.type.ty == TY.Tenum) {
-                import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.runtime_values: integerValue;
-
-                auto destination = Place(
-                    _activationFrame.temporaryAddress(cast_),
-                    cast_.to,
-                );
-                integerValue(integer, destination);
-                return readStoredValue(destination);
-            }
-
-        // The remaining cast targets are plain scalar kinds `castScalarResult`
-        // already switches on. Read `cast_.e1` back through its own typed
-        // place rather than the carrier's own evaluation path -- same single
-        // evaluation, with the read itself routed through typed machinery.
-        return castScalarResult(
-            constructedExpressionValue(cast_.e1),
-            backendCastTarget(type),
-        );
-    }
-
-    private bool reinterpretScalarArrayCast(
+    private bool constructCastInto(
         imported!"dmd.expression".CastExp cast_,
-        out ExpressionResult result,
+        imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
+        import std.algorithm: canFind;
         import std.conv: text;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
-
-        auto sourceType = cast_.e1.type.toBasetype;
-        auto targetType = cast_.to.toBasetype;
-        if (!isDynamicArrayType(sourceType) || !isDynamicArrayType(targetType))
-            return false;
-
-        sourceType = sourceType.nextOf.toBasetype;
-        targetType = targetType.nextOf.toBasetype;
-        if (
-            !isNativeScalarType(sourceType) ||
-            !isNativeScalarType(targetType) ||
-            typeByteSize(sourceType) != typeByteSize(targetType)
-        )
-            return false;
-
-        // Read `cast_.e1` back through its own typed place -- same single
-        // evaluation as the carrier read, routed through `readStoredValue`
-        // instead.
-        const source = constructedExpressionValue(cast_.e1);
-        auto sourceAggregate = AggregateValue.native(source);
-        result = ExpressionResult.nativeAggregateValue(
-            AggregateValue.borrowArrayOwner(
-                cast_.to,
-                AggregateValue.length(sourceAggregate),
-                AggregateValue.nativeArrayAddress(sourceAggregate),
-            ),
-        );
-        return true;
-    }
-
-    private ExpressionResult boolCastValue(imported!"dmd.expression".CastExp cast_) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.place_value: clearPlace;
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget;
+            CastTarget, castValue, tryCastTarget;
+        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
 
-        const value = constructedExpressionValue(cast_.e1);
-        if (value.isPointer)
-            return ExpressionResult(true);
-        if (value == ExpressionResult.null_)
-            return ExpressionResult(false);
-        if (value.isNativeAggregate && AggregateValue.isArray(value))
-            return ExpressionResult(isTruthy(value));
+        if (cast_.to is null) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            copyQualificationConvertedPlaceValue(source, destination);
+            return true;
+        }
 
-        return castScalarResult(value, backendCastTarget(cast_.to));
-    }
+        auto targetType = cast_.to.toBasetype;
+        if (targetType.ty == TY.Tvoid) {
+            executeForEffect(cast_.e1);
+            return true;
+        }
 
-    private ExpressionResult delegateCastValue(imported!"dmd.expression".CastExp cast_) {
-        import std.conv: text;
+        CastTarget target;
+        CastTarget sourceTarget;
+        if (
+            cast_.e1.type !is null &&
+            tryCastTarget(cast_.to, target) &&
+            tryCastTarget(cast_.e1.type, sourceTarget)
+        ) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            castValue(source, target, destination);
+            return true;
+        }
 
-        // Read `cast_.e1` back through its own typed place -- delegates and
-        // function pointers round-trip through `writeStoredValue`'s side
-        // tables there -- rather than the carrier's own evaluation path.
-        // Same single evaluation as before.
-        const value = constructedExpressionValue(cast_.e1);
-        if (value == ExpressionResult.null_ || value.isFunctionPointer)
-            return value;
+        if (tryCastTarget(cast_.to, target)) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            auto sourceType = source.type.toBasetype;
+            if (
+                sourceType.ty == TY.Tpointer ||
+                sourceType.ty == TY.Tclass ||
+                sourceType.ty == TY.Taarray
+            ) {
+                storeAddressAsScalar(source.loadReference, target, destination);
+                return true;
+            }
+            if (sourceType.ty == TY.Tnull) {
+                storeAddressAsScalar(null, target, destination);
+                return true;
+            }
+        }
 
-        throw new Exception(text("Unsupported eval expression: ", cast_.op));
-    }
+        if (targetType.ty == TY.Tbool) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            destination.storeNativeScalar(placeIsTruthy(source));
+            return true;
+        }
 
-    private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.frontend.dmd.types: isPointerType;
+        if (targetType.ty == TY.Tdelegate) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            auto sourceType = source.type.toBasetype;
+            if (sourceType.ty == TY.Tdelegate) {
+                storeDelegateSlot(destination, loadDelegateSlot(source));
+                return true;
+            }
+            if (
+                sourceType.ty == TY.Tpointer &&
+                sourceType.nextOf.toBasetype.ty == TY.Tfunction
+            ) {
+                if (auto id = loadFunctionPointerId(source))
+                    storeDelegateSlot(destination, interpretedDelegateSlot(*id));
+                else
+                    storeDelegateSlot(
+                        destination,
+                        DelegateSlot(true, null, source.loadReference, 0),
+                    );
+                return true;
+            }
+            if (sourceType.ty == TY.Tnull) {
+                clearStoredMetadata(destination.type, destination.address);
+                clearPlace(destination);
+                return true;
+            }
+            throw new Exception(text("Unsupported eval expression: ", cast_.op));
+        }
 
-        auto value = constructedExpressionValue(cast_.e1);
-        value = rootedNativeClassValue(cast_.e1, value);
-        if (value == ExpressionResult.null_)
-            return value;
-
-        auto classType = cast_.to.toBasetype.isTypeClass;
-        if (classType is null || classType.sym is null)
-            throw new Exception("Unsupported class cast target.");
-
-        // D checks the runtime type, and yields `null` on a mismatch, only
-        // when the source is itself a class or interface reference. From a
-        // raw pointer the cast reinterprets the address: the storage need not
-        // hold a constructed object yet, which is how `emplace` reaches the
-        // instance it is about to initialise.
-        if (isPointerType(cast_.e1.type)) {
-            // A cast names a view onto whatever object is at the address; it
-            // does not make the object one. What the object is was settled
-            // when the class was established over that storage, and only
-            // establishing another class there can change it -- a cast cannot
-            // tell whether that has since happened, so it must not guess.
-            //
-            // Compiled code recovers the class from the vptr the storage
-            // already holds. The interpreter keeps that identity beside the
-            // address, so an address it has never seen carries none: for
-            // storage reached only through a raw pointer -- foreign memory,
-            // or a chunk about to be initialised -- naming the class here is
-            // the only statement of what lives there, and without it every
-            // later interface cast or virtual call off the result fails.
-            // Record only in that case; an address that already answers is
-            // left exactly as it is.
-            //
-            // An interface never becomes an object's class either way: it has
-            // no fields of its own and names a view onto whatever object is
-            // there, so a class the interface record replaced could no longer
-            // resolve an implementation for a later virtual call.
-            if (auto address = classIdentityAddress(value)) {
+        if (isPointerType(targetType)) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            auto sourceType = source.type.toBasetype;
+            if (isArrayType(sourceType)) {
+                destination.storeReference(
+                    sourceType.isTypeDArray !is null
+                        ? source.sliceDataPointer
+                        : source.address,
+                );
+                return true;
+            }
+            if (
+                sourceType.ty == TY.Tpointer ||
+                sourceType.ty == TY.Tclass ||
+                sourceType.ty == TY.Taarray
+            ) {
                 if (
+                    sourceType.ty == TY.Tpointer &&
+                    sourceType.nextOf.toBasetype.ty == TY.Tfunction
+                ) {
+                    if (auto id = loadFunctionPointerId(source)) {
+                        storeFunctionPointerId(destination, *id);
+                        return true;
+                    }
+                }
+                destination.storeReference(source.loadReference);
+                return true;
+            }
+            if (sourceType.ty == TY.Tnull) {
+                destination.storeReference(null);
+                return true;
+            }
+            throw new Exception(text("Unsupported eval expression: ", cast_.op));
+        }
+
+        if (targetType.ty == TY.Tarray) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            auto sourceType = source.type.toBasetype;
+            void* address;
+            size_t length;
+            if (isArrayType(sourceType)) {
+                address = sourceType.isTypeDArray !is null
+                    ? source.sliceDataPointer
+                    : source.address;
+                length = source.arrayLength;
+                if (targetType.nextOf.toBasetype.ty == TY.Tvoid)
+                    length *= typeByteSize(sourceType.nextOf);
+            } else if (sourceType.isTypeStruct !is null) {
+                address = source.address;
+                length = typeByteSize(source.type);
+            } else {
+                return false;
+            }
+            AggregateValue.initializeBorrowedArray(destination, length, address);
+            return true;
+        }
+
+        if (
+            targetType.ty == TY.Tclass ||
+            targetType.ty == TY.Tident && typeChars(cast_.to).canFind("Throwable")
+        ) {
+            auto source = constructedExpressionPlace(cast_.e1);
+            if (auto name = loadTypeInfoName(source)) {
+                auto classType = targetType.isTypeClass;
+                if (
+                    classType !is null &&
+                    isClassTypeInfoClass(classType.sym) &&
+                    classDeclarationByQualifiedName(*name) !is null
+                ) {
+                    storeTypeInfoName(destination, *name);
+                    return true;
+                }
+            }
+
+            auto sourceType = source.type.toBasetype;
+            if (
+                sourceType.ty != TY.Tpointer &&
+                sourceType.ty != TY.Tclass &&
+                sourceType.ty != TY.Tnull
+            )
+                return false;
+
+            auto address = sourceType.ty == TY.Tnull
+                ? null
+                : source.loadReference;
+            if (address is null) {
+                destination.storeReference(null);
+                return true;
+            }
+
+            auto classType = targetType.isTypeClass;
+            if (sourceType.ty == TY.Tpointer) {
+                if (
+                    classType !is null &&
                     classType.sym.isInterfaceDeclaration is null &&
                     address !in nativeClassTypes
                 )
                     nativeClassTypes[address] = classType;
+                destination.storeReference(address);
+                return true;
             }
-            return value;
-        }
 
-        // `typeid` yields the TypeInfo describing a type, and for a class or
-        // interface that TypeInfo's own dynamic type is `TypeInfo_Class`, so
-        // casting one to `TypeInfo_Class` (or to a base of it) succeeds and
-        // keeps describing the same type. A resolved host address is a real
-        // `TypeInfo_Class` unconditionally: `resolvedClassTypeInfoAddress`
-        // only ever produces one for a class type, so the value's own
-        // qualified name never needs recovering to confirm it.
-        if (
-            isClassTypeInfoClass(classType.sym) &&
-            (
-                value.isPointer ||
-                value.isTypeName &&
-                    classDeclarationByQualifiedName(value.asTypeNameString) !is null
-            )
-        )
-            return value;
-
-        if (!classHasType(value, className(classType.sym)))
-            return ExpressionResult.null_;
-
-        return value;
-    }
-
-    private bool tryIdentifierClassCastValue(
-        imported!"dmd.expression".CastExp cast_,
-        out ExpressionResult result,
-    ) {
-        import std.algorithm: canFind;
-
-        if (!typeChars(cast_.to).canFind("Throwable"))
-            return false;
-
-        auto value = constructedExpressionValue(cast_.e1);
-        value = rootedNativeClassValue(cast_.e1, value);
-        if (value == ExpressionResult.null_) {
-            result = value;
+            auto object = classObjectFromReferencePlace(source);
+            const wanted = classType is null
+                ? "Throwable"
+                : className(classType.sym);
+            destination.storeReference(
+                classHasType(object, wanted) ? address : null,
+            );
             return true;
         }
 
-        if (dynamicClass(value) is null)
-            return false;
+        if (auto integer = cast_.e1.isIntegerExp)
+            if (integer.type !is null && integer.type.ty == TY.Tenum) {
+                import quickbite.backends.interpreter.runtime_values: integerValue;
 
-        result = classHasType(value, "Throwable")
-            ? value
-            : ExpressionResult.null_;
-        return true;
+                integerValue(integer, destination);
+                return true;
+            }
+
+        return false;
     }
 
-    // DMD semantic lowers `array.ptr` to `cast(T*) array`
-    private ExpressionResult pointerCastValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
-        import std.conv: text;
+    private void storeAddressAsScalar(
+        void* address,
+        in imported!"quickbite.backends.interpreter.runtime_casts".CastTarget target,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.runtime_casts: CastTarget;
 
-        if (isArrayType(cast_.e1.type)) {
-            // `.ptr` is raw-pointer extraction, not an indexed slice read:
-            // a zero-length slice still retains its backing address and may
-            // be regrown through that pointer.  Read the typed header from
-            // the evaluated native slice directly; `arrayPointer` remains
-            // the checked address-of route for real `array[index]` places.
-            if (auto var = cast_.e1.isVarExp)
-                if (auto variable = var.var.isVarDeclaration) {
-                    if (hasBindingPlace(variable))
-                        return ExpressionResult.pointerValue(
-                            bindingPlace(variable).sliceDataPointer,
-                        );
-                }
-
-            // Druntime's array-growth hooks (`_d_arraysetlengthT` and
-            // siblings) take a `void[]* p` parameter and read `(*p).ptr` to
-            // consult the GC block-info cache before reallocating. `p`
-            // itself is a plain local/parameter; the same zero-length-safe
-            // bypass above applies one dereference further in -- `p`'s own
-            // storage holds the pointer to dereference, and `Place.deref`
-            // follows it to the array's slice-header place.
-            if (auto pointer = cast_.e1.isPtrExp)
-                if (auto var = pointer.e1.isVarExp)
-                    if (auto variable = var.var.isVarDeclaration) {
-                        if (hasBindingPlace(variable))
-                            return ExpressionResult.pointerValue(
-                                bindingPlace(variable).deref.sliceDataPointer,
-                            );
-                    }
-
-            const value = constructedExpressionValue(cast_.e1);
-            if (value.isNativeAggregate) {
-                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-                // `nativeArrayAddress` returning null is ambiguous: it
-                // means either "not a dynamic array" or "a dynamic array
-                // whose stored `ptr` is legitimately null" (a zero-length
-                // slice). Checking the aggregate's own type first, rather
-                // than the returned address's truthiness, tells those
-                // apart -- a null `ptr` is `.ptr`'s correct answer here,
-                // not a signal to fall through to the checked, throwing
-                // `arrayPointer` index route below.
-                auto aggregate = AggregateValue.native(value);
-                if (aggregate.type.toBasetype.isTypeDArray !is null) {
-                    const address = AggregateValue.nativeArrayAddress(aggregate);
-                    return address is null
-                        ? ExpressionResult.null_
-                        : ExpressionResult.pointerValue(cast(void*) address);
-                }
-            }
-            return ExpressionResult.pointerValue(
-                arrayPointer(cast_.e1, 0, cast_.op),
-            );
+        const value = cast(size_t) address;
+        final switch (target) with (CastTarget) {
+            case bool_: destination.storeNativeScalar(address !is null); return;
+            case byte_: destination.storeNativeScalar(cast(byte) value); return;
+            case ubyte_: destination.storeNativeScalar(cast(ubyte) value); return;
+            case char_: destination.storeNativeScalar(cast(char) value); return;
+            case short_: destination.storeNativeScalar(cast(short) value); return;
+            case ushort_: destination.storeNativeScalar(cast(ushort) value); return;
+            case wchar_: destination.storeNativeScalar(cast(wchar) value); return;
+            case int_: destination.storeNativeScalar(cast(int) value); return;
+            case uint_: destination.storeNativeScalar(cast(uint) value); return;
+            case dchar_: destination.storeNativeScalar(cast(dchar) value); return;
+            case long_: destination.storeNativeScalar(cast(long) value); return;
+            case ulong_: destination.storeNativeScalar(cast(ulong) value); return;
+            case float_: destination.storeNativeScalar(cast(float) value); return;
+            case double_: destination.storeNativeScalar(cast(double) value); return;
+            case real_: destination.storeNativeScalar(cast(real) value); return;
+            case ifloat_: destination.storeNativeScalar(cast(ifloat) value); return;
+            case idouble_: destination.storeNativeScalar(cast(idouble) value); return;
+            case ireal_: destination.storeNativeScalar(cast(ireal) value); return;
+            case cfloat_: destination.storeNativeScalar(cast(cfloat) value); return;
+            case cdouble_: destination.storeNativeScalar(cast(cdouble) value); return;
+            case creal_: destination.storeNativeScalar(cast(creal) value); return;
         }
-
-        // A pointer-typed, non-array source (e.g. `cast(void*)
-        // somePointer`): construct `cast_.e1` in its own typed place and
-        // read its pointee address directly, the same route the
-        // post-increment `*p` handler uses for a dereferenced pointer
-        // operand. `address is null` mirrors the array branch above,
-        // reporting a null pointer as `ExpressionResult.null_` rather than
-        // a pointer value wrapping a null address.
-        if (isPointerType(cast_.e1.type)) {
-            const address = pointerOperandPlace(cast_.e1).deref.address;
-            return address is null
-                ? ExpressionResult.null_
-                : ExpressionResult.pointerValue(cast(void*) address);
-        }
-
-        const value = constructedExpressionValue(cast_.e1);
-        if (value == ExpressionResult.null_)
-            return value;
-        if (value.isPointer)
-            return value;
-
-        throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
     private ExpressionResult reconstructStoredArray(
@@ -13892,7 +13615,10 @@ destinationFallback:
         }
 
         if (auto cast_ = rvalue.isCastExp)
-            return storeConstructionResult(destination, castValue(cast_));
+            if (constructCastInto(cast_, place)) {
+                destination.markConstructed;
+                return true;
+            }
 
         if (auto equal = rvalue.isEqualExp) {
             import dmd.tokens: EXP;
@@ -14400,14 +14126,7 @@ destinationFallback:
             // growth-hook idiom, `p: void[]*`) may legitimately answer a
             // null pointer for an empty slice -- its backing address is
             // still meaningful and distinct from "no value". Storing that
-            // address through this typed `Place` and reading it back
-            // collapses a null pointer to the untyped
-            // `ExpressionResult.null_`, the same conversion every other
-            // pointer-typed place read applies, indistinguishable here from
-            // a real absence. `pointerCastValue`'s own `PtrExp` bypass avoids
-            // exactly that collapse by wrapping the address directly in
-            // `ExpressionResult.pointerValue` regardless of nullness, so
-            // decline this shape and let it answer instead.
+            // address through this typed `Place` preserves the null pointer.
             if (
                 hasArrayProjectionPlace(cast_.e1) &&
                 cast_.e1.isPtrExp is null
@@ -15150,24 +14869,43 @@ destinationFallback:
             expression.type,
         ));
         runExpression(expression, destination);
-        switch (expression.type.toBasetype.ty) with (TY) {
-            case Tbool: return destination.place.loadNativeScalar!bool;
-            case Tint8: return destination.place.loadNativeScalar!byte != 0;
-            case Tuns8, Tchar: return destination.place.loadNativeScalar!ubyte != 0;
-            case Tint16: return destination.place.loadNativeScalar!short != 0;
-            case Tuns16, Twchar: return destination.place.loadNativeScalar!ushort != 0;
-            case Tint32: return destination.place.loadNativeScalar!int != 0;
-            case Tuns32, Tdchar: return destination.place.loadNativeScalar!uint != 0;
-            case Tint64: return destination.place.loadNativeScalar!long != 0;
-            case Tuns64: return destination.place.loadNativeScalar!ulong != 0;
-            case Tfloat32: return destination.place.loadNativeScalar!float != 0;
-            case Tfloat64: return destination.place.loadNativeScalar!double != 0;
-            case Tfloat80: return destination.place.loadNativeScalar!real != 0;
-            case Tpointer, Tclass, Taarray:
-                return destination.place.deref.address !is null;
-            case Tarray: return destination.place.sliceDataPointer !is null;
-            default:
-                throw new Exception("Unsupported condition type.");
+        return placeIsTruthy(destination.place);
+    }
+
+    private bool placeIsTruthy(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (place.type.toBasetype.ty) with (TY) {
+            case Tbool: return place.loadNativeScalar!bool;
+            case Tint8: return place.loadNativeScalar!byte != 0;
+            case Tuns8, Tchar: return place.loadNativeScalar!ubyte != 0;
+            case Tint16: return place.loadNativeScalar!short != 0;
+            case Tuns16, Twchar: return place.loadNativeScalar!ushort != 0;
+            case Tint32: return place.loadNativeScalar!int != 0;
+            case Tuns32, Tdchar: return place.loadNativeScalar!uint != 0;
+            case Tint64: return place.loadNativeScalar!long != 0;
+            case Tuns64: return place.loadNativeScalar!ulong != 0;
+            case Tfloat32: return place.loadNativeScalar!float != 0;
+            case Tfloat64: return place.loadNativeScalar!double != 0;
+            case Tfloat80: return place.loadNativeScalar!real != 0;
+            case Tpointer:
+                if (place.type.toBasetype.nextOf.toBasetype.ty == Tfunction)
+                    return loadFunctionPointerId(place) !is null ||
+                        place.loadReference !is null;
+                return place.loadReference !is null;
+            case Tdelegate:
+                const slot = loadDelegateSlot(place);
+                return slot.isNative
+                    ? slot.funcptr !is null
+                    : slot.functionPointerId != 0;
+            case Tclass:
+                return loadTypeInfoName(place) !is null ||
+                    place.loadReference !is null;
+            case Taarray: return place.loadReference !is null;
+            case Tarray: return place.sliceDataPointer !is null;
+            default: throw new Exception("Unsupported condition type.");
         }
     }
 
@@ -15690,38 +15428,6 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 }
 
 
-private bool isTruthy(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    if (value == ExpressionResult.null_)
-        return false;
-
-    if (value.isPointer)
-        return true;
-
-    if (value.isNativeAggregate) {
-        auto aggregate = AggregateValue.native(value);
-        if (AggregateValue.isArray(aggregate)) {
-            // DMD's `toBasetype` is mutable.
-            if (aggregate.type.toBasetype.ty == TY.Tarray)
-                return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
-            return AggregateValue.length(aggregate) != 0;
-        }
-    }
-
-    if (value == ExpressionResult(false))
-        return false;
-
-    if (value == ExpressionResult(true))
-        return true;
-
-    return value.castTo!bool == ExpressionResult(true);
-}
-
-
 private imported!"dmd.mtype".TypeClass receiverClassType(
     imported!"dmd.expression".Expression receiver,
 ) {
@@ -16182,9 +15888,8 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
 // only in interpreted code was never compiled, so `resolveDataSymbol` finds
 // no such symbol and the caller falls back to the symbolic display-name
 // path. Scoped to class types only: a non-class `TypeInfo` value has no
-// interpreter-tracked declaration to recover from a bare address later (see
-// `classCastValue`'s `TypeInfo_Class` narrowing), so this never manufactures
-// one for a struct or scalar `typeid`.
+// interpreter-tracked declaration to recover from a bare address later, so
+// this never manufactures one for a struct or scalar `typeid`.
 private const(void)* resolvedClassTypeInfoAddress(imported!"dmd.mtype".Type type) {
     import quickbite.ffi.ffi: resolveDataSymbol;
 

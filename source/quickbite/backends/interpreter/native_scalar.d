@@ -64,7 +64,7 @@ public bool isNativeScalarType(imported!"dmd.mtype".Type type) @safe {
 
 // Writes a scalar that is already in the host type selected by the caller.
 // Construction helpers use this path when DMD has already fixed the guest
-// type. It avoids creating an ExpressionResult only to write its bytes out.
+// type. It writes those bytes directly into the typed destination.
 public void writeNativeScalar(T)(
     imported!"dmd.mtype".Type type,
     ubyte[] dest,

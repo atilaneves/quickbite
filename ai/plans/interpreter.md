@@ -596,10 +596,6 @@ The open classes, each with its refusal site and the automem shape driving it:
   through `(*(cast(MutE[]*) &_elements))[i] = x`, a dereferenced-cast base it
   lacks. Fix direction: resolve the base to a `Place` and compose
   `Place.index` instead of rebuilding aggregates with `AggregateValue.with*`.
-- **cast_** — the op is dispatched; the refusals are `pointerCastValue`
-  (operand not carried as `Pointer`) and `delegateCastValue` (live
-  interpreted closure). Driven by `allocatorObject`/`CAllocatorImpl` in the
-  `theAllocator` tests and by `StackFront`/`mmapRegionList` internals.
 - **classReference** — genuinely absent from the walker: automem throws a
   CTFE-constructed `static immutable boundsException = new BoundsException(…)`,
   which reaches the walker as `ClassReferenceExp` (a `StructLiteralExp` whose

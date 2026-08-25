@@ -76,14 +76,11 @@ scalar, pointer, or `NativeAggregate` contract across its caller boundary.
 Later families can use earlier contracts, but no family introduces a new
 general value wrapper.
 
-1. Replace scalar operations, equality, and casts. These depend on typed call
-   results for operator overloads and use the scalar reads on `Place` plus the
-   existing `runtime_casts` destination operations.
-2. Replace the aggregate, slice, index, allocation, and literal fallbacks.
+1. Replace the aggregate, slice, index, allocation, and literal fallbacks.
    This depends on the typed scalar, call, and projection contracts and
    removes the remaining `NativeAggregate` conversions to and from
    `ExpressionResult`.
-3. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
+2. Delete the residue: `readStoredValue`, `writeStoredValue`, `storageValue`,
    `readValue`, `writeValue`, `readScalarLeaf`, and `writeScalarLeaf`; the
    boxed overloads in `aggregate_value.d`; `expression_result.d`; and the
    implementation-detail tests `tests/ut/backends/interpreter/place_value.d`
@@ -92,11 +89,8 @@ general value wrapper.
    callable or `TypeInfo` to escape to native code. The standing refusal
    holds: no trampoline or proxy until a real crossing exists.
 - **Deferred findings** (need a proving test first, AGENTS.md): a native
-  delegate slot's `.ptr`/`.funcptr` always throws, pre-existing;
-  `constructPointerExpressionInto`'s pointer-typed `CastExp` branch
-  (`isPointerType(cast_.e1.type)`) may wrongly collapse a null slice/pointer
-  read (unproven, like its guarded array-projection sibling once did);
-  the opAssign-postblit interaction candidate from the branch review is
+  delegate slot's `.ptr`/`.funcptr` always throws, pre-existing; the
+  opAssign-postblit interaction candidate from the branch review is
   unverified.
 
 ### Item 4 — Workingness track
