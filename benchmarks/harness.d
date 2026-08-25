@@ -8,11 +8,8 @@ public struct Result {
     // Sample standard deviation in hnsecs; floating-point because Duration
     // cannot represent a sub-integer-hnsec spread.
     public double stddevHnsecs;
-    // The largest increase in GC.stats.usedSize between a pre-sample
-    // collection and the sample's completion. With collection disabled this
-    // includes garbage retained after it becomes unreachable; it is not an
-    // allocation-site breakdown.
-    public size_t maxGcUsedSizeDelta;
+    // Median for repeated verdicts; the one observed value for a first verdict.
+    public ulong dGcAllocation;
 }
 
 public struct Measurement(T) {
@@ -23,6 +20,22 @@ public struct Measurement(T) {
     // Values returned by every timed iteration, in iteration order.
     public T[] results;
 }
+
+public struct VerdictMeasurement(T) {
+    public Result first;
+    public Result repeated;
+    public T firstResult;
+    public T[] warmupResults;
+    public T[] results;
+}
+
+public enum VerdictKind {
+    first,
+    repeated,
+}
+
+public alias AdditionalAllocation = ulong delegate();
+public alias SampleBoundary = void delegate(VerdictKind);
 
 public Result measure(
     scope void delegate() runTests,
@@ -35,26 +48,17 @@ public Result measure(
     import std.math: sqrt;
 
     auto timings = new Duration[](iterations);
-    size_t maxGcUsedSizeDelta;
+    auto allocations = new ulong[](iterations);
 
     foreach (i; 0 .. warmup)
         runTests();
 
-    GC.disable;
-    scope(exit) GC.enable;
-
     foreach (i; 0 .. iterations) {
-        // The explicit collection stays outside the measured operation so each
-        // diagnostic sample begins from a comparable baseline.
-        GC.collect;
-        const baselineRam = GC.stats.usedSize;
+        const allocationBaseline = GC.allocatedInCurrentThread;
         const start = MonoTime.currTime;
         runTests();
         timings[i] = MonoTime.currTime - start;
-        const usedRam = GC.stats.usedSize;
-        if (usedRam > baselineRam
-            && usedRam - baselineRam > maxGcUsedSizeDelta)
-            maxGcUsedSizeDelta = usedRam - baselineRam;
+        allocations[i] = GC.allocatedInCurrentThread - allocationBaseline;
     }
 
     double sum = 0;
@@ -71,19 +75,28 @@ public Result measure(
     const stddev = iterations > 1 ? sqrt(sqDiffSum / (iterations - 1)) : 0.0;
 
     timings.sort;
+    allocations.sort;
     const median = iterations % 2 == 1
         ? timings[iterations / 2]
         : hnsecs(
             (timings[iterations / 2 - 1].total!"hnsecs"
              + timings[iterations / 2].total!"hnsecs") / 2,
         );
-    return Result(timings[0], median, stddev, maxGcUsedSizeDelta);
+    const medianAllocation = iterations % 2 == 1
+        ? allocations[iterations / 2]
+        : allocations[iterations / 2 - 1]
+            + (allocations[iterations / 2]
+                - allocations[iterations / 2 - 1]) / 2;
+    return Result(timings[0], median, stddev, medianAllocation);
 }
 
 public Measurement!T measureWithResults(T)(
     scope T delegate() operation,
     in size_t warmup,
     in size_t iterations,
+    scope AdditionalAllocation additionalAllocation = null,
+    scope SampleBoundary beforeSample = null,
+    scope SampleBoundary afterSample = null,
 ) {
     import core.memory: GC;
     import core.time: Duration, MonoTime, hnsecs;
@@ -93,24 +106,27 @@ public Measurement!T measureWithResults(T)(
     auto timings = new Duration[](iterations);
     auto warmupResults = new T[](warmup);
     auto results = new T[](iterations);
-    size_t maxGcUsedSizeDelta;
+    auto allocations = new ulong[](iterations);
 
     foreach (i; 0 .. warmup)
         warmupResults[i] = operation();
 
-    GC.disable;
-    scope(exit) GC.enable;
-
     foreach (i; 0 .. iterations) {
-        GC.collect;
-        const baselineRam = GC.stats.usedSize;
-        const start = MonoTime.currTime;
-        results[i] = operation();
-        timings[i] = MonoTime.currTime - start;
-        const usedRam = GC.stats.usedSize;
-        if (usedRam > baselineRam
-            && usedRam - baselineRam > maxGcUsedSizeDelta)
-            maxGcUsedSizeDelta = usedRam - baselineRam;
+        if (beforeSample !is null)
+            beforeSample(VerdictKind.repeated);
+        {
+            scope(exit)
+                if (afterSample !is null)
+                    afterSample(VerdictKind.repeated);
+
+            const allocationBaseline = GC.allocatedInCurrentThread;
+            const start = MonoTime.currTime;
+            results[i] = operation();
+            timings[i] = MonoTime.currTime - start;
+            allocations[i] = GC.allocatedInCurrentThread - allocationBaseline;
+            if (additionalAllocation !is null)
+                allocations[i] += additionalAllocation();
+        }
     }
 
     double sum = 0;
@@ -126,15 +142,69 @@ public Measurement!T measureWithResults(T)(
     const stddev = iterations > 1 ? sqrt(sqDiffSum / (iterations - 1)) : 0.0;
 
     timings.sort;
+    allocations.sort;
     const median = iterations % 2 == 1
         ? timings[iterations / 2]
         : hnsecs(
             (timings[iterations / 2 - 1].total!"hnsecs"
              + timings[iterations / 2].total!"hnsecs") / 2,
         );
+    const medianAllocation = iterations % 2 == 1
+        ? allocations[iterations / 2]
+        : allocations[iterations / 2 - 1]
+            + (allocations[iterations / 2]
+                - allocations[iterations / 2 - 1]) / 2;
     return Measurement!T(
-        Result(timings[0], median, stddev, maxGcUsedSizeDelta),
+        Result(timings[0], median, stddev, medianAllocation),
         warmupResults,
         results,
+    );
+}
+
+public VerdictMeasurement!T measureVerdictsWithResults(T)(
+    scope T delegate() operation,
+    in size_t warmup,
+    in size_t iterations,
+    scope AdditionalAllocation additionalAllocation = null,
+    scope SampleBoundary beforeSample = null,
+    scope SampleBoundary afterSample = null,
+) {
+    import core.memory: GC;
+    import core.time: MonoTime;
+
+    if (beforeSample !is null)
+        beforeSample(VerdictKind.first);
+
+    T firstResult;
+    typeof(MonoTime.currTime - MonoTime.currTime) elapsed;
+    ulong firstAllocation;
+    {
+        scope(exit)
+            if (afterSample !is null)
+                afterSample(VerdictKind.first);
+
+        const allocationBaseline = GC.allocatedInCurrentThread;
+        const start = MonoTime.currTime;
+        firstResult = operation();
+        elapsed = MonoTime.currTime - start;
+        firstAllocation = GC.allocatedInCurrentThread - allocationBaseline;
+        if (additionalAllocation !is null)
+            firstAllocation += additionalAllocation();
+    }
+
+    auto repeated = measureWithResults(
+        operation,
+        warmup,
+        iterations,
+        additionalAllocation,
+        beforeSample,
+        afterSample,
+    );
+    return VerdictMeasurement!T(
+        Result(elapsed, elapsed, 0.0, firstAllocation),
+        repeated.timing,
+        firstResult,
+        repeated.warmupResults,
+        repeated.results,
     );
 }
