@@ -887,10 +887,10 @@ specifications and API documentation remain linked to published versions.
 ## Call-state precedents
 
 Relocated from the former Interpreter plan's execution-architecture section
-(deleted once its design was implemented): the narrower survey behind the
-Interpreter's execution-state ownership design. The implementations differ
-in language and product goal, but agree on the lifetime split that matters
-there:
+(the plan was deleted; its open work is tracked in GitHub issues): the
+narrower survey behind the Interpreter's execution-state ownership design.
+The implementations differ in language and product goal, but agree on the
+lifetime split that matters there:
 
 - LuaJIT keeps heap, roots, interned strings, and registries in one
   `global_State`. A `lua_State` points at that shared state, while calls use

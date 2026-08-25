@@ -28,7 +28,7 @@ Backends:
   gravity: execute real packages through native typed places and ordinary D
   runtime semantics (`AGENTS.md`, Runtime semantics).
 - `Bytecode` — bytecode VM compiled lazily per function from the
-  analysed AST, values in native D layout throughout (`bytecode.md`).
+  analysed AST, values in native D layout throughout (issue #540).
 - `IR` — lower-to-IR interpreter (`ir.md`).
 - `SystemLinker` — DMD codegen + real link + dlopen. The single
   behaviour oracle for every backend except `Ctfe` (`CONTEXT.md`).
