@@ -786,3 +786,27 @@
   simplified by DMD before bytecode compilation, leaving no runtime handler
   to test. Keep a runtime branch that can throw, and trigger the later throw
   from a separate callee after the return so handler lifetime is observable.
+
+- DMD's `mutableOf`/`unSharedOf` (`typesem.d`) call `Type.merge()`
+  unconditionally, even for an already-unqualified type, and `merge()` is
+  only free when `Type.deco` is already set; otherwise it allocates a fresh
+  `OutBuffer` and does a `stringtable` lookup every single call, not just
+  the first. Whether a given scalar's cv-qualified/unqualified pair caches
+  correctly (`Type.mcache.cto` etc.) depends on how it was created earlier
+  in the *same process* -- some construction paths (seen via a prior Ctfe
+  evaluation) never populate the back-reference `mutableOf` needs, so a
+  per-call comparison that looked free in isolation cost real bytes on
+  every call once a specific earlier test had run, an order-dependent GC
+  allocation regression that only appeared deep in the full suite. For a
+  `TypeBasic`, skip DMD's modifier-stripping machinery entirely and compare
+  `.ty` directly -- a scalar's native layout is fully determined by it,
+  independent of qualifiers, with no `Type.merge()` involved. A sibling
+  case: `Type.equals` itself also shortcuts on reference identity and
+  otherwise compares `.deco`, so a type synthesized outside DMD's normal
+  interning (never run through `Type.merge`) always compares unequal to a
+  byte-for-byte identical one unless the two sides happen to be the same
+  unmerged object -- commit 14bf16e4 hit this for a lowered call's
+  delegate type and fixed it by comparing ABI shape structurally instead of
+  trusting `equals`. DMD's own type-identity helpers are not safe to call
+  from a hot per-call path without checking what they cost, or return,
+  when `.deco` isn't already resolved.

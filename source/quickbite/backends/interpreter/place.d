@@ -449,6 +449,20 @@ private bool sameBaseType(
     import dmd.astenums: TY;
     import dmd.typesem: mutableOf, unSharedOf;
 
+    // A scalar's layout is fully determined by its `TY` alone: every
+    // `TypeBasic` sharing one `ty` (`int`, `const(int)`, `shared(int)`, ...)
+    // has the identical native representation, so qualifiers never need
+    // stripping here. Skipping straight to that avoids routing every scalar
+    // copy (the common case: locals, parameters, return values) through
+    // `mutableOf`/`unSharedOf`, whose `Type.merge()` call is only free when
+    // DMD's own modifier cache (`Type.mcache.cto`/`.ito`/...) already
+    // resolves for both operands; when it does not, `merge()` pays a fresh
+    // mangle-buffer allocation on every call rather than once.
+    auto lhsBasic = lhs.toBasetype.isTypeBasic;
+    auto rhsBasic = rhs.toBasetype.isTypeBasic;
+    if (lhsBasic !is null || rhsBasic !is null)
+        return lhsBasic !is null && rhsBasic !is null && lhsBasic.ty == rhsBasic.ty;
+
     auto lhsVector = lhs.toBasetype.isTypeVector;
     auto rhsVector = rhs.toBasetype.isTypeVector;
     if (lhsVector !is null || rhsVector !is null)
