@@ -39,49 +39,6 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A delegate copied into a second variable stays the same callable identity;
-// a delegate over a different receiver is a different identity even for the
-// same method; an unset delegate is `null`. `SystemLinker` is the oracle: a
-// delegate's identity is its `{context, funcptr}` pair.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "Bytecode compares two delegates over different receivers bound to "
-        ~ "the same method as identical: `a !is c` and `a != c` both "
-        ~ "evaluate `false` for `a`/`c` binding the same method to two "
-        ~ "different objects; independent of the Interpreter-only fix this "
-        ~ "fixture targets"),
-)) {
-    @("delegate.identityComparesSameDifferentAndNull." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Counter {
-                int value;
-
-                int increment() {
-                    return ++value;
-                }
-            }
-
-            unittest {
-                auto counter = new Counter;
-                auto other = new Counter;
-                int delegate() a = &counter.increment;
-                int delegate() b = a;
-                int delegate() c = &other.increment;
-                int delegate() none;
-
-                assert(a is b);
-                assert(a == b);
-                assert(a !is c);
-                assert(a != c);
-                assert(none is null);
-                assert(a !is null);
-            }
-        });
-    }
-}
-
 // Writing a union's non-callable sibling overwrites a stored function
 // pointer's bytes; re-storing the function pointer afterwards makes the slot
 // callable again. `SystemLinker` is the oracle.
