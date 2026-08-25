@@ -20,9 +20,6 @@ per small, short-lived PR, native storage and calls staying the ordinary
 execution path -- no marshalling, cell families, alias maps, or name-based
 shims -- per `interpreter.md` §8 triage.
 
-A destructor throwing at the outermost full-expression boundary drops the
-remaining armed destructors; compiled D chains it and still runs every one.
-
 Pointer-slice formation past an allocation remains unchecked when its result
 is not dereferenced, matching compiled D's contract; the allocated-block
 diagnostic is CTFE-only, so the Interpreter belongs in the

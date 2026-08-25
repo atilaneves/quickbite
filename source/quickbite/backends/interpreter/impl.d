@@ -2110,11 +2110,36 @@ private struct Walker {
         if (!classHasFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
-        auto field = classFieldNamed(thrown, "_nextInChainPtr");
+        auto tail = thrown;
+        for (;;) {
+            auto existing = nextExceptionObject(tail);
+            if (existing.address is null)
+                break;
+            tail = existing;
+        }
+
+        auto field = classFieldNamed(tail, "_nextInChainPtr");
         clearStoredMetadata(field.type, field.address);
         field.storeReference(next.address);
-        nativeThrowableNext[thrown.address] = next;
+        nativeThrowableNext[tail.address] = next;
         return thrown;
+    }
+
+    private ClassObject nextExceptionObject(ClassObject object) {
+        if (auto next = object.address in nativeThrowableNext)
+            return *next;
+        if (!classHasFieldNamed(object, "_nextInChainPtr"))
+            return ClassObject.init;
+
+        auto address = classFieldNamed(object, "_nextInChainPtr")
+            .deref.address;
+        if (address is null)
+            return ClassObject.init;
+
+        auto type = object.type;
+        if (auto dynamicType = address in nativeClassTypes)
+            type = *dynamicType;
+        return ClassObject(type, address);
     }
 
     private bool isThrowableConstructor(
@@ -2955,11 +2980,25 @@ private struct Walker {
     // further temporaries, which would clobber a slice taken up front, so
     // pop from the back instead of iterating a snapshot.
     private void runPendingTemporaryDestructors(in size_t first) {
+        InterpretedException failure;
         while (_pendingTemporaryDestructors.length > first) {
             auto destructor = _pendingTemporaryDestructors[$ - 1];
             --_pendingTemporaryDestructors.length;
-            executeForEffect(destructor);
+            try
+                executeForEffect(destructor);
+            catch (InterpretedException next) {
+                if (failure is null)
+                    failure = next;
+                else
+                    failure.object = chainExceptionObject(
+                        failure.object,
+                        next.object,
+                    );
+            }
         }
+
+        if (failure !is null)
+            throw failure;
     }
 
     private void resolveNonRootInitializer(VarDeclaration variable) {

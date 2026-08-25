@@ -10750,6 +10750,58 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Every temporary armed by one full expression is destroyed in reverse
+// construction order even when a destructor throws. Each later destructor
+// failure is appended to the first failure's Throwable chain. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the full-expression temporaries' destructors never run, so `log` "
+        ~ "stays empty instead of accumulating ids in reverse order"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(1, & log)).id"),
+)) {
+    @("destructor.throwingFullExpressionDestroysAllAndChainsFailures." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    *log ~= id;
+                    if (id == 3)
+                        throw new Exception("three");
+                    if (id == 2)
+                        throw new Exception("two");
+                    throw new Exception("one");
+                }
+            }
+
+            unittest {
+                int[] log;
+                Throwable failure;
+                try
+                    cast(void) (
+                        Probe(1, &log).id + Probe(2, &log).id +
+                        Probe(3, &log).id
+                    );
+                catch (Throwable caught)
+                    failure = caught;
+
+                assert(log == [3, 2, 1]);
+                assert(failure !is null);
+                assert(failure.msg == "three");
+                assert(failure.next.msg == "two");
+                assert(failure.next.next.msg == "one");
+                assert(failure.next.next.next is null);
+            }
+        });
+    }
+}
+
 // A temporary constructed in the evaluated right-hand side of `&&` is
 // destroyed when that operand's evaluation ends, before any later operand
 // runs -- not at the full-expression boundary the other temporaries get.
