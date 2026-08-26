@@ -1,4 +1,4 @@
-module quickbite.repl_cli;
+module quickbite.repl.cli;
 
 private:
 

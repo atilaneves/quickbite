@@ -328,7 +328,7 @@ private string expressionReturnSource(
         return "return " ~ input ~ ";";
 
     return
-        "import quickbite.repl_prelude: __quickbiteFormat;\n" ~
+        "import quickbite.repl.prelude: __quickbiteFormat;\n" ~
         "return __quickbiteFormat(" ~ input ~ ");";
 }
 
@@ -1483,7 +1483,7 @@ private string completeEvalSource(
 ) {
     const expressionStart = finalExpressionStart(source);
     const returnSource = formatExpression
-        ? "import quickbite.repl_prelude: __quickbiteFormat;\n" ~
+        ? "import quickbite.repl.prelude: __quickbiteFormat;\n" ~
             "return __quickbiteFormat(" ~
             source[expressionStart .. $] ~
             ");"

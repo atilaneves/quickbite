@@ -435,7 +435,7 @@ per test.
 
 - `source/quickbite/frontend/cell.d` — EvalSession, classification,
   transcript synthesis; most of slices 1–5 land here.
-- `source/quickbite/repl.d` — Repl struct, diagnostics scrubbing.
+- `source/quickbite/repl/package.d` — Repl struct, diagnostics scrubbing.
 - `source/quickbite/backends/evaluator.d` — evaluation result and REPL-session
   contracts.
 - `source/quickbite/backends/runner.d` — whole-module unittest execution.

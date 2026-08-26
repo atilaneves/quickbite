@@ -2,7 +2,7 @@ module ut.bin.repl;
 
 
 import ut.backends;
-import quickbite.repl_prelude: __quickbiteFormat;
+import quickbite.repl.prelude: __quickbiteFormat;
 
 
 @("repl.formatter.rendersIntegerLiteralAtCompileTime")

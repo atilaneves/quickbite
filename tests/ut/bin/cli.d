@@ -8,7 +8,7 @@ private:
 
 @("repl.cli.defaultBackendIsCtfe")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb"]);
 
@@ -18,7 +18,7 @@ unittest {
 
 @("repl.cli.acceptsLongCtfeBackendOption")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb", "--backend", "ctfe"]);
 
@@ -28,7 +28,7 @@ unittest {
 
 @("repl.cli.acceptsShortCtfeBackendOption")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb", "-b", "ctfe"]);
 
@@ -38,7 +38,7 @@ unittest {
 
 @("repl.cli.acceptsInterpreterBackendOption")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb", "--backend", "interpreter"]);
 
@@ -48,7 +48,7 @@ unittest {
 
 @("repl.cli.acceptsSystemLinkerBackendOption")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb", "--backend", "system-linker"]);
 
@@ -58,7 +58,7 @@ unittest {
 
 @("repl.cli.acceptsLLVMJitBackendOption")
 unittest {
-    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+    import quickbite.repl.cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb", "--backend", "llvmjit"]);
 
@@ -68,7 +68,7 @@ unittest {
 
 @("repl.cli.rejectsUnknownBackend")
 unittest {
-    import quickbite.repl_cli: parseReplArgs;
+    import quickbite.repl.cli: parseReplArgs;
 
     const result = parseReplArgs(["qb", "--backend", "nonsense"]);
 
@@ -81,7 +81,7 @@ unittest {
 
 @("repl.cli.unknownBackendDiagnosticListsValidBackends")
 unittest {
-    import quickbite.repl_cli: parseReplArgs;
+    import quickbite.repl.cli: parseReplArgs;
 
     const result = parseReplArgs(["qb", "-b", "nonsense"]);
 
@@ -93,7 +93,7 @@ unittest {
 
 @("repl.cli.acceptsHelpFlag")
 unittest {
-    import quickbite.repl_cli: parseReplArgs;
+    import quickbite.repl.cli: parseReplArgs;
 
     const result = parseReplArgs(["repl", "--help"]);
 
@@ -103,7 +103,7 @@ unittest {
 
 @("repl.cli.helpDiagnosticDocumentsFlagNames")
 unittest {
-    import quickbite.repl_cli: parseReplArgs;
+    import quickbite.repl.cli: parseReplArgs;
 
     const result = parseReplArgs(["repl", "--help"]);
 

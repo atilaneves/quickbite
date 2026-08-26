@@ -1,4 +1,4 @@
-module quickbite.repl_prelude;
+module quickbite.repl.prelude;
 
 private:
 
