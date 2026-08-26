@@ -177,7 +177,7 @@ def test_file_argument_can_import_module_from_import_path(tmp_path: Path) -> Non
 
 
 def test_file_argument_loads_example_fixture() -> None:
-    result = run_qb("tests/example.d")
+    result = run_qb("tests/examples/ct.d")
 
     assert result.returncode == 0
     assert result.stdout == ""
@@ -187,7 +187,7 @@ def test_file_argument_loads_example_fixture() -> None:
 def test_file_argument_exits_without_interactive_prompt() -> None:
     child = pexpect.spawn(
         qb_path(),
-        ["tests/example.d"],
+        ["tests/examples/ct.d"],
         timeout=TIMEOUT,
         encoding="utf-8",
     )

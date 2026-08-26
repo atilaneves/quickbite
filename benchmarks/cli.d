@@ -105,7 +105,7 @@ public int run(string[] args) {
 
     string[] fixtures = opts.fixtures.dup;
     if (fixtures.length == 0 && opts.dubPkgs.length == 0)
-        fixtures = ["tests/example.d"];
+        fixtures = ["tests/examples/ct.d"];
 
     if (!isOptimisedBuild) {
         throw new Exception(
