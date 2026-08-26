@@ -48,7 +48,7 @@ outside the language-surface matrix.
 
 ## Benchmarking
 
-Lives in `benchmarks/`, driven by `bin/bench.sh` (reggae-built optimised
+Lives in `benchmarks/`, driven by `bin/bench.sh` (dub-built optimised
 LDC host). Excluded from `dub test`.
 
 Measurement contract for backend acceptance timings:
