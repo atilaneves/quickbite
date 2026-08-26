@@ -3,11 +3,12 @@
 ## Purpose
 
 This document is the precedent survey behind the from-scratch Bytecode VM plan
-of 2026-08-11 (`ai/plans/bytecode.md`). It is a research record, not an
-implementation plan: the plan owns decisions and remaining work; this file
-records the surveyed systems, the mechanisms found in their primary sources,
-the per-system transferable/non-transferable verdicts, the conclusions that
-multiple systems support independently, and the pinned sources.
+of 2026-08-11 (`ai/plans/bytecode.md`, since deleted). It is a research
+record, not an implementation plan: the plan owns decisions and remaining
+work; this file records the surveyed systems, the mechanisms found in their
+primary sources, the per-system transferable/non-transferable verdicts, the
+conclusions that multiple systems support independently, and the pinned
+sources.
 
 Research date: 2026-08-11.
 

@@ -40,16 +40,15 @@ The Interpreter is carrier-free: guest data lives in native typed places, and
 native calls consume typed addresses. AGENTS.md's "Runtime semantics" section
 owns that storage boundary and the druntime-first and no-interception
 contracts. The remaining deviations have explicit issue owners: monitors
-[#561],
-`_d_arrayctor` and its `TypeInfo` path [#562], allocation and length [#565],
-append and reserve [#566], exception chaining [#568], concatenation [#569],
-and dead policy cleanup [#570]. Bytecode convergence remains in
-`ai/plans/bytecode.md`.
+[#561], `_d_arrayctor` and its `TypeInfo` path [#562], allocation and length
+[#565], append and reserve [#566], exception chaining [#568], concatenation
+[#569], and dead policy cleanup [#570]. Bytecode convergence is tracked in
+issue #540.
 
-Host-coupled facts that guest bytes cannot express, such as identity for an
-interpreted-only callable or type, stay as Interpreter metadata. They are not
-a second guest value representation and must follow typed storage clear, copy,
-move, and lifetime rules.
+Identity for an interpreted-only callable or type is a pointer-sized word
+stored in the value itself. A side lookup keyed by that stored word resolves
+it; no lookup keyed by the value's address exists (`AGENTS.md`, Runtime
+semantics).
 
 [#561]: https://github.com/atilaneves/quickbite/issues/561
 [#562]: https://github.com/atilaneves/quickbite/issues/562
