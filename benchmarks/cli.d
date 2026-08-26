@@ -32,6 +32,7 @@ public struct BenchOptions {
     public size_t warmup = defaultWarmup;
     public size_t runs   = defaultRuns;
     public bool skipCheck;
+    public bool verbose;
     public string[] importPaths;
     public string[] backendNames;
     // Repeatable: each --dub names one dub package to benchmark. A scalar would
@@ -50,6 +51,8 @@ public BenchOptions parseOptions(string[] args) {
         "w|warmup",     "untimed iterations before sampling",          &opts.warmup,
         "r|runs",       "timed iterations per measurement",            &opts.runs,
         "skip-check",   "skip correctness checks before timing",       &opts.skipCheck,
+        "v|verbose",    "show run metadata, preparation table, and allocation detail",
+                                                                       &opts.verbose,
         "import-path",  "add an import search path (repeatable)",      &opts.importPaths,
         "b|backend",    "backend to measure (repeatable)",             &opts.backendNames,
         "dub",          "benchmark a dub package's tests by name (repeatable)",
@@ -58,7 +61,7 @@ public BenchOptions parseOptions(string[] args) {
     opts.helpWanted = info.helpWanted;
     if (info.helpWanted)
         defaultGetoptPrinter(
-            "usage: bench [-w N] [-r N] [--skip-check]"
+            "usage: bench [-w N] [-r N] [--skip-check] [-v]"
             ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME ...]"
             ~ " [<module.d> ...]",
             info.options,
@@ -90,6 +93,7 @@ public int run(string[] args) {
     const warmup    = opts.warmup;
     const runs      = opts.runs;
     const skipCheck = opts.skipCheck;
+    const verbose   = opts.verbose;
 
     // A --dub run is dedicated to dub packages, compiled like `dub test` (a
     // whole root set, no lightning rod). A standalone-fixture run is the
@@ -110,7 +114,8 @@ public int run(string[] args) {
         );
     }
 
-    printRunHeader(warmup, runs);
+    if (verbose)
+        printRunHeader(warmup, runs);
 
     string[] backendNames = opts.backendNames.length == 0
         ? defaultBackendNames.dup
@@ -178,13 +183,16 @@ public int run(string[] args) {
     }
 
     bool preparationFailed;
+    bool anySkipped;
+    foreach (record; preparation) {
+        if (record.prepared == 0)
+            preparationFailed = true;
+        if (record.discovered != record.prepared)
+            anySkipped = true;
+    }
     if (preparation.length > 0) {
-        write(renderPreparationSection(preparation));
-        foreach (record; preparation)
-            if (record.prepared == 0) {
-                preparationFailed = true;
-                break;
-            }
+        if (verbose || anySkipped)
+            write(renderPreparationSection(preparation));
         // A later backend crash must not eat the already-buffered preparation
         // report. Full containment rides on ai/plans/bench.md's
         // fork-per-package item.
@@ -197,31 +205,6 @@ public int run(string[] args) {
     foreach (group; groups)
         units ~= group.units;
 
-    if (units.length > 0) {
-        writeln("== frontend (parse + semantic) ==");
-        printHeader;
-        foreach (unit; units) {
-            if (unit.frontendUnmeasurable)
-                writefln(
-                    "%-32s %-14s %-10s unmeasurable (module declaration)",
-                    unit.displayName,
-                    "frontend",
-                    "n/a",
-                );
-            else
-                printRow(
-                    unit.displayName,
-                    "frontend",
-                    "n/a",
-                    "n/a",
-                    unit.frontend,
-                );
-        }
-        writeln;
-    }
-
-    writeln("== post-parse (excludes dmd parse + semantic) ==");
-    printHeader;
     BenchmarkRow[] rows;
     TestResult[][][string] warmupResults;
     TestResult[][][string] measuredResults;
@@ -280,12 +263,11 @@ public int run(string[] args) {
                         measuredResults[pairKey(unit.displayName, name)] =
                             measured.results;
                     }
-                    const tests = skipCheck ? "unchecked" : "";
+                    const pass = skipCheck ? "unchecked" : "";
                     rows ~= BenchmarkRow(
                         unit.displayName,
                         name,
-                        "repeated",
-                        tests,
+                        pass,
                         measured.timing,
                         medianCompileTime(compileDeltas, warmup),
                     );
@@ -328,20 +310,55 @@ public int run(string[] args) {
                     );
                 }
             }
+    // A unit whose backends disagreed or reported incomplete results has no
+    // entry in checkedResults at all (the whole unit was skipped, reported via
+    // stderr above); a backend whose own tests failed still gets an entry, and
+    // is shown in its fixture's table with a FAIL marker rather than hidden.
+    BenchmarkRow[] renderableRows;
     foreach (row; rows) {
         auto unit = benchmarkUnit(units, row.fixture);
-        if (!skipCheck && !checkedTestsPassing(checkedResults, unit, row.backend))
+        if (!skipCheck && pairKey(unit.displayName, row.backend) !in checkedResults)
             continue;
-        printRow(
+        const pass = skipCheck
+            ? row.pass
+            : formatPass(checkedTestsDisplay(checkedResults, unit, row.backend));
+        renderableRows ~= BenchmarkRow(
             row.fixture,
             row.backend,
-            row.verdict,
-            skipCheck
-                ? row.tests
-                : checkedTestsDisplay(checkedResults, unit, row.backend),
+            pass,
             row.result,
             row.compileMedian,
         );
+    }
+
+    // Computed once for the whole run, not per fixture: the commit lookup
+    // spawns a `git` subprocess, and the compiler/build strings never change
+    // between fixtures either.
+    const showSigma = runs > 1;
+    const compiler  = compilerDisplay;
+    const buildFlag = compactBuildFlag;
+    const commit    = gitShortCommit;
+    foreach (unit; units) {
+        import std.algorithm.iteration: filter;
+        import std.array: array;
+
+        const unitRows = renderableRows.filter!(
+            row => row.fixture == unit.displayName,
+        ).array;
+        write(renderFixtureHeader(
+            unit.displayName,
+            runnableUnittestCount(unit),
+            unit.frontend,
+            unit.frontendUnmeasurable,
+            compiler,
+            buildFlag,
+            commit,
+            warmup,
+            runs,
+            verbose,
+        ));
+        writeln;
+        write(renderBackendTable(unitRows, showSigma, verbose));
         writeln;
     }
 
@@ -653,27 +670,6 @@ string firstFailureMessage(in TestResult[] results) {
     return null;
 }
 
-bool checkedTestsPassing(
-    TestResult[][string] checkedResults,
-    in BenchmarkUnit unit,
-    in string backendName,
-) {
-    size_t passed;
-    size_t total;
-    const key = pairKey(unit.displayName, backendName);
-    if (key !in checkedResults)
-        return false;
-
-    const results = checkedResults[key];
-    foreach (result; results) {
-        ++total;
-        if (result.passed)
-            ++passed;
-    }
-
-    return total > 0 && passed == total;
-}
-
 public string checkedTestsDisplay(
     TestResult[][string] checkedResults,
     BenchmarkUnit unit,
@@ -697,6 +693,22 @@ public string checkedTestsDisplay(
         return text(runnableUnittestCount(unit), " unchecked");
 
     return text(passed, "/", total);
+}
+
+// Appends " FAIL" to a checkedTestsDisplay result ("passed/total") whenever
+// not every test passed; passes an "N unchecked" display through unchanged,
+// since --skip-check never verified those tests' outcomes.
+public string formatPass(in string testsDisplay) {
+    import std.algorithm.searching: findSplit;
+    import std.conv: to;
+
+    const split = testsDisplay.findSplit("/");
+    if (split[1].length == 0)
+        return testsDisplay;
+
+    const passed = split[0].to!size_t;
+    const total  = split[2].to!size_t;
+    return passed == total ? testsDisplay : testsDisplay ~ " FAIL";
 }
 
 private size_t runnableUnittestCount(BenchmarkUnit unit) {
@@ -743,8 +755,9 @@ public struct BenchmarkUnit {
 public struct BenchmarkRow {
     public string fixture;
     public string backend;
-    public string verdict;
-    public string tests;
+    // Pass display for the `pass` column, e.g. "109/109", "104/109 FAIL", or
+    // "N unchecked" under --skip-check.
+    public string pass;
     public Result result;
     // Median per-iteration compile time; null for backends that do not
     // report a compile split.
@@ -919,100 +932,198 @@ public DubInfo dubInfoFromDescribeData(
     );
 }
 
-void printHeader() {
-    import std.stdio: writefln, writeln;
-    writefln(
-        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s",
-        "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
-    );
-    writeln;
+// Chooses the largest unit (KiB, MiB, GiB) whose value is under 1024, so a
+// reader never has to eyeball a five- or six-digit KiB count: no decimals for
+// KiB (it is already the finest-grained unit shown), one decimal for MiB/GiB.
+public string formatBytes(in ulong bytes) {
+    import std.format: format;
+
+    enum bytesPerKiB = 1024.0;
+    const kib = bytes / bytesPerKiB;
+    if (kib < 1024)
+        return format("%.0f KiB", kib);
+
+    const mib = kib / 1024.0;
+    if (mib < 1024)
+        return format("%.1f MiB", mib);
+
+    return format("%.1f GiB", mib / 1024.0);
 }
 
-public void printRow(
-    in string fixture,
-    in string backendName,
-    in string verdict,
-    in string tests,
-    in Result result,
-    in Nullable!Duration compileTime = Nullable!Duration.init,
+private string msDisplay(in Duration duration) {
+    import std.format: format;
+
+    enum hnsecsPerMs = 10_000.0;
+    return format("%.1f ms", duration.total!"hnsecs" / hnsecsPerMs);
+}
+
+private string sigmaCellDisplay(in double stddevHnsecs) {
+    import std.format: format;
+
+    enum hnsecsPerMs = 10_000.0;
+    return format("%.1f", stddevHnsecs / hnsecsPerMs);
+}
+
+private string compileCellDisplay(in Nullable!Duration compileTime) {
+    return compileTime.isNull ? "-" : msDisplay(compileTime.get);
+}
+
+// Column widths must count display columns, not bytes: "σ" is one column but
+// two UTF-8 code units, so `.length` would report the header one column
+// narrower than its neighbouring numeric cells and misalign the whole column.
+private size_t displayWidth(in string s) {
+    import std.utf: count;
+
+    return s.count;
+}
+
+private string padRight(in string s, in size_t width) {
+    import std.array: replicate;
+
+    const w = displayWidth(s);
+    return w >= width ? s : s ~ replicate(" ", width - w);
+}
+
+private string padLeft(in string s, in size_t width) {
+    import std.array: replicate;
+
+    const w = displayWidth(s);
+    return w >= width ? s : replicate(" ", width - w) ~ s;
+}
+
+private string compilerDisplay() {
+    import std.conv: text;
+
+    return text(__VENDOR__, " ", __VERSION__);
+}
+
+// The single flag benchmark readers care about at a glance; the full
+// `-O -boundscheck=off asserts=off` breakdown is verbose-only (buildFlagsSummary).
+private string compactBuildFlag() {
+    import std.string: split;
+
+    const flags = buildFlagsSummary.split(" ");
+    return flags.length == 0 ? "" : flags[0];
+}
+
+private string gitShortCommit() {
+    import std.process: execute;
+    import std.string: strip;
+
+    const commit = execute(["git", "rev-parse", "--short", "HEAD"]);
+    return commit.status == 0 ? commit.output.strip.idup : "";
+}
+
+// One line naming a fixture (or --dub package) block: display name, total
+// runnable test count, the frontend (parse + semantic) time, compiler +
+// optimisation flag, short commit, and the warmup/run sampling. Replaces the
+// old "== frontend ==" / "== post-parse ==" section banners and per-unit
+// frontend rows: this is the whole header for one fixture's block.
+public string renderFixtureHeader(
+    in string displayName,
+    in size_t testCount,
+    in Result frontend,
+    in bool frontendUnmeasurable,
+    in string compiler,
+    in string buildFlag,
+    in string commit,
+    in size_t warmup,
+    in size_t runs,
+    in bool verbose,
 ) {
-    import std.stdio: writefln;
+    import std.array: join;
+    import std.conv: text;
 
-    enum hnsecsPerMs = 10_000.0;
-    writefln(
-        "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s",
-        fixture,
-        backendName,
-        verdict,
-        tests,
-        "enabled",
-        result.min.total!"hnsecs" / hnsecsPerMs,
-        result.median.total!"hnsecs" / hnsecsPerMs,
-        result.stddevHnsecs / hnsecsPerMs,
-        compileDisplay(compileTime),
-        result.dGcKiB,
-        cgroupPeakDisplay(result.cgroupPeakMemory),
-    );
+    string frontendSegment = frontendUnmeasurable
+        ? "frontend unmeasurable (module declaration)"
+        : text("frontend ", msDisplay(frontend.median));
+    if (verbose && !frontendUnmeasurable)
+        frontendSegment ~= text(" (", formatBytes(frontend.dGcAllocation), ")");
+
+    string[] segments = [
+        displayName,
+        text(testCount, " tests"),
+        frontendSegment,
+        buildFlag.length == 0 ? compiler : text(compiler, " ", buildFlag),
+    ];
+    if (commit.length > 0)
+        segments ~= commit;
+    segments ~= text(warmup, "+", runs, " runs");
+
+    return segments.join("   ") ~ "\n";
 }
 
-private string compileDisplay(in Nullable!Duration compileTime) {
-    import std.format: format;
-
-    enum hnsecsPerMs = 10_000.0;
-    return compileTime.isNull
-        ? "n/a"
-        : format(
-            "%7.3f ms",
-            compileTime.get.total!"hnsecs" / hnsecsPerMs,
-        );
-}
-
-private string cgroupPeakDisplay(in Nullable!ulong peak) {
-    import std.format: format;
-
-    return peak.isNull
-        ? "n/a"
-        : format("%.1f KiB", peak.get / 1024.0);
-}
-
-public string renderBenchmarkSection(
-    in string title,
+// The per-fixture backend table: one row per backend that ran and was
+// checked. No fixture column (the block header above already names it) and
+// no GC column (the run is always GC-enabled). `compile` appears only if some
+// row reports a compile split; `sigma` is caller-controlled (it depends on
+// --runs, a whole-invocation setting, not a per-row one); `cgroup peak`
+// appears only in verbose mode, and only if some row actually measured a peak
+// (under bin/bench-cgroup).
+public string renderBackendTable(
     in BenchmarkRow[] rows,
+    in bool showSigma,
+    in bool verbose,
 ) {
+    import std.algorithm.searching: any;
     import std.array: appender;
-    import std.format: format;
+
+    const showCompile = rows.any!(row => !row.compileMedian.isNull);
+    const showCgroupPeak = verbose
+        && rows.any!(row => !row.result.cgroupPeakMemory.isNull);
+
+    string[] header = ["backend", "pass", "min", "median"];
+    if (showSigma)
+        header ~= "σ";
+    if (showCompile)
+        header ~= "compile";
+    header ~= "RAM";
+    if (showCgroupPeak)
+        header ~= "cgroup peak";
+
+    string[][] cellRows;
+    foreach (row; rows) {
+        string[] cells = [
+            row.backend,
+            row.pass,
+            msDisplay(row.result.min),
+            msDisplay(row.result.median),
+        ];
+        if (showSigma)
+            cells ~= sigmaCellDisplay(row.result.stddevHnsecs);
+        if (showCompile)
+            cells ~= compileCellDisplay(row.compileMedian);
+        cells ~= formatBytes(row.result.dGcAllocation);
+        if (showCgroupPeak)
+            cells ~= row.result.cgroupPeakMemory.isNull
+                ? "-"
+                : formatBytes(row.result.cgroupPeakMemory.get);
+        cellRows ~= cells;
+    }
+
+    auto widths = new size_t[](header.length);
+    foreach (i, cell; header)
+        widths[i] = displayWidth(cell);
+    foreach (cells; cellRows)
+        foreach (i, cell; cells)
+            if (displayWidth(cell) > widths[i])
+                widths[i] = displayWidth(cell);
 
     auto output = appender!string;
-    output.put("== " ~ title ~ " ==\n");
-    output.put(format(
-        "%-32s %-14s %-10s %-10s %-8s %10s %10s %10s %10s %33s %25s\n\n",
-        "fixture", "backend", "verdict", "tests", "GC", "min", "median", "stddev",
-        "compile", "GC.allocatedInCurrentThread delta", "cgroup peak memory",
-    ));
-    foreach (row; rows) {
-        enum hnsecsPerMs = 10_000.0;
-        output.put(format(
-            "%-32s %-14s %-10s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %10s %30.1f KiB %25s\n",
-            row.fixture,
-            row.backend,
-            row.verdict,
-            row.tests,
-            "enabled",
-            row.result.min.total!"hnsecs" / hnsecsPerMs,
-            row.result.median.total!"hnsecs" / hnsecsPerMs,
-            row.result.stddevHnsecs / hnsecsPerMs,
-            compileDisplay(row.compileMedian),
-            row.result.dGcKiB,
-            cgroupPeakDisplay(row.result.cgroupPeakMemory),
-        ));
+    void putRow(in string[] cells) {
+        foreach (i, cell; cells) {
+            if (i > 0)
+                output.put("  ");
+            output.put(i == 0
+                ? padRight(cell, widths[i])
+                : padLeft(cell, widths[i]));
+        }
+        output.put("\n");
     }
-    output.put("\n");
+    putRow(header);
+    foreach (cells; cellRows)
+        putRow(cells);
     return output.data;
-}
-
-private double dGcKiB(in Result result) {
-    return result.dGcAllocation / 1024.0;
 }
 
 public struct PreparedFixtures {

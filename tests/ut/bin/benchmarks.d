@@ -295,9 +295,8 @@ unittest {
     }
 }
 
-@("frontendRowsArePreparedAndRenderedPerFixture")
+@("frontendRowsArePreparedPerFixtureAndRenderedInTheFixtureHeader")
 unittest {
-    import std.algorithm.searching: canFind;
     import std.file: mkdirRecurse, write;
     import std.path: buildPath;
 
@@ -338,33 +337,21 @@ unittest {
     assert(runs[0].frontend.min.total!"hnsecs" > 0);
     assert(runs[1].frontend.min.total!"hnsecs" > 0);
 
-    const report = renderBenchmarkSection(
-        "frontend (parse + semantic)",
-        [
-            BenchmarkRow(
-                runs[0].displayName,
-                "frontend",
-                "n/a",
-                "n/a",
-                runs[0].frontend,
-            ),
-            BenchmarkRow(
-                runs[1].displayName,
-                "frontend",
-                "n/a",
-                "n/a",
-                runs[1].frontend,
-            ),
-        ],
+    // Each fixture's frontend timing is named in its own block header, not a
+    // shared "== frontend ==" section row keyed by a "frontend" pseudo-backend.
+    const headerA = renderFixtureHeader(
+        runs[0].displayName, 1, runs[0].frontend, false,
+        "LDC 2112", "-O", "efdd6ce5", 0, 1, false,
+    );
+    const headerB = renderFixtureHeader(
+        runs[1].displayName, 1, runs[1].frontend, false,
+        "LDC 2112", "-O", "efdd6ce5", 0, 1, false,
     );
 
-    assert(report.canFind("== frontend (parse + semantic) =="));
-    assert(report.canFind("a"));
-    assert(report.canFind("b"));
-    assert(report.canFind("frontend"));
-    assert(report.canFind("fixture"));
-    "GC.allocatedInCurrentThread delta".should.be in report;
-    "KiB".should.be in report;
+    "a".should.be in headerA;
+    "frontend".should.be in headerA;
+    "b".should.be in headerB;
+    "frontend".should.be in headerB;
 }
 
 @("bytecodeReportsCompileTime")
@@ -511,75 +498,344 @@ unittest {
     decodeResults(bytes).dGcAllocation.should == 8192;
 }
 
-@("renderBenchmarkSectionShowsCompileTime")
+@("renderBackendTableShowsCompileColumnOnlyForBackendsThatReportIt")
 unittest {
     import benchmarks.harness: Result;
-    import core.time: msecs;
+    import core.time: hnsecs;
     import std.algorithm.searching: canFind;
     import std.typecons: nullable;
 
-    const timing = Result(1.msecs, 2.msecs, 0.0, 1024);
-    const report = renderBenchmarkSection(
-        "post-parse",
+    const timing = Result(hnsecs(10_000), hnsecs(20_000), 0.0, 1024);
+    const withCompile = renderBackendTable(
         [
             BenchmarkRow(
-                "pkg", "bytecode", "repeated", "3/3", timing,
-                nullable(12.msecs),
+                "pkg", "bytecode", "3/3", timing,
+                nullable(hnsecs(120_000)),
             ),
-            BenchmarkRow("pkg", "ctfe", "repeated", "3/3", timing),
+            BenchmarkRow("pkg", "ctfe", "3/3", timing),
         ],
+        false,
+        false,
+    );
+    const withoutCompile = renderBackendTable(
+        [BenchmarkRow("pkg", "ctfe", "3/3", timing)],
+        false,
+        false,
     );
 
-    "compile".should.be in report;
-    // A backend that reports compile time shows it in ms; one that does
-    // not shows n/a in the same column.
-    assert(report.canFind("12.000 ms"));
-    assert(report.canFind("n/a"));
+    "compile".should.be in withCompile;
+    // A backend that reports compile time shows it in ms; one that does not
+    // shows a bare dash in the same column, never "n/a".
+    assert(withCompile.canFind("12.0 ms"));
+    assert(withCompile.canFind("-"));
+    // No backend in this table reports a compile split, so the whole column
+    // (and its header) disappears rather than showing an all-dash column.
+    assert(!withoutCompile.canFind("compile"));
 }
 
-@("renderBenchmarkSectionShowsVerdictColumn")
+@("renderBackendTableHasNoFixtureOrGcColumnAndNoVerdictWord")
 unittest {
     import benchmarks.harness: Result;
-    import core.time: msecs;
-
-    const report = renderBenchmarkSection(
-        "post-parse",
-        [
-            BenchmarkRow(
-                "pkg", "bytecode", "repeated", "3/3",
-                Result(7.msecs, 7.msecs, 0.0, 1024),
-            ),
-            BenchmarkRow(
-                "pkg", "ctfe", "repeated", "3/3",
-                Result(2.msecs, 2.msecs, 0.0, 512),
-            ),
-        ],
-    );
-
-    "verdict".should.be in report;
-    "repeated".should.be in report;
-}
-
-@("renderBenchmarkSectionNamesDgcAllocationMetricAndPolicy")
-unittest {
-    import benchmarks.harness: Result;
-    import core.time: msecs;
+    import core.time: hnsecs;
     import std.algorithm.searching: canFind;
 
-    const report = renderBenchmarkSection(
-        "post-parse",
+    const report = renderBackendTable(
         [
             BenchmarkRow(
-                "pkg", "bytecode", "repeated", "3/3",
-                Result(7.msecs, 7.msecs, 0.0, 1536),
+                "pkg", "bytecode", "3/3",
+                Result(hnsecs(70_000), hnsecs(70_000), 0.0, 1024),
+            ),
+            BenchmarkRow(
+                "pkg", "ctfe", "3/3",
+                Result(hnsecs(20_000), hnsecs(20_000), 0.0, 512),
             ),
         ],
+        false,
+        false,
     );
 
-    "enabled".should.be in report;
-    "GC.allocatedInCurrentThread delta".should.be in report;
-    assert(!report.canFind("GC used ram delta"));
-    "1.5 KiB".should.be in report;
+    // The block header already names the fixture; the table has no column
+    // for it. The run is always GC-enabled, so that column is gone too.
+    assert(!report.canFind("pkg"));
+    assert(!report.canFind("GC"));
+    assert(!report.canFind("verdict"));
+    assert(!report.canFind("repeated"));
+}
+
+@("renderBackendTableMarksAFailingBackendRowInThePassColumn")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+    import std.algorithm.searching: canFind;
+
+    const timing = Result(hnsecs(70_000), hnsecs(70_000), 0.0, 1024);
+    const report = renderBackendTable(
+        [
+            BenchmarkRow("pkg", "bytecode", formatPass("104/109"), timing),
+            BenchmarkRow("pkg", "ctfe", formatPass("109/109"), timing),
+        ],
+        false,
+        false,
+    );
+
+    "104/109 FAIL".should.be in report;
+    assert(!report.canFind("109/109 FAIL"));
+}
+
+@("renderBackendTableOmitsSigmaColumnWhenCallerSaysRunsIsOne")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+    import std.algorithm.searching: canFind;
+
+    const rows = [
+        BenchmarkRow(
+            "pkg", "bytecode", "3/3",
+            Result(hnsecs(70_000), hnsecs(70_000), 4_000.0, 1024),
+        ),
+    ];
+
+    "σ".should.be in renderBackendTable(rows, true, false);
+    assert(!renderBackendTable(rows, false, false).canFind("σ"));
+}
+
+@("renderBackendTableGoldenOutputAlignsTheMultiByteSigmaHeaderWithItsColumn")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+    import std.array: replicate;
+    import std.typecons: nullable;
+
+    // One row per backend, chosen so every "%.1f"-formatted min/median/sigma
+    // cell is exactly the same width as its neighbours in the same column:
+    // this is a real golden (exact, whole-table) comparison, not a substring
+    // check, so it also pins column widths and inter-column spacing.
+    const rows = [
+        BenchmarkRow(
+            "example", "ctfe", "109/109",
+            Result(hnsecs(68_000), hnsecs(70_000), 4_000.0, 1_572_864), // 1.5 MiB
+        ),
+        BenchmarkRow(
+            "example", "bytecode", "109/109",
+            Result(hnsecs(51_000), hnsecs(51_000), 1_000.0, 49_152),    // 48 KiB
+            nullable(hnsecs(0)),
+        ),
+        BenchmarkRow(
+            "example", "interpreter", "109/109",
+            Result(hnsecs(260_000), hnsecs(271_000), 91_000.0, 2_097_152), // 2.0 MiB
+        ),
+        BenchmarkRow(
+            "example", "system-linker", "109/109",
+            Result(hnsecs(655_000), hnsecs(784_000), 68_000.0, 131_072),   // 128 KiB
+            nullable(hnsecs(635_000)),
+        ),
+        BenchmarkRow(
+            "example", "llvmjit", "109/109",
+            Result(hnsecs(637_000), hnsecs(703_000), 46_000.0, 3_145_728), // 3.0 MiB
+        ),
+    ];
+
+    const report = renderBackendTable(rows, true, false);
+
+    const expected =
+        "backend" ~ replicate(" ", 6) ~ "  "
+            ~ replicate(" ", 3) ~ "pass" ~ "  "
+            ~ replicate(" ", 4) ~ "min" ~ "  "
+            ~ replicate(" ", 1) ~ "median" ~ "  "
+            // "σ" is one display column but two UTF-8 bytes: a byte-length-based
+            // pad would give it one space instead of two here, shifting it (and
+            // everything to its right) one column left of the numeric data below.
+            ~ replicate(" ", 2) ~ "σ" ~ "  "
+            ~ "compile" ~ "  "
+            ~ replicate(" ", 4) ~ "RAM" ~ "\n"
+        ~ "ctfe" ~ replicate(" ", 9) ~ "  "
+            ~ "109/109" ~ "  "
+            ~ replicate(" ", 1) ~ "6.8 ms" ~ "  "
+            ~ replicate(" ", 1) ~ "7.0 ms" ~ "  "
+            ~ "0.4" ~ "  "
+            ~ replicate(" ", 6) ~ "-" ~ "  "
+            ~ "1.5 MiB" ~ "\n"
+        ~ "bytecode" ~ replicate(" ", 5) ~ "  "
+            ~ "109/109" ~ "  "
+            ~ replicate(" ", 1) ~ "5.1 ms" ~ "  "
+            ~ replicate(" ", 1) ~ "5.1 ms" ~ "  "
+            ~ "0.1" ~ "  "
+            ~ replicate(" ", 1) ~ "0.0 ms" ~ "  "
+            ~ replicate(" ", 1) ~ "48 KiB" ~ "\n"
+        ~ "interpreter" ~ replicate(" ", 2) ~ "  "
+            ~ "109/109" ~ "  "
+            ~ "26.0 ms" ~ "  "
+            ~ "27.1 ms" ~ "  "
+            ~ "9.1" ~ "  "
+            ~ replicate(" ", 6) ~ "-" ~ "  "
+            ~ "2.0 MiB" ~ "\n"
+        ~ "system-linker" ~ "  "
+            ~ "109/109" ~ "  "
+            ~ "65.5 ms" ~ "  "
+            ~ "78.4 ms" ~ "  "
+            ~ "6.8" ~ "  "
+            ~ "63.5 ms" ~ "  "
+            ~ "128 KiB" ~ "\n"
+        ~ "llvmjit" ~ replicate(" ", 6) ~ "  "
+            ~ "109/109" ~ "  "
+            ~ "63.7 ms" ~ "  "
+            ~ "70.3 ms" ~ "  "
+            ~ "4.6" ~ "  "
+            ~ replicate(" ", 6) ~ "-" ~ "  "
+            ~ "3.0 MiB" ~ "\n";
+
+    report.should == expected;
+}
+
+@("renderBackendTableShowsRamWithTheSmallestUnitUnderOneThousandTwentyFour")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+
+    const report = renderBackendTable(
+        [
+            // 48 KiB
+            BenchmarkRow(
+                "pkg", "bytecode", "3/3",
+                Result(hnsecs(10_000), hnsecs(10_000), 0.0, 49_152),
+            ),
+            // 1.5 MiB
+            BenchmarkRow(
+                "pkg", "ctfe", "3/3",
+                Result(hnsecs(10_000), hnsecs(10_000), 0.0, 1_572_864),
+            ),
+        ],
+        false,
+        false,
+    );
+
+    "RAM".should.be in report;
+    "48 KiB".should.be in report;
+    "1.5 MiB".should.be in report;
+}
+
+@("renderBackendTableShowsCgroupPeakColumnOnlyWhenVerboseAndMeasured")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+    import std.algorithm.searching: canFind;
+    import std.typecons: nullable;
+
+    auto measured = Result(hnsecs(10_000), hnsecs(10_000), 0.0, 1024);
+    measured.cgroupPeakMemory = nullable(3_145_728UL); // 3.0 MiB
+    const unmeasured = Result(hnsecs(10_000), hnsecs(10_000), 0.0, 1024);
+
+    const measuredRows = [BenchmarkRow("pkg", "bytecode", "3/3", measured)];
+    const unmeasuredRows = [BenchmarkRow("pkg", "bytecode", "3/3", unmeasured)];
+
+    assert(!renderBackendTable(measuredRows, false, false).canFind("cgroup"));
+    "cgroup peak".should.be in renderBackendTable(measuredRows, false, true);
+    "3.0 MiB".should.be in renderBackendTable(measuredRows, false, true);
+    assert(!renderBackendTable(unmeasuredRows, false, true).canFind("cgroup"));
+}
+
+@("formatBytesChoosesTheLargestUnitUnderOneThousandTwentyFour")
+unittest {
+    formatBytes(0).should == "0 KiB";
+    formatBytes(1024).should == "1 KiB";
+    formatBytes(49_152).should == "48 KiB";
+    formatBytes(1_572_864).should == "1.5 MiB";
+    formatBytes(1024UL * 1024 * 1024).should == "1.0 GiB";
+}
+
+@("formatPassAppendsFailOnlyWhenSomeTestDidNotPass")
+unittest {
+    formatPass("109/109").should == "109/109";
+    formatPass("104/109").should == "104/109 FAIL";
+    formatPass("12 unchecked").should == "12 unchecked";
+}
+
+@("renderFixtureHeaderNamesFixtureTestCountFrontendCompilerAndCommit")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+
+    const header = renderFixtureHeader(
+        "example",
+        109,
+        Result(hnsecs(164_000), hnsecs(164_000), 0.0, 0),
+        false,
+        "LDC 2112",
+        "-O",
+        "efdd6ce5",
+        1,
+        9,
+        false,
+    );
+
+    "example".should.be in header;
+    "109 tests".should.be in header;
+    "frontend 16.4 ms".should.be in header;
+    "LDC 2112 -O".should.be in header;
+    "efdd6ce5".should.be in header;
+    "1+9 runs".should.be in header;
+}
+
+@("renderFixtureHeaderReportsAnUnmeasurableFrontendInsteadOfATime")
+unittest {
+    import benchmarks.harness: Result;
+
+    const header = renderFixtureHeader(
+        "bench_module_decl_fixture",
+        1,
+        Result.init,
+        true,
+        "LDC 2112",
+        "-O",
+        "",
+        0,
+        1,
+        false,
+    );
+
+    "frontend unmeasurable (module declaration)".should.be in header;
+}
+
+@("renderFixtureHeaderOmitsCommitSegmentWhenUnavailable")
+unittest {
+    import benchmarks.harness: Result;
+    import std.array: split;
+    import std.string: strip;
+
+    const header = renderFixtureHeader(
+        "example", 1, Result.init, false, "LDC 2112", "-O", "", 0, 1, false,
+    );
+
+    // 5 segments: name, tests, frontend, compiler, runs -- no empty commit
+    // segment between compiler and runs.
+    header.strip.split("   ").length.should == 5;
+}
+
+@("renderFixtureHeaderAddsFrontendAllocationFigureOnlyWhenVerbose")
+unittest {
+    import benchmarks.harness: Result;
+    import core.time: hnsecs;
+    import std.algorithm.searching: canFind;
+
+    // 1.5 MiB exactly.
+    const frontend = Result(hnsecs(164_000), hnsecs(164_000), 0.0, 1_572_864);
+
+    const quiet = renderFixtureHeader(
+        "example", 109, frontend, false, "LDC 2112", "-O", "efdd6ce5", 1, 9, false,
+    );
+    const verbose = renderFixtureHeader(
+        "example", 109, frontend, false, "LDC 2112", "-O", "efdd6ce5", 1, 9, true,
+    );
+
+    assert(!quiet.canFind("MiB"));
+    "frontend 16.4 ms (1.5 MiB)".should.be in verbose;
+}
+
+@("parseOptionsRecognisesVerboseFlag")
+unittest {
+    parseOptions(["bench", "--verbose"]).verbose.should == true;
+    parseOptions(["bench", "-v"]).verbose.should == true;
+    parseOptions(["bench"]).verbose.should == false;
 }
 
 @("renderPreparationSectionReportsFailuresAsPreparationStatus")

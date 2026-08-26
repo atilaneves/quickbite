@@ -26,10 +26,30 @@ alias ffiResolveCacheLateLoadFixture = dubDependant!(
     LinkerFlags("-defaultlib=libphobos2.so"),
 );
 
+// bench-exec must be DMD-built: it loads the DMD-codegen'd `.so` the
+// SystemLinker benchmark produces, so its druntime has to be DMD's. The rest
+// of the benchmark build is LDC, and `dubBuild!` uses one compiler for every
+// target, so this is a raw target with its own `dmd` command. Ninja builds it
+// in parallel with the host and rebuilds it only when a source changes.
+// Flags mirror the `bench-exec` sub-package in dub.sdl.
+enum benchExec = Target(
+    "bin/bench-exec",
+    "dmd -of$out -defaultlib=libphobos2.so -L-lLLVM"
+        ~ " -I$project/bench-exec -I$project $in",
+    [
+        Target("bench-exec/main.d"),
+        Target("bench-exec/run_wire.d"),
+        Target("orc/bindings.d"),
+        Target("orc/elf.d"),
+        Target("orc/loader.d"),
+    ],
+);
+
 mixin build!(
     ut,
     utCov,
     bench,
+    benchExec,
     qb,
     ffiResolveCacheLateLoadFixture,
 );

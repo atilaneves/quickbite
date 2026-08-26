@@ -1526,3 +1526,48 @@ unittest {
 
     assert(reading.amount == measured);
 }
+
+// Performance kernels. Each isolates one cost class and is sized so the
+// tree-walking backends spend ~15 ms on it: enough for per-operation cost
+// to dominate the per-test fixed cost, small enough to keep the default
+// `bin/bench.sh` run short.
+
+uint fibonacciKernel(uint i) {
+    if (i < 2) return i;
+    return fibonacciKernel(i - 1) + fibonacciKernel(i - 2);
+}
+
+// Call-heavy: ~29k calls.
+@("kernel.calls") unittest {
+    assert(fibonacciKernel(21) == 10_946);
+}
+
+// Loop-heavy over a buffer: 15k element reads and adds, no allocation.
+@("kernel.loop") unittest {
+    auto buf = new uint[](3_000);
+    foreach (i, ref b; buf) b = cast(uint) i;
+    ulong sum;
+    foreach (_; 0 .. 5)
+        foreach (b; buf) sum += b;
+    assert(sum == 5UL * 4_498_500UL);
+}
+
+struct KernelPoint { int x; int y; }
+
+// Struct copies through a slice: 6k element struct stores and loads.
+@("kernel.structs") unittest {
+    auto pts = new KernelPoint[](600);
+    foreach (i, ref p; pts) p = KernelPoint(cast(int) i, cast(int) -i);
+    long acc;
+    foreach (_; 0 .. 10)
+        foreach (p; pts) { const q = p; acc += q.x + q.y; }
+    assert(acc == 0);
+}
+
+// Allocation-heavy: 1.5k appends through druntime.
+@("kernel.append") unittest {
+    ubyte[] bytes;
+    foreach (i; 0 .. 1_500) bytes ~= cast(ubyte) i;
+    assert(bytes.length == 1_500);
+    assert(bytes[1_499] == cast(ubyte) 1_499);
+}
