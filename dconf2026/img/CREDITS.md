@@ -11,3 +11,4 @@
 | clapperboard.jpg | https://commons.wikimedia.org/wiki/File:Clapperboard,_O2_film,_September_2008.jpg | Mattbr | CC BY 2.0 |
 | ladder.jpg | https://commons.wikimedia.org/wiki/File:150_Jahre_FFW_Trogen_20220618_HOF04938_RAW-Export_20220701003957.png | PantheraLeo1359531 | CC BY 4.0 |
 | sandwich.jpg | https://commons.wikimedia.org/wiki/File:Gigantic_hamburger_at_Giant_Burger_Festival,_2008.jpg | William I. Harter | Public domain |
+| gravastar.jpg | https://sourceforge.net/p/gravastar/wiki/Home | Átila Neves | Own work |

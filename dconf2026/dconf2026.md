@@ -334,4 +334,17 @@ struct NativeAssocArray {
 ::::
 :::
 
+# Learning all over again
+
+::: columns
+:::: {.column width=55%}
+* I wrote a game called Gravastar.
+* I wrote it 3 times.
+* This is eerily familiar.
+::::
+:::: {.column width=45%}
+![Gravastar, 4-player split-screen](img/gravastar.jpg){width=100%}
+::::
+:::
+
 # Questions?
