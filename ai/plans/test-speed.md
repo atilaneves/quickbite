@@ -9,35 +9,34 @@ compile/link/load machinery.
 
 ## Measured baseline (2026-08; re-measure, never trust recorded numbers)
 
-Re-measure with: `ninja bin/ut && bin/ut -c`, then aggregate each test's
-chrono duration by its trailing `.Backend` tag. `bin/ut` is single-threaded
-by design (`versions "unitUnthreaded"` in dub.sdl, because DMD owns
-process-global compiler state), so summed per-test durations equal wall
-time and are the true split.
+Do not re-measure by running the suite. Take the numbers from the CI log
+of a recent PR (the `bin/ut --random ~@LLVMJit ~@Ctfe` step), or run one
+module: `bin/ut -c <tag filters> ut.backends.runner.lang.<module>` and
+aggregate each test's chrono duration by its trailing `.Backend` tag.
+`bin/ut` is single-threaded (`versions "unitUnthreaded"` in dub.sdl), so
+summed per-test durations equal wall time.
 
-Cost classes found, largest first:
+Cost classes, largest first:
 
-1. The two native backends, SystemLinker and LLVMJit, take nearly all
-   suite time between them; Ctfe, Interpreter, Bytecode and the untagged
-   infra tests together are a small fraction. The ci.sh gate
-   (`bin/ut --random ~@LLVMJit ~@Ctfe`) is therefore SystemLinker-bound.
+1. The native backends, SystemLinker and LLVMJit, take nearly all suite
+   time. Per fixture in one representative module, SystemLinker is ~20x
+   the frontend cache-miss leg; the Interpreter/Bytecode bodies
+   themselves are microseconds, so the non-native legs' cost is the
+   frontend, not the backend. The ci.sh gate is SystemLinker-bound.
 2. The cost is broad-based across the fixture corpus, not a few slow
-   outliers.
-3. Per-test native-backend cost grows through a run (last quartile of the
-   log is markedly slower than the first). Both native backends fork per
-   test and the SystemLinker path runs `GC.collect` per test; both costs
-   scale with accumulated process state, so the suite slows superlinearly
-   as fixtures are added. Re-measure: quartile-average the `-c` log in
-   file order per backend tag.
-4. Phase split of one native test (gdb timestamps cross-checked with
-   `strace -T` on single-test runs; `strace -f` inflates child timings,
-   do not use it for magnitudes): the big per-test phases are frontend
-   semantic analysis (on a parse-cache miss), `Runtime.loadLibrary` of
-   the fixture `.so`, the external `dmd -shared` link chain, the codegen
-   fork, and `GC.collect` + unload. Parse itself and the unittest body
-   are negligible. The parse cache verifiably shares one parse+sema
-   across all backend legs of a fixture in one process (first leg
-   misses, the rest hit).
+   outliers. Known exception to investigate:
+   `struct.returnedNestedStructWithoutCapturesLeavesCallerLocalsInPlace.Interpreter`
+   takes seconds on its own (a bug, not scaffolding).
+3. Per-test native cost grows through a run (quartile means rise within
+   a single module). Candidates: GC heap (per-test `GC.collect`, fork page
+   tables), DMD's module tables, and `snapshotInlineAsmInstructions`
+   (`frontend/dmd/functions.d`), which walks every module in
+   `Module.amodules` on every fixture parse — quadratic in fixture count.
+4. Phase split of one native test: frontend semantic analysis (on a
+   parse-cache miss), `Runtime.loadLibrary`, the external `dmd -shared`
+   link chain, the codegen fork, and `GC.collect` + unload. Parse and the
+   unittest body are negligible. The parse cache shares one parse+sema
+   across all backend legs of a fixture (first leg misses, the rest hit).
 
 ## Decisions
 
@@ -45,86 +44,143 @@ Cost classes found, largest first:
    binary** (maintainer, 2026-08-17). In the unit suite, per-fixture
    codegen + link + load exists only to produce the native answer, so it
    may be replaced by any equally-real native execution of the same
-   fixture. The benchmark keeps exercising the full
-   codegen-object-link-load pipeline as a product.
-2. **Polymorphic fixtures.** One `q{}` token string, two instantiations:
-   mixed into the DMD-built test binary as real code (the native oracle
-   leg, compiled once at build time by ninja, parallel and incremental)
-   and passed as a string to the backends under test (unchanged). The
-   native leg answers at function-call cost. `bin/ut` and SystemLinker
-   both use the DMD backend, so the oracle's compiler family does not
-   change.
+   fixture. The benchmark keeps exercising the full pipeline as a
+   product, and its cross-backend pass counts are the check on it.
+2. **Polymorphic fixtures, via a template parameter.** The fixture
+   string becomes a template argument:
+   `runBackendSourceFixtureTests!(backend, q{...})`. One template serves
+   both legs: for the oracle it `mixin`s the string into its own
+   instantiation scope and invokes the unittests it finds there; for every
+   other backend it passes the string as today. The native leg is compiled
+   once by ninja, in parallel and incrementally, and answers at
+   function-call cost. The matrix (`Matrix!`/`Omit!`) does not change: the
+   oracle column moves, it does not disappear. The conversion is one
+   scripted pass over the corpus, not a file-by-file campaign.
 3. **The string-only residue stays string-based**: fixtures asserting
    compile-time refusals, runtime-built sources (sandbox paths, generated
-   import modules), the dependency-image/FFI corpus, the pollution tests
-   (per-snippet isolation is their point), `Because.unassertable` pins,
-   and `Because.diverges` pins (one fixture text with per-backend
-   expected outcomes cannot be one mixin).
+   import modules, `Evaluator.eval`), the dependency-image/FFI corpus,
+   the pollution tests, custom `FrontendFlags` sites, `Because.unassertable`
+   pins, and `Because.diverges` pins.
 4. **A thin SystemLinker machinery test set stays in `bin/ut`** so a
-   broken link path is caught before the benchmark run, after fixtures
-   stop exercising it per test.
-5. **Serial in-process execution stays.** `unitUnthreaded` is deliberate.
-   Any parallelism comes from fork/process boundaries; test distribution
-   belongs to unit-threaded, and no process-sharding mechanism exists
-   today — one would have to be built there, not scripted around the
-   binary. Do not evaluate sharding before the oracle swap lands; the
-   residue it would parallelise may be small.
+   broken link path is caught before the benchmark run.
+5. **Serial execution is not a goal.** `unitUnthreaded` exists only
+   because the DMD frontend is on every test's path and the backends call
+   into DMD at run time. Once the frontend is off the run path (batch
+   sema, item 4) and the backends' remaining DMD calls are locked
+   (item 5), `unitUnthreaded` is deleted and unit-threaded runs tests in
+   threads. No process-sharding wrapper; parallelism is unit-threaded's.
+6. **Ctfe stays serial** under the compiler mutex it already takes.
+7. **Snippet-path native coverage after the swap** comes from the REPL
+   test with `system-linker` selected, a string-oracle mode of the same
+   template run on a schedule or on merge to master (not per PR), and
+   LLVMJit back in the gate once its cost allows.
 
 ## Contracts and invariants the work depends on
 
 - DMD's backend is strictly once-per-process; codegen always forks
-  (codegen.d). This fork cost is structural for any path that emits
-  objects in-process.
+  (codegen.d). This fork cost is structural for any in-process object
+  emission.
 - Unloading a fixture `.so` is the documented hazard (GC-held vptrs into
-  unmapped code). Whether one process can safely *load* many snippet
+  unmapped code). Whether one process can safely load many snippet
   `.so`s, or one ORC JITDylib can hold many fixtures' objects, is
-  unproven either way: every snippet carries the same lightning-rod
-  module, and duplicate-ModuleInfo/duplicate-symbol behaviour is not
-  stated in code. Settle by experiment before any batching design.
-- `GroupedRunner.runTests(Module[])` (runner.d) already batches N modules
-  into one artifact, one load, one run. Only the benchmark uses it; the
-  unit suite always passes a single module.
-- The fixture census (grep patterns recorded in the conversion item
-  below) found: the large majority of fixture call sites are single pure
-  `q{}` literals expecting success; the next-largest group expects a
-  runtime throw (`.shouldThrow*`) and needs a wrapper, not exclusion;
-  small fixed sets are compile-refusal, runtime-built, custom
-  `FrontendFlags`, or helper-body sites. Fixture bodies reuse type names
-  (`S`, `C`, `Holder`, ...) freely, so each mixin needs its own scope.
+  unproven either way. Settle by experiment before any batching design.
+- `GroupedRunner.runTests(Module[])` (runner.d) batches N modules into
+  one artifact, one load, one run. Only the benchmark uses it.
+- Fixture census: 1341 of 1384 `runBackendSourceFixtureTests` sites pass
+  a bare `q{}` literal (re-run:
+  `grep -rnE 'runBackendSourceFixtureTests!\w+\(q\{' --include='*.d'
+  tests` versus the same grep without `q{`); 43 pass a named string or
+  `text(...)`. Named sites whose string is a compile-time constant
+  convert too. 182 sites use `shouldThrow*` and need a wrapper, not
+  exclusion. Fixture bodies reuse type names (`S`, `C`, `Holder`, ...)
+  freely, so each mixin needs its own scope.
+- The run path never takes the compiler mutex today (`withCompilerLock`
+  is used by the REPL and Ctfe only); the serial guarantee is
+  `unitUnthreaded` alone.
+- Both string backends call into DMD at run time, and batch sema of the
+  fixture roots does not remove this because druntime/phobos bodies are
+  only analysed when first called:
+  - lazy `functionSemantic3` + `runDeferredSemantic3`
+    (`frontend/dmd/functions.d` `ensureFunctionBodySemantic`): Interpreter
+    `impl.d:110, 3528, 3680, 5011, 5434` plus raw calls at `9741, 9800`;
+    Bytecode `core/compiler.d:589-591`. Cached after first reach, so the
+    contention is warm-up, not permanent.
+  - `semantic2` on non-root variables through the `__gshared Scope`
+    freelist: Interpreter `impl.d:3027-3046`, Bytecode
+    `core/compiler.d:10997-11014`.
+  - `Type.merge` via `mutableOf`/`unSharedOf`/`pointerTo` (writes
+    `__gshared Type.stringtable`): Interpreter `impl.d:5517, 11288, 12939`,
+    `place.d:450-470`, `native_call_adapter.d:739, 795`.
+  - Bytecode compile-time `expressionSemantic` (`core/compiler.d:11628`)
+    and `parseSnippet` (`core/compiler.d:12622`).
+  - write-once caches on shared nodes (`mangleString`, `builtin`,
+    `isabstract`, `requiresClosure`, `getConstInitializer` -> `global.gag`).
+- The backends' own state is TLS or per-instance (no `__gshared` under
+  `backends/interpreter`, `backends/bytecode`, `backends/ir`; IR is
+  threadable as-is). Exception: `ffi.d:24-35` dependency-image ABI tables
+  are TLS filled only by the backend constructor, so a worker thread
+  falls back to the host ABI.
+- DMD's CTFE engine is one `__gshared` arena and stack
+  (`dinterpret.d` `ctfeGlobals`) that writes stack slots into the AST
+  (`VarDeclaration.ctfeAdrOnStack`). It cannot be threaded.
+- `parseRootModulesLocked` (`compiler.d`) already parses N roots as one
+  set, phase by phase, with one deferred drain, one flag apply, one
+  stderr capture, one inline-asm snapshot. Gaps for fixtures: it reads
+  files from disk (no string-source overload), one failing module aborts
+  the whole set, and it does not set `checkAction=context`.
+- Per-parse overhead `parseSnippet` pays that a batch pays once: mutex,
+  `global.path` push/pop, ~20 `global.params` writes for flags, `dup2` of
+  fd 2, three `runDeferred*` drains, `snapshotInlineAsmInstructions`.
+- Fixture classes that cannot share a batch: compile-refusal (the failed
+  `Module` stays registered and its leftovers in `Module.deferred*` drain
+  into the next parse), `FrontendFlags` (process-wide `global.params`,
+  part of the cache key), pollution (the ordering is the test),
+  runtime-built sources and `Evaluator.eval` (source exists only inside
+  the test body), and any fixture depending on an import path being
+  absent (batch import paths are a union on `global.path`).
+- Non-DMD serial assumptions: `llvm_jit.d:131-133` and
+  `codegen.d:258-262` fork assuming no other thread holds the compiler
+  mutex (a locked mutex copied into the child deadlocks it);
+  `compiler.d` `capturedStderr` swaps fd 2 process-wide during parse.
 
 ## Remaining work, in order
 
-1. **Conversion spike.** Convert one representative test module to
-   polymorphic fixtures end to end: settle the per-fixture scoping
-   pattern (own template/struct scope per mixin to avoid type-name
-   collisions), the expected-runtime-failure wrapper (mixin into a
-   callable run under `shouldThrow*`, not a bare unittest), and how a
-   fixture's matrix drops the SystemLinker leg while gaining the native
-   leg without weakening `Omit!` discipline (the oracle column moves,
-   it does not silently disappear). The census is re-runnable with:
-   `grep -rnE 'runBackendSourceFixtureTests!\w+\(q\{' --include='*.d'
-   tests` versus the same grep without the `q{` suffix, plus
-   `grep -rn ShouldFail\|shouldThrow\|FrontendFlags`.
-2. **Corpus conversion.** Convert the pure-`q{}` success fixtures and the
-   `.shouldThrow*` fixtures file by file, deleting each converted
-   file's per-fixture SystemLinker executions as it lands. Acceptance
-   per file: the gate command's wall time drops; the native leg runs the
-   same fixture text. Compile-refusal, runtime-built, FFI, pollution,
-   diverges and unassertable sites are out of scope (decision 3).
-3. **LLVMJit cost.** The oracle swap does not touch LLVMJit (a product
-   backend, though the ci.sh gate already omits it). Experiments before
-   any design: (a) how much of its per-test cost is the state-growth
-   class (fork of a growing heap) versus JIT work — measure fork cost
-   against heap size across a run; (b) grouped execution of N fixtures
-   per child via the existing `GroupedRunner` — blocked on the
-   duplicate-symbol experiment above; (c) overlapping forked test
-   children (each child is a copy-on-write snapshot, so parent-side
-   frontend work on the next fixture cannot corrupt a running child) —
-   prototype before believing it.
-4. **State growth.** Identify which accumulated state makes per-test cost
-   grow: GC heap (per-test `GC.collect` and fork page tables), DMD's
-   module tables (`_moduleCounter` growth is a known, commented concern
-   in compiler.d), loaded-image registries. The oracle swap removes the
-   per-test `GC.collect`+unload for converted fixtures; measure what
-   growth remains for the string legs and whether periodic process
-   recycling is worth building.
+1. **Conversion spike.** Convert one representative module to the
+   template-parameter form end to end. Settle: unittests nested in a
+   template-instance scope (`__traits(getUnitTests)` on the
+   instantiation); assertion/diagnostic text that carries `file:line`
+   (`diagnostics.d`); the `shouldThrow*` wrapper (mixin into a callable
+   run under `shouldThrow*`, not a bare unittest); module-level state and
+   module ctors (`module_state.d`), which are likely residue.
+2. **Corpus conversion.** One scripted pass over the bare-`q{}` sites and
+   the compile-time named-constant sites; delete the per-fixture
+   SystemLinker string legs it replaces. Acceptance: the gate's wall time
+   in the CI log drops; the native leg runs the same fixture text.
+   Residue per decision 3 is out of scope.
+3. **Snippet-path coverage** (decision 7): make `tests/run_repl.py` cover
+   `system-linker` if it does not; add the string-oracle mode and a
+   scheduled or merge-to-master run of it.
+4. **Batch sema.** String-source overload of `parseRootModulesLocked`
+   naming modules `snippet_N` and pre-populating `sourceCache` with the
+   harness's key (`checkaction=context` salt + flags) so existing call
+   sites hit. Collect the fixture strings from the template
+   instantiations at startup. Residue classes stay per-test under the
+   lock. Acceptance: no per-fixture `snapshotInlineAsmInstructions` walk
+   in the batched path.
+5. **Threads.** Route the run-time DMD calls listed above through the
+   compiler mutex (Interpreter: the lazy-sema entries and `Type.merge`
+   users, or structural comparison as `sameBaseType` already does;
+   Bytecode: `withCompilerLock` around `compileFunctionBody`/`compile` so
+   only `run` is concurrent, and pre-warm the `parseSnippet` at
+   `core/compiler.d:12622`). Make `ffi.d:24-35` `__gshared` behind the
+   same mutex. One backend instance per thread. Fix fork-under-lock in
+   `llvm_jit.d`/`codegen.d`. Then delete `versions "unitUnthreaded"`.
+6. **LLVMJit cost.** Experiments before any design: (a) how much of its
+   per-test cost is state growth (fork of a growing heap) versus JIT
+   work; (b) grouped execution of N fixtures per child via
+   `GroupedRunner` — blocked on the duplicate-symbol experiment above;
+   (c) overlapping forked test children — prototype before believing it.
+7. **State growth.** After items 2 and 4, measure what growth remains for
+   the string legs and whether periodic process recycling is worth
+   building. File the slow-Interpreter-test outlier from cost class 2 as
+   its own issue.
