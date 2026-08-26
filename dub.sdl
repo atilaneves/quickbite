@@ -184,8 +184,6 @@ configuration "qb" {
     dependency "readline" version="0.3.0"
 }
 
-// `-inline` causes DMD to hang on large lowering.d; omit it until the
-// file is split into smaller modules.
 buildType "benchmark-opt" {
     buildOptions "optimize" "releaseMode" "noBoundsCheck"
 }

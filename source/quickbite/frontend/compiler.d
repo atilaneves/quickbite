@@ -153,14 +153,6 @@ public imported!"dmd.dmodule".Module lightningRod() {
     return compiler._rod;
 }
 
-public imported!"quickbite.ir.module_".Module lowerModule(
-    imported!"dmd.dmodule".Module module_,
-) {
-    import quickbite.frontend.lowering;
-
-    return quickbite.frontend.lowering.lowerModule(module_);
-}
-
 public imported!"dmd.expression".Expression parseExpression(in string source) {
     return compiler.parseExpression(source);
 }
