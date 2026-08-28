@@ -336,6 +336,8 @@ interface Runner {
 * I bit off more than I could chew
 * I wasn't curious enough
 * I didn't run the tests myself
+* Top-down instead of bottom up
+* Performance measurements up front
 ::::
 :::: {.column width=42%}
 ![William I. Harter, public domain](img/sandwich.jpg){width=100%}
