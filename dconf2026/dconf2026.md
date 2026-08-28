@@ -318,21 +318,40 @@ struct NativeAssocArray {
 
 # Demo - REPL with runtime capabilities
 
-# Conclusion
+# Mistakes
+
+* Wrong abstraction
+
+```d
+interface Runner {
+    void runTests(Module module_);
+}
+```
+
+
+# Mistakes
 
 ::: columns
 :::: {.column width=58%}
-* Don't bite off more than you can chew.
-* Learn enough to be able to make decisions.
-* Do not trust agents to do the right thing.
-* Write down everything you know about coding.
-* Understand the technical options deeply.
-* Your codebase is the context your agents operate in.
+* I bit off more than I could chew
+* I wasn't curious enough
+* I didn't run the tests myself
 ::::
 :::: {.column width=42%}
 ![William I. Harter, public domain](img/sandwich.jpg){width=100%}
 ::::
 :::
+
+
+
+# Conclusion
+
+* Mistrust and verify
+* Your codebase is the context they operate in
+* Software engineering is still (more!) important
+* D needs better tools
+* Learn enough to be able to make decisions
+* Understand the technical options deeply
 
 # Learning all over again
 
